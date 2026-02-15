@@ -1,2 +1,5 @@
 /venv/
 .mypy_cache
+venv
+.venv
+/venv
