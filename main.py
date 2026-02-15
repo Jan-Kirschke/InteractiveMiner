@@ -4,680 +4,668 @@ import queue
 import time
 import random
 import math
+import sys
+import scrapetube # pip install scrapetube
 
 # --- KONFIGURATION ---
-VIDEO_ID = "HIER_DEINE_VIDEO_ID" 
+CHANNEL_ID = "HIER_DEINE_KANAL_ID_EINFUEGEN" # Z.B. UC...
 COLS = 9
 BLOCK_SIZE = 80
 WIDTH = BLOCK_SIZE * COLS 
 HEIGHT = 800
 FPS = 60
 
-SCROLL_SPEED = 1.0
+# Balance
+SCROLL_SPEED = 1.0 
+GRAVITY = 0.4
+MOVE_FORCE = 4
+JUMP_FORCE = -11
+BOSS_SUMMON_REQ = 20
+MAX_ACTIVE_BOSSES = 3
+BOSS_REPAIR_SPEED = 60
 
-# Gameplay Balance
-MAX_PICKAXES = 25       
-SPAWN_COOLDOWN = 80    
-
-# Boss Settings
-BOSS_SUMMON_REQ = 20    
-BOSS_MAX_HP = 3         # Enderman hält 3 Amboss-Treffer aus
-BOSS_REPAIR_SPEED = 60  # Alle 60 Frames setzt er einen Block
-
-# Farben & Fonts
+# Farben
 UI_BG = (0, 0, 0, 180)
 TEXT_COLOR = (255, 255, 255)
 ENDER_PURPLE = (200, 0, 255)
 
-# --- KLASSEN ---
+# --- THEMEN (BIOME) ---
+THEME_CHANGE_INTERVAL = 200 
+THEMES = [
+    {"name": "Surface", "bg": (100, 149, 237), "blocks": {"dirt": 50, "stone": 40, "coal_ore": 10}},
+    {"name": "Limestone Cave", "bg": (180, 170, 140), "blocks": {"sandstone": 50, "limestone": 40, "iron_ore": 10}},
+    {"name": "Lush Jungle", "bg": (20, 50, 20), "blocks": {"moss_block": 60, "clay": 30, "emerald_ore": 10}},
+    {"name": "Ice Caverns", "bg": (200, 240, 255), "blocks": {"ice": 50, "packed_ice": 40, "sapphire_ore": 10}},
+    {"name": "Magma Depths", "bg": (50, 0, 0), "blocks": {"netherrack": 60, "magma_block": 30, "gold_ore": 10}},
+    {"name": "Amethyst Geode", "bg": (40, 0, 60), "blocks": {"calcite": 40, "amethyst_block": 50, "crystal_ore": 10}},
+    {"name": "Deep Dark", "bg": (5, 10, 15), "blocks": {"deepslate": 60, "sculk": 30, "echo_shard": 10}},
+    {"name": "Cyber Core", "bg": (0, 20, 0), "blocks": {"matrix_block": 50, "circuit_block": 40, "quantum_ore": 10}}
+]
+
+# Block HP Definitionen (Global)
+BLOCK_STATS = {
+    "dirt": 50, "stone": 100, "coal_ore": 150, "sandstone": 80, "limestone": 120, "iron_ore": 250,
+    "moss_block": 60, "clay": 90, "emerald_ore": 300, "ice": 40, "packed_ice": 150, "sapphire_ore": 400,
+    "netherrack": 80, "magma_block": 200, "gold_ore": 350, "calcite": 200, "amethyst_block": 150, "crystal_ore": 500,
+    "deepslate": 300, "sculk": 100, "echo_shard": 800, "matrix_block": 500, "circuit_block": 600, "quantum_ore": 1000,
+    "bedrock": 999999
+}
+
+# --- HELPER KLASSEN ---
+
+class Atmosphere:
+    def __init__(self, width, height):
+        self.width = width; self.height = height
+        # 1. Fels-Rahmen (Overlay)
+        self.frame_surf = pygame.Surface((width, height), pygame.SRCALPHA)
+        self.frame_surf.fill((15, 15, 20, 255)) 
+        rect_hole = pygame.Rect(40, 60, width-80, height-120)
+        pygame.draw.rect(self.frame_surf, (0,0,0,0), rect_hole)
+        # Ausfransen
+        for _ in range(250):
+            pos = (random.randint(0, width), random.randint(0, height))
+            # Nur Ränder bearbeiten
+            if pos[0] < 60 or pos[0] > width-60 or pos[1] < 80 or pos[1] > height-80:
+                pygame.draw.circle(self.frame_surf, (0,0,0,0), pos, random.randint(10, 30))
+        
+        # 2. Abyss Fog (Unten)
+        self.fog_surf = pygame.Surface((width, 200), pygame.SRCALPHA)
+        for y in range(200):
+            alpha = int((y / 200) * 255)
+            pygame.draw.line(self.fog_surf, (0, 0, 0, alpha), (0, y), (width, y))
+
+    def draw_foreground(self, screen):
+        screen.blit(self.fog_surf, (0, self.height - 200))
+        screen.blit(self.frame_surf, (0, 0))
+
+class LikeStreakSystem:
+    def __init__(self):
+        self.streak = 0; self.max_time = 180; self.current_time = 0
+        self.multiplier = 1.0; self.active = False
+        self.bar_width = 300; self.bar_height = 15
+        
+    def add_like(self):
+        self.streak += 1; self.current_time = self.max_time; self.active = True
+        self.multiplier = min(5.0, 1.0 + (self.streak * 0.1))
+
+    def update(self):
+        if self.active:
+            self.current_time -= 1
+            if self.current_time <= 0:
+                self.active = False; self.streak = 0; self.multiplier = 1.0
+
+    def draw(self, screen):
+        if not self.active and self.streak == 0: return
+        x = (WIDTH - self.bar_width) // 2; y = 70
+        
+        # Text
+        font = pygame.font.SysFont("Arial", 18, bold=True)
+        col = (255, 255, 0) if self.multiplier > 2.0 else (255, 255, 255)
+        txt = font.render(f"STREAK: {self.streak} (x{self.multiplier:.1f} DMG)", True, col)
+        screen.blit(txt, (x + (random.randint(-1,1) if self.multiplier > 3 else 0), y - 22))
+        
+        # Bar
+        pygame.draw.rect(screen, (50, 50, 50), (x, y, self.bar_width, self.bar_height))
+        pct = self.current_time / self.max_time
+        col_bar = (0, 255, 0) if pct > 0.5 else ((255, 165, 0) if pct > 0.2 else (255, 0, 0))
+        pygame.draw.rect(screen, col_bar, (x, y, int(self.bar_width * pct), self.bar_height))
+        pygame.draw.rect(screen, (255, 255, 255), (x, y, self.bar_width, self.bar_height), 2)
+
+class Particle:
+    def __init__(self, x, y, color):
+        self.rect = pygame.Rect(x, y, 6, 6)
+        self.color = color
+        self.vel_x = random.uniform(-4, 4); self.vel_y = random.uniform(-4, 4)
+        self.gravity = 0.5; self.life = random.randint(20, 40); self.max_life = self.life
+    def update(self):
+        self.vel_y += self.gravity; self.rect.x += self.vel_x; self.rect.y += self.vel_y; self.life -= 1
+    def draw(self, screen):
+        if self.life > 0:
+            s = pygame.Surface((6,6), pygame.SRCALPHA)
+            alpha = int((self.life/self.max_life)*255)
+            s.fill((*self.color, alpha))
+            screen.blit(s, self.rect)
+
+class FloatingText:
+    def __init__(self, x, y, text, color=(255, 255, 255), size=24):
+        self.x = x; self.y = y; self.text = text; self.color = color
+        self.font = pygame.font.SysFont("Arial", size, bold=True)
+        self.life = 60; self.vel_y = -2.0
+    def update(self): self.y += self.vel_y; self.life -= 1
+    def draw(self, screen):
+        if self.life > 0:
+            surf = self.font.render(str(self.text), True, self.color)
+            surf.set_alpha(min(255, self.life*5))
+            screen.blit(surf, (self.x, self.y))
+
+# --- ENTITY KLASSEN ---
 
 class Block:
     def __init__(self, x, y, type_name, image, hp, is_bedrock=False):
         self.rect = pygame.Rect(x, y, BLOCK_SIZE, BLOCK_SIZE)
-        self.type = type_name
-        self.image = image
-        self.max_hp = hp
-        self.hp = hp
-        self.active = True
-        self.is_bedrock = is_bedrock
+        self.type = type_name; self.image = image
+        self.max_hp = hp; self.hp = hp
+        self.active = True; self.is_bedrock = is_bedrock
 
-class Particle:
-    def __init__(self, x, y, color, speed_mult=1.0):
-        self.rect = pygame.Rect(x, y, 6, 6)
-        self.color = color
-        self.vel_x = random.uniform(-5, 5) * speed_mult
-        self.vel_y = random.uniform(-5, 5) * speed_mult
-        self.gravity = 0.5
-        self.life = random.randint(30, 60)
+class HeroPickaxe:
+    def __init__(self, x, y, image):
+        self.image = image; self.original_image = image
+        self.rect = self.image.get_rect(center=(x, y))
+        self.vel_x = 0; self.vel_y = 0; self.rot_speed = 0; self.angle = 0
+        self.gravity = GRAVITY; self.friction = 0.98; self.bounce = -0.4
+        self.min_x = BLOCK_SIZE; self.max_x = WIDTH - BLOCK_SIZE
 
-    def update(self):
-        self.vel_y += self.gravity
+    def apply_force(self, x, y):
+        self.vel_x += x; self.vel_y += y; self.rot_speed += x * 2
+
+    def update(self, blocks, particles, sfx, texts, inventory, dmg_mult):
+        self.vel_y += self.gravity; self.vel_x *= self.friction
+        
+        # X-Achse
         self.rect.x += self.vel_x
+        self.check_collision(blocks, particles, sfx, texts, inventory, 'x', dmg_mult)
+        
+        # Y-Achse
         self.rect.y += self.vel_y
-        self.life -= 1
+        self.check_collision(blocks, particles, sfx, texts, inventory, 'y', dmg_mult)
 
-    def draw(self, screen):
-        if self.life > 0:
-            pygame.draw.rect(screen, self.color, self.rect)
+        # Rotation & Scale (Streak Effekt)
+        self.rot_speed *= 0.95
+        self.angle = (self.angle + self.rot_speed) % 360
+        
+        scale = 1.0 + (dmg_mult - 1.0) * 0.2
+        scaled_img = pygame.transform.scale(self.original_image, (int(BLOCK_SIZE*scale), int(BLOCK_SIZE*scale)))
+        self.rot_image = pygame.transform.rotate(scaled_img, self.angle)
+        self.display_rect = self.rot_image.get_rect(center=self.rect.center)
 
-class FloatingText:
-    def __init__(self, x, y, text, color=(255, 255, 255), size=24):
-        self.x = x
-        self.y = y
-        self.text = text
-        self.color = color
-        self.font = pygame.font.SysFont("Arial", size, bold=True)
-        self.life = 60 
-        self.vel_y = -2.0 
+        # Grenzen
+        if self.rect.left < self.min_x: self.rect.left = self.min_x; self.vel_x *= -0.5
+        if self.rect.right > self.max_x: self.rect.right = self.max_x; self.vel_x *= -0.5
 
-    def update(self):
-        self.y += self.vel_y
-        self.life -= 1
+    def check_collision(self, blocks, particles, sfx, texts, inventory, axis, dmg_mult):
+        for b in blocks:
+            if b.active and not b.is_bedrock and self.rect.colliderect(b.rect):
+                force = abs(self.vel_x) if axis == 'x' else abs(self.vel_y)
+                if force > 2:
+                    dmg = 25 * dmg_mult
+                    b.hp -= dmg; sfx.play()
+                    if dmg_mult > 1.5: texts.append(FloatingText(b.rect.x, b.rect.y, f"{int(dmg)}!", (255, 215, 0)))
+                    
+                    p_col = (100, 100, 100)
+                    if "ore" in b.type: p_col = (255, 255, 255)
+                    for _ in range(3): particles.append(Particle(self.rect.centerx, self.rect.centery, p_col))
 
-    def draw(self, screen):
-        if self.life > 0:
-            alpha = min(255, self.life * 5)
-            surf = self.font.render(str(self.text), True, self.color)
-            surf.set_alpha(alpha)
-            screen.blit(surf, (self.x, self.y))
+                    if axis == 'x':
+                        if self.vel_x > 0: self.rect.right = b.rect.left
+                        else: self.rect.left = b.rect.right
+                        self.vel_x *= -0.5
+                    else:
+                        if self.vel_y > 0: self.rect.bottom = b.rect.top; self.vel_y *= self.bounce; self.vel_x *= 0.9
+                        else: self.rect.top = b.rect.bottom; self.vel_y *= -0.5
 
-# --- ENDERMAN BOSS ---
+    def draw(self, screen): screen.blit(self.rot_image, self.display_rect)
+
+# --- BOSSES & WEAPONS ---
+
 class EndermanBoss:
     def __init__(self):
-        self.width = 100
-        self.height = 250 # Groß und schlank
-        self.x = WIDTH // 2
-        self.y = 100
-        self.rect = pygame.Rect(self.x, self.y, self.width, self.height)
-        
-        self.hp = BOSS_MAX_HP
-        self.max_hp = BOSS_MAX_HP
-        self.speed = 5
-        self.direction = 1 # 1 = Rechts, -1 = Links
-        self.repair_timer = 0
-        
-        # Grafik erstellen (Schwarz mit lila Augen)
-        self.image = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        pygame.draw.rect(self.image, (20, 20, 20), (10, 0, 80, 250)) # Körper
-        pygame.draw.rect(self.image, (0, 0, 0), (10, 0, 80, 80))   # Kopf
-        # Augen
-        pygame.draw.rect(self.image, ENDER_PURPLE, (15, 30, 25, 10)) 
-        pygame.draw.rect(self.image, ENDER_PURPLE, (60, 30, 25, 10))
-        # Arme (halten einen Block)
-        pygame.draw.rect(self.image, (20, 20, 20), (-10, 80, 20, 150)) 
-        pygame.draw.rect(self.image, (20, 20, 20), (90, 80, 20, 150)) 
-        
-        # Block in der Hand
-        pygame.draw.rect(self.image, (100, 200, 100), (20, 150, 60, 60)) # Grasblock
+        self.w, self.h = 100, 250
+        self.x = random.randint(BLOCK_SIZE, WIDTH-BLOCK_SIZE-100); self.y = -250
+        self.target_y = 150; self.rect = pygame.Rect(self.x, self.y, self.w, self.h)
+        self.hp = 3; self.max_hp = 3; self.speed = 4; self.dir = 1
+        self.repair_timer = 0; self.hit_flash = 0
+        try: self.img = pygame.transform.scale(pygame.image.load("assets/images/enderman_boss.png").convert_alpha(), (self.w, self.h))
+        except: 
+            self.img = pygame.Surface((self.w, self.h)); self.img.fill((20, 20, 20))
+            pygame.draw.rect(self.img, ENDER_PURPLE, (20, 40, 20, 10)); pygame.draw.rect(self.img, ENDER_PURPLE, (60, 40, 20, 10))
 
-        self.hit_flash = 0
-
-    def update(self, blocks, assets):
-        # 1. Bewegung
-        self.x += self.speed * self.direction
-        
-        # Randprüfung (bleibt im Grid)
-        grid_start = (WIDTH - (COLS * BLOCK_SIZE)) // 2
-        grid_end = grid_start + (COLS * BLOCK_SIZE)
-        
-        if self.x < grid_start + BLOCK_SIZE: # Nicht in den Bedrock laufen
-            self.direction = 1
-        elif self.x + self.width > grid_end - BLOCK_SIZE:
-            self.direction = -1
-            
+    def update(self, blocks, game):
+        if self.y < self.target_y: self.y += 5; self.rect.y = self.y; return
+        self.x += self.speed * self.dir
+        if self.x < BLOCK_SIZE: self.dir = 1
+        elif self.x + self.w > WIDTH - BLOCK_SIZE: self.dir = -1
         self.rect.x = self.x
         
-        # 2. Blöcke reparieren (Fies!)
         self.repair_timer += 1
         if self.repair_timer > BOSS_REPAIR_SPEED:
             self.repair_timer = 0
-            # Suche kaputten Block in der Nähe
             for b in blocks:
-                if not b.active and not b.is_bedrock:
-                    # Prüfe Distanz
-                    if abs(b.rect.centerx - self.rect.centerx) < 100 and b.rect.y > self.rect.bottom:
-                        # REPARIEREN!
-                        b.active = True
-                        b.hp = b.max_hp
-                        return # Nur einen pro Tick reparieren
-
+                if not b.active and not b.is_bedrock and abs(b.rect.centerx - self.rect.centerx) < 100:
+                    b.active = True; b.hp = b.max_hp; return
         if self.hit_flash > 0: self.hit_flash -= 1
 
-    def take_damage(self):
-        self.hp -= 1
-        self.hit_flash = 10
-        if self.hp <= 0: return True
-        return False
-
+    def take_damage(self): self.hp -= 1; self.hit_flash = 10; return self.hp <= 0
     def draw(self, screen):
-        if self.hit_flash > 0:
-             # Weiß aufblinken
-            mask = pygame.mask.from_surface(self.image)
-            white = mask.to_surface(setcolor=(255, 100, 100, 200), unsetcolor=(0,0,0,0))
-            screen.blit(white, self.rect)
-        else:
-            screen.blit(self.image, self.rect)
-        
+        if self.hit_flash > 0: 
+            mask = pygame.mask.from_surface(self.img)
+            screen.blit(mask.to_surface(setcolor=(255,255,255,200), unsetcolor=(0,0,0,0)), self.rect)
+        else: screen.blit(self.img, self.rect)
         # HP Bar
-        bar_w = 200
-        pygame.draw.rect(screen, (0, 0, 0), (self.rect.centerx - 100, self.rect.y - 20, bar_w, 10))
-        pct = self.hp / self.max_hp
-        pygame.draw.rect(screen, ENDER_PURPLE, (self.rect.centerx - 100, self.rect.y - 20, bar_w * pct, 10))
+        pygame.draw.rect(screen, (0,0,0), (self.rect.x, self.rect.y-15, self.w, 8))
+        pygame.draw.rect(screen, ENDER_PURPLE, (self.rect.x, self.rect.y-15, self.w*(self.hp/self.max_hp), 8))
 
+class HerobrineBoss:
+    def __init__(self):
+        self.w, self.h = 80, 180
+        self.x = WIDTH//2; self.y = 150; self.rect = pygame.Rect(self.x, self.y, self.w, self.h)
+        self.hp = 5; self.max_hp = 5; self.tp_timer = 0; self.atk_timer = 0; self.hit_flash = 0
+        try: self.img = pygame.transform.scale(pygame.image.load("assets/images/herobrine.png").convert_alpha(), (self.w, self.h))
+        except:
+            self.img = pygame.Surface((self.w, self.h)); self.img.fill((0, 150, 150))
+            pygame.draw.rect(self.img, (255, 200, 150), (10, 0, 60, 50))
+            pygame.draw.rect(self.img, (255, 255, 255), (15, 15, 15, 8)); pygame.draw.rect(self.img, (255, 255, 255), (50, 15, 15, 8))
+
+    def update(self, blocks, game):
+        self.tp_timer += 1
+        if self.tp_timer > 120:
+            self.tp_timer = 0; self.x = random.randint(BLOCK_SIZE, WIDTH-BLOCK_SIZE-self.w); self.y = random.randint(50, 250)
+            self.rect.x = self.x; self.rect.y = self.y; game.sfx['teleport'].play()
+        self.atk_timer += 1
+        if self.atk_timer > 180:
+            self.atk_timer = 0; tx = random.randint(BLOCK_SIZE, WIDTH-BLOCK_SIZE)
+            game.tnts.append(LightningEntity(tx))
+        if self.hit_flash > 0: self.hit_flash -= 1
+
+    def take_damage(self): self.hp -= 1; self.hit_flash = 10; self.tp_timer = 110; return self.hp <= 0
+    def draw(self, screen):
+        if self.hit_flash > 0: 
+            mask = pygame.mask.from_surface(self.img)
+            screen.blit(mask.to_surface(setcolor=(255,255,255,200), unsetcolor=(0,0,0,0)), self.rect)
+        else: screen.blit(self.img, self.rect)
+        pygame.draw.rect(screen, (0,0,0), (self.rect.x, self.rect.y-15, self.w, 8))
+        pygame.draw.rect(screen, (255,255,255), (self.rect.x, self.rect.y-15, self.w*(self.hp/self.max_hp), 8))
 
 class PhysicsAnvil:
-    def __init__(self, x, y):
-        self.width = 60
-        self.height = 80
-        self.rect = pygame.Rect(x, y, self.width, self.height)
-        self.vel_y = 0
-        self.gravity = 1.5 # Fällt sehr schnell (schwer)
-        self.active = True
-        
-        # Grafik (Grauer Amboss)
-        self.image = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        pygame.draw.rect(self.image, (80, 80, 80), (10, 0, 40, 20)) # Top
-        pygame.draw.rect(self.image, (80, 80, 80), (20, 20, 20, 40)) # Hals
-        pygame.draw.rect(self.image, (80, 80, 80), (0, 60, 60, 20))  # Basis
-
-    def update(self, boss):
-        self.vel_y += self.gravity
-        self.rect.y += self.vel_y
-        
-        # Kollision mit Boss
-        if boss and self.rect.colliderect(boss.rect):
-            self.active = False
-            return "HIT"
-            
-        if self.rect.y > HEIGHT:
-            self.active = False
+    def __init__(self, x):
+        self.rect = pygame.Rect(x, -100, 60, 80); self.vel_y = 0; self.active = True
+        try: self.img = pygame.transform.scale(pygame.image.load("assets/images/anvil.png").convert_alpha(), (60, 80))
+        except: self.img = pygame.Surface((60, 80)); self.img.fill((80, 80, 80))
+    def update(self, bosses):
+        self.vel_y += 1.5; self.rect.y += self.vel_y
+        for b in bosses:
+            if self.rect.colliderect(b.rect): self.active = False; return b
+        if self.rect.y > HEIGHT: self.active = False
         return None
+    def draw(self, s): s.blit(self.img, self.rect)
 
-    def draw(self, screen):
-        screen.blit(self.image, self.rect)
+class PhysicsPotion:
+    def __init__(self, x):
+        self.rect = pygame.Rect(x, -50, 30, 40); self.vel_y = 0; self.active = True
+        try: self.img = pygame.transform.scale(pygame.image.load("assets/images/potion.png").convert_alpha(), (30, 40))
+        except: self.img = pygame.Surface((30, 40)); self.img.fill((255, 50, 50))
+    def update(self, bosses):
+        self.vel_y += 0.8; self.rect.y += self.vel_y
+        for b in bosses:
+            if isinstance(b, HerobrineBoss) and self.rect.colliderect(b.rect): self.active = False; return b
+        if self.rect.y > HEIGHT: self.active = False
+        return None
+    def draw(self, s): s.blit(self.img, self.rect)
 
-# --- BOMBEN ---
 class BombEntity:
-    def __init__(self, x, y, bomb_type="x"):
-        self.rect = pygame.Rect(x, y, 64, 64)
-        self.type = bomb_type # "x" oder "nuke"
-        self.vel_y = -5
-        self.gravity = 0.5
-        self.timer = 60 if bomb_type == "x" else 100
-        self.explode = False
-        
-        # Grafik
-        self.image = pygame.Surface((64, 64), pygame.SRCALPHA)
-        color = (0, 0, 0) if bomb_type == "x" else (255, 255, 255)
-        text_char = "X" if bomb_type == "x" else "☢"
-        pygame.draw.circle(self.image, color, (32, 32), 30)
-        font = pygame.font.SysFont("Arial", 40, bold=True)
-        txt = font.render(text_char, True, (255, 0, 0))
-        self.image.blit(txt, (15, 10))
-
+    def __init__(self, x, type="x"):
+        self.rect = pygame.Rect(x, -50, 64, 64); self.type = type; self.vel_y = -5; self.timer = 60; self.explode = False
+        try: self.img = pygame.transform.scale(pygame.image.load(f"assets/images/tnt_{type}.png").convert_alpha(), (64, 64))
+        except: self.img = pygame.Surface((64, 64)); self.img.fill((0,0,0)); pygame.draw.circle(self.img, (255,0,0), (32,32), 30)
     def update(self):
-        self.vel_y += self.gravity
-        self.rect.y += self.vel_y
-        self.timer -= 1
+        self.vel_y += 0.5; self.rect.y += self.vel_y; self.timer -= 1
         if self.timer <= 0: self.explode = True
+    def draw(self, s): s.blit(self.img, self.rect)
 
-    def draw(self, screen):
-        # Blinken
-        if self.timer < 30 and self.timer % 5 == 0:
-            temp = self.image.copy()
-            temp.fill((255, 255, 255, 100), special_flags=pygame.BLEND_RGBA_ADD)
-            screen.blit(temp, self.rect)
-        else:
-            screen.blit(self.image, self.rect)
+class LightningEntity:
+    def __init__(self, x): self.x = x; self.timer = 20; self.rect = pygame.Rect(x-20, 0, 40, HEIGHT); self.explode=False
+    def update(self): 
+        self.timer -= 1
+        if self.timer == 10: self.explode = True
+    def draw(self, s):
+        if self.timer > 0:
+            pts = [(self.x+random.randint(-10,10), y) for y in range(0, HEIGHT, 20)]
+            if len(pts)>1: pygame.draw.lines(s, (200,255,255), False, pts, 5)
 
+# --- MAIN GAME ---
 
-class PhysicsPickaxe:
-    def __init__(self, x, y, image, user="Unknown"):
-        self.image = image
-        self.original_image = image 
-        self.rect = self.image.get_rect(center=(x, y))
-        self.vel_x = random.uniform(-3, 3)
-        self.vel_y = -8 
-        self.gravity = 0.5
-        self.friction = 0.99 
-        self.bounce = -0.6 
-        self.angle = random.randint(0, 360)
-        self.rot_speed = random.uniform(-15, 15)
-        self.active = True
-        self.min_x = BLOCK_SIZE 
-        self.max_x = WIDTH - BLOCK_SIZE
-        self.user = user # Wer hat die Hacke geworfen?
-
-    def update(self, blocks, particles_list, hit_sound, floating_texts, stats_tracker):
-        self.vel_y += self.gravity
-        self.vel_x *= self.friction
-        self.rect.x += self.vel_x
-        self.rect.y += self.vel_y
-        
-        # Wandkollision (Bedrock)
-        if self.rect.left < self.min_x:
-            self.rect.left = self.min_x; self.vel_x *= -0.8
-        if self.rect.right > self.max_x:
-            self.rect.right = self.max_x; self.vel_x *= -0.8
-
-        # Rotation
-        self.angle = (self.angle + self.rot_speed) % 360
-        self.rot_image = pygame.transform.rotate(self.original_image, self.angle)
-        self.display_rect = self.rot_image.get_rect(center=self.rect.center)
-        
-        # Rotations-Korrektur
-        if self.display_rect.left < self.min_x: self.rect.x += 5
-        elif self.display_rect.right > self.max_x: self.rect.x -= 5
-
-        # Block Kollision
-        for block in blocks:
-            if block.active and not block.is_bedrock and self.rect.colliderect(block.rect):
-                
-                # Wenn Schaden macht
-                if abs(self.vel_y) > 2 or abs(self.vel_x) > 2:
-                    block.hp -= 15
-                    hit_sound.play()
-                    
-                    # USER STATS UPDATE (Wer hat abgebaut?)
-                    # Wir zählen einfach "Hits" oder "Damage"
-                    if self.user in stats_tracker:
-                        stats_tracker[self.user] += 1
-                    else:
-                        stats_tracker[self.user] = 1
-
-                    # Partikel
-                    p_color = (100, 100, 100)
-                    if "diamond" in block.type: p_color = (0, 255, 255)
-                    for _ in range(3):
-                        particles_list.append(Particle(self.rect.centerx, self.rect.centery, p_color))
-
-                # Abprallen (Einfache Version)
-                if abs(self.rect.bottom - block.rect.top) < 20 and self.vel_y > 0:
-                    self.rect.bottom = block.rect.top; self.vel_y *= self.bounce
-                elif abs(self.rect.top - block.rect.bottom) < 20 and self.vel_y < 0:
-                    self.rect.top = block.rect.bottom; self.vel_y *= self.bounce
-                
-        if self.rect.y > HEIGHT + 100: 
-            self.active = False
-
-    def draw(self, screen):
-        screen.blit(self.rot_image, self.display_rect)
-
-
-# --- GAME KLASSE ---
 class Game:
     def __init__(self):
         pygame.init()
+        # Automatische ID Suche
+        try:
+            print("Suche Livestream...")
+            vids = scrapetube.get_channel(CHANNEL_ID, content_type="streams", limit=5)
+            for v in vids:
+                if v.get('thumbnailOverlays') and any('LIVE' in str(o) for o in v['thumbnailOverlays']):
+                    global VIDEO_ID; VIDEO_ID = v['videoId']; print(f"Verbunden mit: {VIDEO_ID}"); break
+        except: print("Offline Mode / Fallback ID")
+
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Infinite Miner - Enderman Update")
+        pygame.display.set_caption("Infinite Miner Ultimate")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("Arial", 16, bold=True)
         self.big_font = pygame.font.SysFont("Arial", 24, bold=True)
         self.mega_font = pygame.font.SysFont("Arial", 40, bold=True)
         
-        self.particles = [] 
-        self.tnts = []      # Normale TNTs (werden zu XBombs/Nukes)
-        self.anvils = []    # Ambosse gegen Boss
-        self.pickaxes = []
-        self.floating_texts = [] 
-        self.screen_shake = 0 
+        # Systeme
+        self.atmosphere = Atmosphere(WIDTH, HEIGHT)
+        self.streak_system = LikeStreakSystem()
         
-        # --- STATISTIK ---
-        self.user_stats = {} # {"Username": Score}
-        self.top_miner_text = "Top Miner: -"
-        self.stats_timer = 0
-        
-        # --- EVENT SYSTEM ---
-        self.boss = None
+        # Listen
+        self.blocks = []; self.particles = []; self.floating_texts = []
+        self.tnts = []; self.anvils = []; self.potions = []; self.bosses = []
+        self.screen_shake = 0
         self.boss_summon_progress = 0
-        self.nuke_charge = 0
-        
-        # --- SOUNDS ---
+        self.current_depth_blocks = 0
+        self.inventory = {}
+        self.user_stats = {}; self.mvp_text = "MVP: -"
+        self.stats_timer = 0
+
+        # Sounds laden
         pygame.mixer.init()
-        # (Platzhalter Sounds)
         class Dummy: 
             def play(self): pass
-        self.sfx = {k: Dummy() for k in ['hit', 'break', 'explode', 'teleport']}
-
-        # --- ASSETS SETUP ---
-        # Hintergrund
+        self.sfx = {k: Dummy() for k in ['hit', 'break', 'explode', 'teleport', 'anvil']}
         try:
-            bg_raw = pygame.image.load("assets/images/wp7269751-minecraft-3d-wallpapers.jpg").convert()
-            scale = HEIGHT / bg_raw.get_height()
-            new_w = int(bg_raw.get_width() * scale)
-            bg_s = pygame.transform.scale(bg_raw, (new_w, HEIGHT))
-            self.background = pygame.Surface((WIDTH, HEIGHT))
-            self.background.blit(bg_s, ((WIDTH-new_w)//2, 0))
-        except:
-            self.background = pygame.Surface((WIDTH, HEIGHT)); self.background.fill((50, 50, 100))
+            self.sfx['hit'] = pygame.mixer.Sound("assets/sounds/hit.wav"); self.sfx['hit'].set_volume(0.2)
+            self.sfx['break'] = pygame.mixer.Sound("assets/sounds/break.wav"); self.sfx['break'].set_volume(0.3)
+            self.sfx['explode'] = pygame.mixer.Sound("assets/sounds/explode.wav"); self.sfx['explode'].set_volume(0.4)
+            self.sfx['teleport'] = pygame.mixer.Sound("assets/sounds/teleport.wav"); self.sfx['teleport'].set_volume(0.5)
+        except: pass
 
-        # Blöcke definieren
-        self.block_types = {
-            "stone":       {"hp": 100, "rarity": 60, "file": "stone",       "icon": "stone"},
-            "dirt":        {"hp": 50,  "rarity": 20, "file": "dirt",        "icon": "dirt"},
-            "coal_ore":    {"hp": 150, "rarity": 10, "file": "coal_ore",    "icon": "coal"},
-            "copper_ore":  {"hp": 200, "rarity": 8,  "file": "copper_ore",  "icon": "copper_ingot"},
-            "iron_ore":    {"hp": 250, "rarity": 6,  "file": "iron_ore",    "icon": "iron_ingot"},
-            "gold_ore":    {"hp": 400, "rarity": 3,  "file": "gold_ore",    "icon": "gold_ingot"},
-            "redstone_ore":{"hp": 300, "rarity": 4,  "file": "redstone_ore","icon": "redstone"},
-            "diamond_ore": {"hp": 800, "rarity": 1,  "file": "diamond_ore", "icon": "diamond"},
-            "emerald_ore": {"hp": 1000,"rarity": 0.5,"file": "emerald_ore", "icon": "emerald"},
-            "bedrock":     {"hp": 9999,"rarity": 0,  "file": "bedrock",     "icon": "bedrock"},
-            "tnt_side":    {"hp": 0,   "rarity": 0,  "file": "tnt_side",    "icon": "tnt_side"}
-        }
+        # Held
+        try: 
+            h_img = pygame.transform.scale(pygame.image.load("assets/images/diamond_pickaxe.png").convert_alpha(), (BLOCK_SIZE, BLOCK_SIZE))
+        except: 
+            h_img = pygame.Surface((60, 60)); h_img.fill((0, 255, 255))
+        self.hero = HeroPickaxe(WIDTH//2, 200, h_img)
 
-        # Assets laden
-        self.assets = {}      
-        self.ui_assets = {}   
-        for key, data in self.block_types.items():
-            try:
-                img = pygame.image.load(f"assets/images/{data['file']}.png").convert_alpha()
-                self.assets[key] = pygame.transform.scale(img, (BLOCK_SIZE, BLOCK_SIZE))
-            except:
-                s = pygame.Surface((BLOCK_SIZE, BLOCK_SIZE)); s.fill((100, 100, 100))
-                self.assets[key] = s
-            try:
-                icon = pygame.image.load(f"assets/images/{data['icon']}.png").convert_alpha()
-                self.ui_assets[key] = pygame.transform.scale(icon, (25, 25))
-            except:
-                self.ui_assets[key] = pygame.transform.scale(self.assets[key], (25, 25))
+        # Assets Generator
+        self.assets = {}
+        self.ui_assets = {}
+        # Bedrock
+        try: self.assets['bedrock'] = pygame.transform.scale(pygame.image.load("assets/images/bedrock.png").convert_alpha(), (BLOCK_SIZE, BLOCK_SIZE))
+        except: self.assets['bedrock'] = pygame.Surface((BLOCK_SIZE, BLOCK_SIZE)); self.assets['bedrock'].fill((20,20,20))
+        # Themes Assets
+        for theme in THEMES:
+            for b_name in theme['blocks'].keys():
+                try: 
+                    img = pygame.image.load(f"assets/images/{b_name}.png").convert_alpha()
+                    self.assets[b_name] = pygame.transform.scale(img, (BLOCK_SIZE, BLOCK_SIZE))
+                    self.ui_assets[b_name] = pygame.transform.scale(img, (25, 25))
+                except:
+                    # Fallback Farben
+                    h = hash(b_name); col = ((h&0xFF0000)>>16, (h&0x00FF00)>>8, h&0x0000FF)
+                    s = pygame.Surface((BLOCK_SIZE, BLOCK_SIZE)); s.fill(col); pygame.draw.rect(s,(0,0,0),(0,0,BLOCK_SIZE,BLOCK_SIZE),2)
+                    self.assets[b_name] = s; self.ui_assets[b_name] = pygame.transform.scale(s, (25,25))
 
-        # Pickaxe
-        try:
-            p_img = pygame.image.load("assets/images/diamond_pickaxe.png").convert_alpha()
-            self.pickaxe_img = pygame.transform.scale(p_img, (int(BLOCK_SIZE*0.8), int(BLOCK_SIZE*0.8)))
-        except:
-            self.pickaxe_img = pygame.Surface((50, 50)); self.pickaxe_img.fill((0, 255, 255))
-        
-        self.crack_images = []
-        # Crack Images laden (optional)
-        
-        self.blocks = []
-        self.last_spawn_time = 0
-        self.inventory = {key: 0 for key in self.block_types if key not in ["bedrock", "tnt_side"]}
-        self.current_y_level = 64 
-        self.cols = COLS 
-        
-        for i in range(10): self.spawn_row(offset_y=i*BLOCK_SIZE + 200)
+        # Start Generierung
+        for i in range(12): self.spawn_row(i*BLOCK_SIZE + 400)
 
     def spawn_row(self, offset_y=None):
         if offset_y is None:
-            if self.blocks:
-                lowest = max(self.blocks, key=lambda b: b.rect.y)
-                offset_y = lowest.rect.y + BLOCK_SIZE
+            if self.blocks: offset_y = max(self.blocks, key=lambda b: b.rect.y).rect.y + BLOCK_SIZE
             else: offset_y = HEIGHT
-
-        grid_w = self.cols * BLOCK_SIZE
-        start_x = (WIDTH - grid_w) // 2
+            self.current_depth_blocks += 1
         
-        spawnable = [k for k, v in self.block_types.items() if v["rarity"] > 0]
-        weights = [self.block_types[k]["rarity"] for k in spawnable]
-
-        for c in range(self.cols):
+        # Thema wählen
+        t_idx = min(self.current_depth_blocks // THEME_CHANGE_INTERVAL, len(THEMES)-1)
+        theme = THEMES[t_idx]
+        opts = list(theme['blocks'].keys()); weights = list(theme['blocks'].values())
+        
+        start_x = (WIDTH - (COLS * BLOCK_SIZE)) // 2
+        for c in range(COLS):
             x = start_x + c * BLOCK_SIZE
-            if c == 0 or c == self.cols - 1:
-                b = Block(x, offset_y, "bedrock", self.assets["bedrock"], 9999, True)
+            if c == 0 or c == COLS - 1: b = Block(x, offset_y, "bedrock", self.assets['bedrock'], 99999, True)
             else:
-                typ = random.choices(spawnable, weights=weights, k=1)[0]
-                b = Block(x, offset_y, typ, self.assets[typ], self.block_types[typ]["hp"])
+                typ = random.choices(opts, weights=weights, k=1)[0]
+                b = Block(x, offset_y, typ, self.assets[typ], BLOCK_STATS.get(typ, 100))
             self.blocks.append(b)
-        
-        if offset_y is None or offset_y > HEIGHT: self.current_y_level -= 1
 
-    def update_leaderboard(self):
-        # Zeige den aktivsten Miner an
-        if self.user_stats:
-            top_user = max(self.user_stats, key=self.user_stats.get)
-            score = self.user_stats[top_user]
-            self.top_miner_text = f"MVP: {top_user} ({score})"
+    def draw_shadow(self, rect, scale=1.0):
+        w = int(rect.width * scale); h = int(rect.width * 0.3 * scale)
+        s = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (0,0,0,100), (0,0,w,h))
+        self.screen.blit(s, (rect.centerx - w//2, rect.bottom - h//2 + 5))
 
     def update(self):
-        # --- STATS TICKER ---
+        # 1. Systeme
+        self.streak_system.update()
         self.stats_timer += 1
-        if self.stats_timer > 120: # Alle 2 Sekunden
-            self.update_leaderboard()
+        if self.stats_timer > 120 and self.user_stats:
+            top = max(self.user_stats, key=self.user_stats.get)
+            self.mvp_text = f"MVP: {top} ({self.user_stats[top]})"
             self.stats_timer = 0
 
-        # --- BOSS UPDATE ---
-        if self.boss:
-            self.boss.update(self.blocks, self.assets)
+        # 2. Boss Logic
+        if len(self.bosses) > 0:
+            for b in self.bosses: 
+                if isinstance(b, EndermanBoss): b.update(self.blocks, self)
+                else: b.update(self.blocks, self)
             
-            # Anvils (nur wenn Boss da ist)
-            for anvil in self.anvils[:]:
-                res = anvil.update(self.boss)
-                if res == "HIT":
-                    killed = self.boss.take_damage()
-                    self.screen_shake = 20
-                    self.floating_texts.append(FloatingText(self.boss.rect.centerx, self.boss.rect.y, "CRITICAL HIT!", (255, 0, 0), 40))
-                    self.anvils.remove(anvil)
-                    
-                    if killed:
-                        self.boss = None
-                        self.boss_summon_progress = 0
-                        self.screen_shake = 100
-                        # Loot Regen
-                        for _ in range(30): self.floating_texts.append(FloatingText(WIDTH//2+random.randint(-100,100), 300, "+50 DIAMOND", (0,255,255)))
-                        self.inventory["diamond_ore"] += 50
-                elif not anvil.active:
-                    self.anvils.remove(anvil)
+            # Anvils
+            for a in self.anvils[:]:
+                hit = a.update(self.bosses)
+                if hit:
+                    self.screen_shake = 20; self.anvils.remove(a); self.sfx['hit'].play()
+                    if hit.take_damage(): self.kill_boss(hit)
+                elif not a.active: self.anvils.remove(a)
+            
+            # Potions
+            for p in self.potions[:]:
+                hit = p.update(self.bosses)
+                if hit:
+                    self.screen_shake = 20; self.potions.remove(p); self.sfx['hit'].play()
+                    if hit.take_damage(): self.kill_boss(hit)
+                elif not p.active: self.potions.remove(p)
         else:
-            # Normales Scrolling
-            move_speed = SCROLL_SPEED
-            if self.blocks and self.blocks[0].rect.y > 200: move_speed = 3.0
-            
-            for b in self.blocks: b.rect.y -= move_speed
-            
-            # Spawning
-            lowest_y = 0
-            if self.blocks: lowest_y = max(b.rect.y for b in self.blocks)
-            if lowest_y < HEIGHT: self.spawn_row()
-            
-            # Cleanup
-            self.blocks = [b for b in self.blocks if b.rect.y + BLOCK_SIZE > -50]
+            # Held Update (Nur wenn keine Bosse da sind, oder doch? Hero Mode sagt JA)
+            # Im Hero Mode kämpft die Spitzhacke immer weiter
+            pass
 
-        # --- ENTITY UPDATES ---
+        # 3. Held & Kamera
+        self.hero.update(self.blocks, self.particles, self.sfx['hit'], self.floating_texts, self.inventory, self.streak_system.multiplier)
         
-        # Blöcke Kaputt machen
+        # Kamera folgt Held
+        cam_target = HEIGHT * 0.4
+        if self.hero.rect.centery > cam_target:
+            diff = self.hero.rect.centery - cam_target
+            self.hero.rect.centery -= diff
+            for b in self.blocks: b.rect.y -= diff
+            for p in self.particles: p.rect.y -= diff
+            for ft in self.floating_texts: ft.y -= diff
+            for t in self.tnts: 
+                if hasattr(t, 'rect'): t.rect.y -= diff
+        
+        # Welt generieren
+        lowest = 0; 
+        if self.blocks: lowest = max(b.rect.y for b in self.blocks)
+        if lowest < HEIGHT + 100: self.spawn_row()
+        self.blocks = [b for b in self.blocks if b.rect.y > -200]
+
+        # 4. Cleanup & Mining
         for b in self.blocks:
-            if not b.active: continue
-            if b.hp <= 0 and not b.is_bedrock:
-                b.active = False
-                self.sfx['break'].play()
-                if b.type in self.inventory: self.inventory[b.type] += 1
+            if b.active and b.hp <= 0 and not b.is_bedrock:
+                b.active = False; self.sfx['break'].play()
+                self.inventory[b.type] = self.inventory.get(b.type, 0) + 1
                 self.floating_texts.append(FloatingText(b.rect.x, b.rect.y, "+1"))
-
-        # Hacken
-        for p in self.pickaxes[:]:
-            p.update(self.blocks, self.particles, self.sfx['hit'], self.floating_texts, self.user_stats)
-            if not p.active: self.pickaxes.remove(p)
-
-        # Bomben (X-Bomb / Nuke)
-        for bomb in self.tnts[:]:
-            bomb.update()
-            if bomb.explode:
-                self.screen_shake = 40
-                cx, cy = bomb.rect.centerx, bomb.rect.centery
+        
+        # Bomben Update
+        for t in self.tnts[:]:
+            if isinstance(t, LightningEntity): t.update()
+            else: t.update()
+            
+            if hasattr(t, 'explode') and t.explode:
+                self.screen_shake = 40; self.sfx['explode'].play()
+                cx = t.x if isinstance(t, LightningEntity) else t.rect.centerx
+                cy = 0 if isinstance(t, LightningEntity) else t.rect.centery
                 
-                # Nuke Logic
-                if bomb.type == "nuke":
-                    self.background.fill((255, 255, 255)) # Weißer Blitz
+                if isinstance(t, LightningEntity): # Blitz
+                    for b in self.blocks: 
+                        if b.active and not b.is_bedrock and b.rect.colliderect(t.rect): b.hp = 0
+                elif t.type == "nuke": # Nuke
                     for b in self.blocks: 
                         if not b.is_bedrock: b.hp = 0
-                
-                # X-Bomb Logic
-                elif bomb.type == "x":
+                elif t.type == "x": # X-Bomb
                     for b in self.blocks:
-                        if not b.is_bedrock:
-                            dx = abs(b.rect.centerx - cx)
-                            dy = abs(b.rect.centery - cy)
-                            # Toleranz für Diagonale
-                            if abs(dx - dy) < 40: b.hp = 0
+                        if not b.is_bedrock and abs(abs(b.rect.centerx - cx) - abs(b.rect.centery - cy)) < 40: b.hp = 0
+                
+                self.tnts.remove(t)
 
-                self.tnts.remove(bomb)
-
-        # Partikel & Text - SAUBERE SCHLEIFENSTRUKTUR
+        # HIER WAREN DIE KAPUTTEN LOOPS - JETZT REPARIERT:
+        
+        # Partikel
         for p in self.particles[:]:
             p.update()
             if p.life <= 0:
                 self.particles.remove(p)
-            
+        
+        # Floating Texts
         for ft in self.floating_texts[:]:
             ft.update()
             if ft.life <= 0:
                 self.floating_texts.remove(ft)
-
+        
         if self.screen_shake > 0: self.screen_shake -= 1
 
+    def kill_boss(self, boss):
+        self.bosses.remove(boss); self.screen_shake = 60
+        self.inventory["emerald_ore"] = self.inventory.get("emerald_ore", 0) + 20
+        if not self.bosses: self.boss_summon_progress = 0
+
     def draw(self):
-        sx = random.randint(-5, 5) if self.screen_shake > 0 else 0
-        sy = random.randint(-5, 5) if self.screen_shake > 0 else 0
+        # Background Theme
+        t_idx = min(self.current_depth_blocks // THEME_CHANGE_INTERVAL, len(THEMES)-1)
+        self.screen.fill(THEMES[t_idx]['bg'])
         
-        # Blitz Effekt (Nuke)
-        if self.screen_shake > 30 and random.random() < 0.2:
-            self.screen.fill((255, 255, 255))
-        else:
-            self.screen.blit(self.background, (sx, sy))
+        # Shake
+        sx = random.randint(-5,5) if self.screen_shake > 0 else 0
+        sy = random.randint(-5,5) if self.screen_shake > 0 else 0
+        surf = self.screen.copy()
         
-        # Bedrock Rand füllen
-        if self.background.get_width() < WIDTH:
-            # Falls Hintergrund schmaler als Screen ist (Passiert bei breitem Layout)
-            pass 
-
-        # Blöcke
-        for b in self.blocks:
-            if b.active:
-                r = b.rect.move(sx, sy)
-                self.screen.blit(b.image, r)
-
-        # Entities
-        for t in self.tnts: t.draw(self.screen)
-        for p in self.pickaxes: p.draw(self.screen)
-        for a in self.anvils: a.draw(self.screen)
-        for p in self.particles: 
-            p.rect.x+=sx; p.draw(self.screen); p.rect.x-=sx
+        # Zeichnen
+        for b in self.blocks: 
+            if b.active: surf.blit(b.image, b.rect)
         
-        if self.boss: self.boss.draw(self.screen)
-        for ft in self.floating_texts: ft.draw(self.screen)
-
-        self.draw_ui()
+        self.draw_shadow(self.hero.rect, 0.6); self.hero.draw(surf)
+        
+        for t in self.tnts: 
+            if isinstance(t, LightningEntity): t.draw(surf)
+            else: self.draw_shadow(t.rect); t.draw(surf)
+        for a in self.anvils: self.draw_shadow(a.rect); a.draw(surf)
+        for po in self.potions: po.draw(surf)
+        for b in self.bosses: self.draw_shadow(b.rect, 1.2); b.draw(surf)
+        for p in self.particles: surf.blit(pygame.Surface((6,6), pygame.SRCALPHA), p.rect); p.draw(surf) # Hack fix
+        for ft in self.floating_texts: ft.draw(surf)
+        
+        # Atmosphere Overlay
+        self.atmosphere.draw_foreground(surf)
+        
+        # Final Blit mit Shake
+        self.screen.blit(surf, (sx, sy))
+        
+        # UI
+        self.draw_ui(t_idx)
         pygame.display.flip()
 
-    def draw_ui(self):
-        # Y-Level
-        pygame.draw.rect(self.screen, UI_BG, (WIDTH - 120, HEIGHT - 60, 100, 40))
-        txt = self.big_font.render(f"Y: {self.current_y_level}", True, (50, 255, 50))
-        self.screen.blit(txt, (WIDTH - 110, HEIGHT - 55))
+    def draw_ui(self, t_idx):
+        # Tiefe & Biom
+        pygame.draw.rect(self.screen, UI_BG, (WIDTH-220, HEIGHT-70, 200, 60))
+        t1 = self.font.render(f"Depth: {self.current_depth_blocks}", True, (200,200,200))
+        t2 = self.big_font.render(THEMES[t_idx]['name'], True, (50, 255, 50))
+        self.screen.blit(t1, (WIDTH-210, HEIGHT-65)); self.screen.blit(t2, (WIDTH-210, HEIGHT-45))
         
-        # MVP Anzeige (Oben Rechts)
-        if self.top_miner_text:
-            surf = self.font.render(self.top_miner_text, True, (255, 215, 0))
-            pygame.draw.rect(self.screen, UI_BG, (WIDTH - surf.get_width()-20, 10, surf.get_width()+10, 30))
-            self.screen.blit(surf, (WIDTH - surf.get_width()-15, 15))
+        # MVP
+        if self.mvp_text:
+            s = self.font.render(self.mvp_text, True, (255, 215, 0))
+            pygame.draw.rect(self.screen, UI_BG, (WIDTH - s.get_width()-20, 10, s.get_width()+10, 30))
+            self.screen.blit(s, (WIDTH - s.get_width()-15, 15))
 
-        # BOSS COMMANDS (Nur wenn Boss da ist)
-        if self.boss:
-            cmds = ["!LEFT", "!MID", "!RIGHT"]
-            for i, cmd in enumerate(cmds):
-                c_surf = self.mega_font.render(cmd, True, (255, 0, 0))
-                # Blinken
-                if time.time() % 0.5 > 0.25:
-                    self.screen.blit(c_surf, (WIDTH//2 - 100 + i*100, 400))
+        # Boss / Summon UI
+        if self.bosses:
+            has_ender = any(isinstance(b, EndermanBoss) for b in self.bosses)
+            has_hero = any(isinstance(b, HerobrineBoss) for b in self.bosses)
+            yp = 400
+            if has_ender:
+                for i, c in enumerate(["!LEFT", "!MID", "!RIGHT"]):
+                    s = self.mega_font.render(c, True, ENDER_PURPLE)
+                    if time.time()%0.5>0.25: self.screen.blit(s, (WIDTH//2 - 100 + i*100, yp))
+                yp += 50
+            if has_hero:
+                s = self.mega_font.render("!SPLASH", True, (255, 255, 0))
+                if time.time()%0.5>0.25: self.screen.blit(s, (WIDTH//2 - 50, yp))
         else:
-            # Boss Summon Bar
-            bar_w = 300
-            bx = (WIDTH - bar_w) // 2
-            pygame.draw.rect(self.screen, UI_BG, (bx, 10, bar_w, 30))
+            w = 300; x = (WIDTH-w)//2
+            pygame.draw.rect(self.screen, UI_BG, (x, 10, w, 30))
             pct = min(1.0, self.boss_summon_progress / BOSS_SUMMON_REQ)
-            pygame.draw.rect(self.screen, ENDER_PURPLE, (bx+5, 15, (bar_w-10)*pct, 20))
-            txt = self.font.render("BOSS SUMMON", True, (255, 255, 255))
-            self.screen.blit(txt, (bx+90, 15))
+            pygame.draw.rect(self.screen, ENDER_PURPLE, (x+5, 15, (w-10)*pct, 20))
+            txt = self.font.render("BOSS SUMMON", True, TEXT_COLOR)
+            self.screen.blit(txt, (x+90, 15))
 
-        # Inventar (Links)
-        y_off = 20
-        for name, count in self.inventory.items():
-            if name == "bedrock" or name == "tnt_side": continue
-            pygame.draw.rect(self.screen, UI_BG, (10, y_off-5, 100, 35))
-            if name in self.ui_assets: self.screen.blit(self.ui_assets[name], (15, y_off))
-            txt = self.font.render(f"{count}", True, TEXT_COLOR)
-            self.screen.blit(txt, (50, y_off+2))
-            y_off += 40
+        # Inventar (Top 5)
+        y = 20
+        top_inv = sorted(self.inventory.items(), key=lambda x:x[1], reverse=True)[:5]
+        for k, v in top_inv:
+            pygame.draw.rect(self.screen, UI_BG, (10, y, 180, 35))
+            if k in self.ui_assets: self.screen.blit(self.ui_assets[k], (15, y+5))
+            t = self.font.render(f"{k.replace('_',' ').title()}: {v}", True, TEXT_COLOR)
+            self.screen.blit(t, (45, y+8))
+            y += 40
+            
+        # Streak System
+        self.streak_system.draw(self.screen)
 
     def handle_input(self, data):
-        # data ist jetzt ein Tuple: (command, username)
         cmd, user = data
-        now = pygame.time.get_ticks()
+        
+        # Like System
+        if cmd == "!like": self.streak_system.add_like(); return
 
-        # BOSS SPAWNN
-        if cmd == "!boss" and not self.boss:
+        # Boss Spawn
+        if (cmd == "!boss" or cmd == "!hero") and len(self.bosses) < MAX_ACTIVE_BOSSES:
             self.boss_summon_progress += 1
             if self.boss_summon_progress >= BOSS_SUMMON_REQ:
-                self.boss = EndermanBoss()
-                self.screen_shake = 50
-                self.floating_texts.append(FloatingText(WIDTH//2, 200, "ENDERMAN APPEARED!", ENDER_PURPLE, 40))
+                self.boss_summon_progress = 0; self.screen_shake = 50
+                if cmd == "!hero" or (cmd=="!boss" and random.random()<0.3):
+                    self.bosses.append(HerobrineBoss()); self.floating_texts.append(FloatingText(WIDTH//2, 200, "HEROBRINE!", (255,0,0), 50))
+                else:
+                    self.bosses.append(EndermanBoss()); self.floating_texts.append(FloatingText(WIDTH//2, 200, "ENDERMAN!", ENDER_PURPLE, 50))
             return
 
-        # BOSS KAMPF (Ambosse)
-        if self.boss:
-            drop_x = None
-            if cmd == "!left": drop_x = WIDTH // 4
-            elif cmd == "!mid": drop_x = WIDTH // 2
-            elif cmd == "!right": drop_x = WIDTH * 3 // 4
-            
-            if drop_x:
-                self.anvils.append(PhysicsAnvil(drop_x, -100))
-            return # Keine normalen Hacken wenn Boss da ist
+        # Boss Kampf
+        if self.bosses:
+            if cmd in ["!left", "!mid", "!right"]:
+                x = WIDTH//4 if cmd=="!left" else (WIDTH//2 if cmd=="!mid" else WIDTH*3//4)
+                self.anvils.append(PhysicsAnvil(x))
+            elif cmd == "!splash":
+                self.potions.append(PhysicsPotion(random.randint(50, WIDTH-50)))
+            return
 
-        # NORMALE EVENTS
-        if cmd == "HIT_BLOCK":
-            if len(self.pickaxes) < MAX_PICKAXES and (now - self.last_spawn_time > SPAWN_COOLDOWN):
-                grid_w = self.cols * BLOCK_SIZE
-                sx = (WIDTH - grid_w) // 2
-                rx = random.randint(sx+20, sx+grid_w-20)
-                self.pickaxes.append(PhysicsPickaxe(rx, -50, self.pickaxe_img, user))
-                self.last_spawn_time = now
+        # Hero Control
+        if cmd == "!left": self.hero.apply_force(-MOVE_FORCE, -2)
+        elif cmd == "!right": self.hero.apply_force(MOVE_FORCE, -2)
+        #elif cmd == "!jump": self.hero.apply_force(0, JUMP_FORCE)
+        elif cmd == "!dig": self.hero.apply_force(0, 12)
         
-        elif cmd == "XBOMB":
-             self.tnts.append(BombEntity(WIDTH//2, -50, "x"))
+        # Bomben
+        elif cmd == "XBOMB": self.tnts.append(BombEntity(WIDTH//2, "x"))
+        elif cmd == "NUKE": self.tnts.append(BombEntity(WIDTH//2, "nuke"))
         
-        elif cmd == "NUKE":
-             # Nur bei genug Likes/Charge
-             self.tnts.append(BombEntity(WIDTH//2, -50, "nuke"))
+        # Stats
+        if user != "Admin": self.user_stats[user] = self.user_stats.get(user, 0) + 1
 
-    def run(self, event_queue):
-        running = True
-        while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT: running = False
-            
-            while not event_queue.empty():
-                self.handle_input(event_queue.get())
-                
-            self.update()
-            self.draw()
-            self.clock.tick(FPS)
-        pygame.quit()
+    def run(self, q):
+        while True:
+            for e in pygame.event.get(): 
+                if e.type==pygame.QUIT: pygame.quit(); sys.exit()
+            while not q.empty(): self.handle_input(q.get())
+            self.update(); self.draw(); self.clock.tick(FPS)
 
 if __name__ == "__main__":
     q = queue.Queue()
-    
     def fake_spammer():
-        usernames = ["MinerSteve", "CraftGirl", "TNT_Lover", "NoobMaster69", "ProGamer"]
+        usrs = ["Steve", "Alex", "Pro", "Noob"]
         while True:
-            time.sleep(0.05)
-            user = random.choice(usernames)
-            rnd = random.random()
-            
-            # Simulator Logik
-            if rnd < 0.7: q.put(("HIT_BLOCK", user))
-            elif rnd < 0.8: q.put(("!boss", user))
-            elif rnd < 0.9: 
-                # Zufällige Amboss Position simulieren
-                cmd = random.choice(["!left", "!mid", "!right"])
-                q.put((cmd, user))
-            elif rnd < 0.95: q.put(("XBOMB", "Admin"))
-            elif rnd > 0.99: q.put(("NUKE", "Admin"))
-
+            time.sleep(0.1); u = random.choice(usrs); r = random.random()
+            #if r<0.1: q.put(("!like", u))
+            #elif r<0.7: q.put((random.choice(["!left","!right","!dig"]), u))
+            ##elif r<0.8: q.put(("!boss", u))
+            #elif r<0.85: q.put((random.choice(["!left","!mid","!right","!splash"]), u))
+            #elif r>0.99: q.put(("XBOMB", "Admin"))
     threading.Thread(target=fake_spammer, daemon=True).start()
-    
-    game = Game()
-    game.run(q)
+    Game().run(q)
