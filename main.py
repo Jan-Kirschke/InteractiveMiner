@@ -17,9 +17,9 @@ FPS = 60
 
 # Balance
 SCROLL_SPEED = 1.0 
-GRAVITY = 0.4
+GRAVITY = 0.5
 MOVE_FORCE = 4
-JUMP_FORCE = -11
+JUMP_FORCE = -9
 BOSS_SUMMON_REQ = 20
 MAX_ACTIVE_BOSSES = 3
 BOSS_REPAIR_SPEED = 60
@@ -29,55 +29,144 @@ UI_BG = (0, 0, 0, 180)
 TEXT_COLOR = (255, 255, 255)
 ENDER_PURPLE = (200, 0, 255)
 
+
 # --- THEMEN (BIOME) ---
 THEME_CHANGE_INTERVAL = 200 
 THEMES = [
-    {"name": "Surface", "bg": (100, 149, 237), "blocks": {"dirt": 50, "stone": 40, "coal_ore": 10}},
-    {"name": "Limestone Cave", "bg": (180, 170, 140), "blocks": {"sandstone": 50, "limestone": 40, "iron_ore": 10}},
-    {"name": "Lush Jungle", "bg": (20, 50, 20), "blocks": {"moss_block": 60, "clay": 30, "emerald_ore": 10}},
-    {"name": "Ice Caverns", "bg": (200, 240, 255), "blocks": {"ice": 50, "packed_ice": 40, "sapphire_ore": 10}},
-    {"name": "Magma Depths", "bg": (50, 0, 0), "blocks": {"netherrack": 60, "magma_block": 30, "gold_ore": 10}},
-    {"name": "Amethyst Geode", "bg": (40, 0, 60), "blocks": {"calcite": 40, "amethyst_block": 50, "crystal_ore": 10}},
-    {"name": "Deep Dark", "bg": (5, 10, 15), "blocks": {"deepslate": 60, "sculk": 30, "echo_shard": 10}},
-    {"name": "Cyber Core", "bg": (0, 20, 0), "blocks": {"matrix_block": 50, "circuit_block": 40, "quantum_ore": 10}}
+    # 1. SURFACE (Kupfer & Kohle dazu)
+    {"name": "Surface", "bg": (100, 149, 237), "blocks": {
+        "dirt": 40, "stone": 40, "coal_ore": 10, "copper_ore": 10
+    }},
+    
+    # 2. LIMESTONE (Eisen & Lapis dazu)
+    {"name": "Limestone Cave", "bg": (180, 170, 140), "blocks": {
+        "sandstone": 40, "limestone": 40, "iron_ore": 15, "lapis_ore": 5
+    }},
+    
+    # 3. LUSH JUNGLE (Smaragde & Moos)
+    {"name": "Lush Jungle", "bg": (20, 50, 20), "blocks": {
+        "moss_block": 50, "clay": 30, "emerald_ore": 10, "gold_ore": 10
+    }},
+    
+    # 4. REDSTONE MINES (Statt Ice Caverns, da du viel Redstone hast)
+    {"name": "Redstone Mines", "bg": (100, 20, 20), "blocks": {
+        "stone": 40, "redstone_ore": 20, "iron_ore": 20, "diamond_ore": 5
+    }},
+    
+    # 5. NETHER (Nether Gold & Quarz dazu)
+    {"name": "Magma Depths", "bg": (50, 0, 0), "blocks": {
+        "netherrack": 50, "magma": 30, "nether_gold_ore": 10, "nether_quartz_ore": 10
+    }},
+    
+    # 6. AMETHYST (Bleibt ähnlich)
+    {"name": "Amethyst Geode", "bg": (40, 0, 60), "blocks": {
+        "calcite": 40, "amethyst_block": 50, "diamond_ore": 10
+    }},
+    
+    # 7. DEEP DARK (Deepslate Varianten nutzen!)
+    {"name": "Deep Dark", "bg": (5, 10, 15), "blocks": {
+        "deepslate": 50, "sculk": 10, 
+        "deepslate_diamond_ore": 5, "deepslate_redstone_ore": 10,
+        "deepslate_iron_ore": 15, "deepslate_gold_ore": 10
+    }},
+    
+    # 8. CORE (Alles extrem harte)
+    {"name": "The Core", "bg": (0, 0, 0), "blocks": {
+        "deepslate": 30, "bedrock": 10, # Achtung: Bedrock hier nur als schwerer Block, nicht unzerstörbar (außer Rand)
+        "deepslate_emerald_ore": 20, "deepslate_diamond_ore": 20
+    }}
 ]
 
-# Block HP Definitionen (Global)
+
+# Block HP Definitionen (Global) 
 BLOCK_STATS = {
-    "dirt": 50, "stone": 100, "coal_ore": 150, "sandstone": 80, "limestone": 120, "iron_ore": 250,
-    "moss_block": 60, "clay": 90, "emerald_ore": 300, "ice": 40, "packed_ice": 150, "sapphire_ore": 400,
-    "netherrack": 80, "magma_block": 200, "gold_ore": 350, "calcite": 200, "amethyst_block": 150, "crystal_ore": 500,
-    "deepslate": 300, "sculk": 100, "echo_shard": 800, "matrix_block": 500, "circuit_block": 600, "quantum_ore": 1000,
-    "bedrock": 999999
+    # --- BASIS BLÖCKE ---
+    "dirt": 50,
+    "stone": 100,
+    "sandstone": 80,
+    "limestone": 120,
+    "moss_block": 60,
+    "clay": 90,
+    "ice": 40,
+    "packed_ice": 150,
+    "netherrack": 80,
+    "magma_block": 200, # Heißt bei dir magma.png? Im Code muss es zum Dateinamen passen!
+    "calcite": 200,
+    "amethyst_block": 150,
+    "deepslate": 300,
+    "sculk": 100,
+    "bedrock": 999999,
+
+    # --- ERZE (STANDARD) ---
+    "coal_ore": 150,
+    "copper_ore": 180,       # NEU
+    "iron_ore": 250,
+    "gold_ore": 350,
+    "redstone_ore": 300,     # NEU
+    "lapis_ore": 300,        # NEU
+    "diamond_ore": 800,      # NEU (War im Code, aber selten)
+    "emerald_ore": 600,
+    "sapphire_ore": 400,     # Hast du sapphire_ore.png? Falls nicht, rausnehmen!
+    "crystal_ore": 500,      # Hast du crystal_ore.png?
+    "nether_gold_ore": 350,  # NEU
+    "nether_quartz_ore": 250,# NEU
+    
+    # --- ERZE (DEEPSLATE VARIANTEN - NEU!) ---
+    "deepslate_coal_ore": 300,
+    "deepslate_copper_ore": 350,
+    "deepslate_iron_ore": 500,
+    "deepslate_gold_ore": 700,
+    "deepslate_redstone_ore": 600,
+    "deepslate_lapis_ore": 600,
+    "deepslate_diamond_ore": 1600,
+    "deepslate_emerald_ore": 1200,
+
+    # --- TECHNIK / ANDERES ---
+    "matrix_block": 500,
+    "circuit_block": 600,
+    "quantum_ore": 1000
 }
 
 # --- HELPER KLASSEN ---
-
 class Atmosphere:
     def __init__(self, width, height):
-        self.width = width; self.height = height
-        # 1. Fels-Rahmen (Overlay)
-        self.frame_surf = pygame.Surface((width, height), pygame.SRCALPHA)
-        self.frame_surf.fill((15, 15, 20, 255)) 
-        rect_hole = pygame.Rect(40, 60, width-80, height-120)
-        pygame.draw.rect(self.frame_surf, (0,0,0,0), rect_hole)
-        # Ausfransen
-        for _ in range(250):
-            pos = (random.randint(0, width), random.randint(0, height))
-            # Nur Ränder bearbeiten
-            if pos[0] < 60 or pos[0] > width-60 or pos[1] < 80 or pos[1] > height-80:
-                pygame.draw.circle(self.frame_surf, (0,0,0,0), pos, random.randint(10, 30))
+        self.width = width
+        self.height = height
         
-        # 2. Abyss Fog (Unten)
+        # Versuche das Overlay-Bild zu laden
+        try:
+            # Lade 'overlay.png'. WICHTIG: Die Mitte muss transparent sein!
+            img = pygame.image.load("assets/images/overlay.png").convert_alpha()
+            # Wir ziehen das Bild auf die komplette Fenstergröße
+            self.frame_surf = pygame.transform.scale(img, (width, height))
+            self.has_image = True
+        except FileNotFoundError:
+            # FALLBACK: Falls das Bild fehlt, malen wir den alten schwarzen Rand
+            print("Warnung: 'overlay.png' nicht gefunden. Nutze Standard-Rahmen.")
+            self.frame_surf = pygame.Surface((width, height), pygame.SRCALPHA)
+            self.frame_surf.fill((15, 15, 20, 255)) 
+            # Loch in die Mitte schneiden
+            rect_hole = pygame.Rect(40, 60, width-80, height-120)
+            pygame.draw.rect(self.frame_surf, (0,0,0,0), rect_hole)
+            
+            # Ausfransen (nur beim Fallback nötig)
+            for _ in range(250):
+                pos = (random.randint(0, width), random.randint(0, height))
+                if pos[0] < 60 or pos[0] > width-60 or pos[1] < 80 or pos[1] > height-80:
+                    pygame.draw.circle(self.frame_surf, (0,0,0,0), pos, random.randint(10, 30))
+            self.has_image = False
+
+        # 2. Abyss Fog (Nebel unten) - Behalten wir, sieht gut aus!
         self.fog_surf = pygame.Surface((width, 200), pygame.SRCALPHA)
         for y in range(200):
             alpha = int((y / 200) * 255)
             pygame.draw.line(self.fog_surf, (0, 0, 0, alpha), (0, y), (width, y))
 
     def draw_foreground(self, screen):
+        # Erst den Nebel unten
         screen.blit(self.fog_surf, (0, self.height - 200))
+        # Dann den Rahmen (dein Bild) oben drauf
         screen.blit(self.frame_surf, (0, 0))
-
 class LikeStreakSystem:
     def __init__(self):
         self.streak = 0; self.max_time = 180; self.current_time = 0
@@ -379,26 +468,68 @@ class Game:
                 img = pygame.image.load(f"assets/images/destroy_stage_{i}.png").convert_alpha()
                 self.crack_images.append(pygame.transform.scale(img, (BLOCK_SIZE, BLOCK_SIZE)))
             except:
-                pass # Wenn Bilder fehlen, einfach keine Risse anzeigen
+                pass # Wenn Bilder fehlen, einfach keine Risse anzeigen#
 
-        # Sounds laden
+    def play_sound(self, category):
+        """Spielt einen zufälligen Sound aus einer Kategorie ab"""
+        if category in self.sfx:
+            sound_obj = self.sfx[category]
+            
+            # Fall A: Es ist eine Liste (z.B. Stone, Explode) -> Zufall
+            if isinstance(sound_obj, list) and len(sound_obj) > 0:
+                random.choice(sound_obj).play()
+            
+            # Fall B: Es ist ein einzelner Sound (z.B. Hit, Wood)
+            elif hasattr(sound_obj, 'play'):
+                sound_obj.play()    
+
+# --- SOUNDS LADEN ---
         pygame.mixer.init()
-        class Dummy: 
-            def play(self): pass
-        self.sfx = {k: Dummy() for k in ['hit', 'break', 'explode', 'teleport', 'anvil']}
-        try:
-            self.sfx['hit'] = pygame.mixer.Sound("assets/sounds/hit.wav"); self.sfx['hit'].set_volume(0.2)
-            self.sfx['break'] = pygame.mixer.Sound("assets/sounds/break.wav"); self.sfx['break'].set_volume(0.3)
-            self.sfx['explode'] = pygame.mixer.Sound("assets/sounds/explode.wav"); self.sfx['explode'].set_volume(0.4)
-            self.sfx['teleport'] = pygame.mixer.Sound("assets/sounds/teleport.wav"); self.sfx['teleport'].set_volume(0.5)
-        except: pass
+        
+        # Hilfsfunktion zum sicheren Laden
+        def load_snd(name, volume=0.3):
+            try:
+                s = pygame.mixer.Sound(f"assets/sounds/{name}")
+                s.set_volume(volume)
+                return s
+            except:
+                print(f"Warnung: Sound {name} fehlt.")
+                return None
+
+        self.sfx = {}
+        
+        # 1. Gruppen-Sounds (Listen für Zufallswiedergabe)
+        # Lädt stone1.wav bis stone4.wav
+        self.sfx['stone'] = [load_snd(f"stone{i}.wav", 0.25) for i in range(1, 5)]
+        self.sfx['stone'] = [s for s in self.sfx['stone'] if s] # Leere entfernen
+
+        # Lädt explode1.wav bis explode4.wav
+        self.sfx['explode'] = [load_snd(f"explode{i}.wav", 0.5) for i in range(1, 5)]
+        self.sfx['explode'] = [s for s in self.sfx['explode'] if s]
+
+        # 2. Einzel-Sounds
+        self.sfx['grass'] = load_snd("grass1.wav", 0.25)
+        self.sfx['gravel'] = load_snd("gravel1.wav", 0.25)
+        self.sfx['wood'] = load_snd("wood1.wav", 0.4)
+        self.sfx['hit'] = load_snd("hit1.wav", 0.4)
+        self.sfx['break'] = load_snd("gravel1.wav", 0.2) # Fallback
+        
+        # Boss Sounds
+        self.sfx['scream'] = load_snd("scream1.wav", 0.6)
+        self.sfx['stare'] = load_snd("stare.wav", 0.7)
 
         # Held
         try: 
+            # Versuche das Bild zu laden
             h_img = pygame.transform.scale(pygame.image.load("assets/images/diamond_pickaxe.png").convert_alpha(), (BLOCK_SIZE, BLOCK_SIZE))
         except: 
-            h_img = pygame.Surface((60, 60)); h_img.fill((0, 255, 255))
+            # Fallback: Blauer Kasten, falls Bild fehlt
+            h_img = pygame.Surface((60, 60))
+            h_img.fill((0, 255, 255))
+            
+        # Den Helden erstellen
         self.hero = HeroPickaxe(WIDTH//2, 200, h_img)
+        # ---------------------------------------------------
 
         # Assets Generator
         self.assets = {}
@@ -503,10 +634,25 @@ class Game:
         if lowest < HEIGHT + 100: self.spawn_row()
         self.blocks = [b for b in self.blocks if b.rect.y > -200]
 
-        # 4. Cleanup & Mining
+# 4. Cleanup & Mining
         for b in self.blocks:
             if b.active and b.hp <= 0 and not b.is_bedrock:
-                b.active = False; self.sfx['break'].play()
+                b.active = False
+                
+                # --- SOUND WAHL ---
+                snd = 'stone' # Standard
+                
+                # Prüfen was es ist
+                if any(x in b.type for x in ['dirt', 'clay', 'sand']):
+                    snd = 'gravel' 
+                elif any(x in b.type for x in ['moss', 'sculk', 'leaves']):
+                    snd = 'grass'
+                elif any(x in b.type for x in ['wood', 'chest', 'plank']):
+                    snd = 'wood'
+                
+                self.play_sound(snd)
+                # ------------------
+
                 self.inventory[b.type] = self.inventory.get(b.type, 0) + 1
                 self.floating_texts.append(FloatingText(b.rect.x, b.rect.y, "+1"))
         
@@ -516,8 +662,8 @@ class Game:
             else: t.update()
             
             if hasattr(t, 'explode') and t.explode:
-                self.screen_shake = 40; self.sfx['explode'].play()
-                cx = t.x if isinstance(t, LightningEntity) else t.rect.centerx
+                self.screen_shake = 40
+                self.play_sound('explode') # Nutzt jetzt explode1-4 zufällig
                 cy = 0 if isinstance(t, LightningEntity) else t.rect.centery
                 
                 if isinstance(t, LightningEntity): # Blitz
@@ -706,7 +852,7 @@ if __name__ == "__main__":
             time.sleep(0.1); u = random.choice(usrs); r = random.random()
             if r<0.1: q.put(("!like", u))
             #elif r<0.7: q.put((random.choice(["!left","!right","!dig"]), u))
-            elif r<0.8: q.put(("!boss", u))
+            #elif r<0.8: q.put(("!boss", u))
             elif r<0.85: q.put((random.choice(["!left","!mid","!right","!splash"]), u))
             #elif r>0.99: q.put(("XBOMB", "Admin"))
     threading.Thread(target=fake_spammer, daemon=True).start()
