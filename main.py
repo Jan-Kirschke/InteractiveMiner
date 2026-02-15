@@ -129,7 +129,11 @@ class Particle:
 class FloatingText:
     def __init__(self, x, y, text, color=(255, 255, 255), size=24):
         self.x = x; self.y = y; self.text = text; self.color = color
-        self.font = pygame.font.SysFont("Arial", size, bold=True)
+        try:
+            # Wir nutzen die übergebene Größe (size)
+            self.font = pygame.font.Font("assets/fonts/minecraft.ttf", size)
+        except:
+            self.font = pygame.font.SysFont("Arial", size, bold=True)
         self.life = 60; self.vel_y = -2.0
     def update(self): self.y += self.vel_y; self.life -= 1
     def draw(self, screen):
@@ -338,9 +342,21 @@ class Game:
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption("Infinite Miner Ultimate")
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont("Arial", 16, bold=True)
-        self.big_font = pygame.font.SysFont("Arial", 24, bold=True)
-        self.mega_font = pygame.font.SysFont("Arial", 40, bold=True)
+        font_path = "assets/fonts/minecraft.ttf"
+        # --- SCHRIFTARTEN ---
+        # Wir versuchen die Minecraft-Schrift zu laden. Falls sie fehlt, nehmen wir Arial.
+        font_path = "assets/fonts/minecraft.ttf"
+        
+        try:
+            # Größe anpassen (Minecraft Fonts sind oft kleiner, evtl. etwas größer stellen)
+            self.font = pygame.font.Font(font_path, 18)      # Normal
+            self.big_font = pygame.font.Font(font_path, 30)  # Groß
+            self.mega_font = pygame.font.Font(font_path, 50) # Riesig
+        except OSError:
+            print("Warnung: minecraft.ttf nicht gefunden! Nutze Fallback.")
+            self.font = pygame.font.SysFont("Arial", 16, bold=True)
+            self.big_font = pygame.font.SysFont("Arial", 24, bold=True)
+            self.mega_font = pygame.font.SysFont("Arial", 40, bold=True)
         
         # Systeme
         self.atmosphere = Atmosphere(WIDTH, HEIGHT)
@@ -355,6 +371,15 @@ class Game:
         self.inventory = {}
         self.user_stats = {}; self.mvp_text = "MVP: -"
         self.stats_timer = 0
+        # Risse laden (0 bis 9)
+        self.crack_images = []
+        for i in range(10):
+            try:
+                # Versuche destroy_stage_0.png bis _9.png zu laden
+                img = pygame.image.load(f"assets/images/destroy_stage_{i}.png").convert_alpha()
+                self.crack_images.append(pygame.transform.scale(img, (BLOCK_SIZE, BLOCK_SIZE)))
+            except:
+                pass # Wenn Bilder fehlen, einfach keine Risse anzeigen
 
         # Sounds laden
         pygame.mixer.init()
@@ -540,7 +565,24 @@ class Game:
         
         # Zeichnen
         for b in self.blocks: 
-            if b.active: surf.blit(b.image, b.rect)
+            if b.active: 
+                # 1. Block zeichnen
+                surf.blit(b.image, b.rect)
+                
+                # 2. Risse zeichnen (NEU!)
+                if b.hp < b.max_hp and not b.is_bedrock and self.crack_images:
+                    # Berechne welcher Riss-Status (0-9)
+                    # 100% HP -> Index 0 (oder gar kein Riss)
+                    # 1% HP -> Index 9
+                    damage_pct = 1.0 - (b.hp / b.max_hp)
+                    crack_idx = int(damage_pct * 10) 
+                    
+                    if 0 <= crack_idx < len(self.crack_images):
+                        # Position anpassen wegen Shake
+                        crack_rect = b.rect.move(sx, sy) # Wichtig: Shake beachten wenn wir direkt auf 'screen' zeichnen würden
+                        # Aber hier zeichnen wir auf 'surf', das später geshaked wird.
+                        # Also einfach b.rect nehmen:
+                        surf.blit(self.crack_images[crack_idx], b.rect)
         
         self.draw_shadow(self.hero.rect, 0.6); self.hero.draw(surf)
         
@@ -662,10 +704,10 @@ if __name__ == "__main__":
         usrs = ["Steve", "Alex", "Pro", "Noob"]
         while True:
             time.sleep(0.1); u = random.choice(usrs); r = random.random()
-            #if r<0.1: q.put(("!like", u))
+            if r<0.1: q.put(("!like", u))
             #elif r<0.7: q.put((random.choice(["!left","!right","!dig"]), u))
-            ##elif r<0.8: q.put(("!boss", u))
-            #elif r<0.85: q.put((random.choice(["!left","!mid","!right","!splash"]), u))
+            elif r<0.8: q.put(("!boss", u))
+            elif r<0.85: q.put((random.choice(["!left","!mid","!right","!splash"]), u))
             #elif r>0.99: q.put(("XBOMB", "Admin"))
     threading.Thread(target=fake_spammer, daemon=True).start()
     Game().run(q)
