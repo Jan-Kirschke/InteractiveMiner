@@ -84,7 +84,7 @@ class LikeStreakSystem:
     def draw(self, screen):
         if not self.active and self.streak == 0: return
         # HINWEIS: Benötigt globale Konstante WIDTH
-        x = (WIDTH - self.bar_width) // 2; y = 70
+        x = (WIDTH - self.bar_width) // 2; y = 220
         font = pygame.font.SysFont("Arial", 18, bold=True)
         tier_labels = ["", "SUPER ", "EPIC ", "LEGENDARY "]
         tier_colors = [(255, 255, 255), (0, 255, 255), (200, 100, 255), (255, 215, 0)]
@@ -102,7 +102,7 @@ class LikeStreakSystem:
 class FloatingText:
     def __init__(self, x, y, text, color=(255, 255, 255), size=24):
         self.x = x; self.y = y; self.text = text; self.color = color
-        self.font = pygame.font.SysFont("Arial", size, bold=True)
+        self.font = pygame.font.SysFont("assets/fonts/minecraft.ttf", size, bold=True)
         self.life = 60; self.vel_y = -2.0
     def update(self): self.y += self.vel_y; self.life -= 1
     def draw(self, screen):

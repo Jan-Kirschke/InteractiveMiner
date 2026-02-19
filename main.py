@@ -21,5 +21,4 @@ if __name__ == "__main__":
             
     threading.Thread(target=fake_spammer, daemon=True).start()
     
-    # Das Spiel starten
     Game().run(q)

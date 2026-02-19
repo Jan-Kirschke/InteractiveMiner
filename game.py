@@ -25,7 +25,7 @@ class Game:
         except: print("Offline Mode / Fallback ID")
 
         # --- Window Setup ---
-        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN | pygame.SCALED, display=1)
         pygame.display.set_caption("Infinite Miner Ultimate")
         self.clock = pygame.time.Clock()
 
