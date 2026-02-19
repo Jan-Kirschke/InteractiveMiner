@@ -503,12 +503,12 @@ class Game:
             has_hero = any(isinstance(b, HerobrineBoss) for b in self.bosses)
             yp = 400
             if has_ender:
-                for i, c in enumerate(["!LEFT", "!MID", "!RIGHT"]):
+                for i, c in enumerate(["LEFT", "MID", "RIGHT"]):
                     s = self.mega_font.render(c, True, ENDER_PURPLE)
                     if time.time()%0.5>0.25: self.screen.blit(s, (WIDTH//2 - 100 + i*100, yp))
                 yp += 50
             if has_hero:
-                s = self.mega_font.render("!SPLASH", True, (255, 255, 0))
+                s = self.mega_font.render("SPLASH", True, (255, 255, 0))
                 if time.time()%0.5>0.25: self.screen.blit(s, (WIDTH//2 - 50, yp))
         else:
             # Boss summon bar
@@ -523,7 +523,7 @@ class Game:
             pygame.draw.rect(self.screen, UI_BG, (x, 50, w, 30))
             epct = min(1.0, self.event_summon_progress / EVENT_SUMMON_REQ)
             pygame.draw.rect(self.screen, (255, 200, 50), (x+5, 55, int((w-10)*epct), 20))
-            etxt = self.font.render("!EVENT", True, TEXT_COLOR)
+            etxt = self.font.render("EVENT", True, TEXT_COLOR)
             self.screen.blit(etxt, (x+120, 55))
 
         # Inventory display (top left) - use item icons for ores
@@ -555,9 +555,9 @@ class Game:
 
     def handle_input(self, data):
         cmd, user = data
-        if cmd == "!like": self.streak_system.add_like(); return
+        if cmd == "like": self.streak_system.add_like(); return
 
-        if cmd == "!event":
+        if cmd == "event":
             self.event_summon_progress += 1
             if self.event_summon_progress >= EVENT_SUMMON_REQ:
                 self.event_summon_progress = 0
@@ -565,12 +565,12 @@ class Game:
             if user != "Admin": self.user_stats[user] = self.user_stats.get(user, 0) + 1
             return
 
-        if (cmd == "!boss" or cmd == "!hero") and len(self.bosses) < MAX_ACTIVE_BOSSES:
+        if (cmd == "boss" or cmd == "hero") and len(self.bosses) < MAX_ACTIVE_BOSSES:
             self.boss_summon_progress += 1
             if self.boss_summon_progress >= BOSS_SUMMON_REQ:
                 self.boss_summon_progress = 0; self.screen_shake = 50
                 boss = create_boss(self)
-                if cmd == "!hero" or isinstance(boss, HerobrineBoss):
+                if cmd == "hero" or isinstance(boss, HerobrineBoss):
                     if not isinstance(boss, HerobrineBoss):
                         hp_mult = 1.0 + (self.current_depth_blocks / 500) + (self.prestige_level * 2.0)
                         boss = HerobrineBoss(hp_mult)
@@ -581,16 +581,16 @@ class Game:
             return
 
         if self.bosses:
-            if cmd in ["!left", "!mid", "!right"]:
-                x = WIDTH//4 if cmd=="!left" else (WIDTH//2 if cmd=="!mid" else WIDTH*3//4)
+            if cmd in ["left", "mid", "right"]:
+                x = WIDTH//4 if cmd=="left" else (WIDTH//2 if cmd=="mid" else WIDTH*3//4)
                 self.anvils.append(PhysicsAnvil(x))
-            elif cmd == "!splash":
+            elif cmd == "splash":
                 self.potions.append(PhysicsPotion(random.randint(50, WIDTH-50)))
             if user != "Admin": self.user_stats[user] = self.user_stats.get(user, 0) + 1
             return
 
-        if cmd == "!left": self.hero.apply_force(-MOVE_FORCE, -2)
-        elif cmd == "!right": self.hero.apply_force(MOVE_FORCE, -2)
+        if cmd == "left": self.hero.apply_force(-MOVE_FORCE, -2)
+        elif cmd == "right": self.hero.apply_force(MOVE_FORCE, -2)
         elif cmd == "!dig": self.hero.apply_force(0, 12)
         elif cmd == "XBOMB": self.tnts.append(BombEntity(WIDTH//2, "x"))
         elif cmd == "NUKE": self.tnts.append(BombEntity(WIDTH//2, "nuke"))
