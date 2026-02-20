@@ -591,9 +591,9 @@ class Game:
 
         if cmd == "left": self.hero.apply_force(-MOVE_FORCE, -2)
         elif cmd == "right": self.hero.apply_force(MOVE_FORCE, -2)
-        elif cmd == "!dig": self.hero.apply_force(0, 12)
-        elif cmd == "XBOMB": self.tnts.append(BombEntity(WIDTH//2, "x"))
-        elif cmd == "NUKE": self.tnts.append(BombEntity(WIDTH//2, "nuke"))
+        elif cmd == "dig": self.hero.apply_force(0, 12)
+        elif cmd == "xbomb": self.tnts.append(BombEntity(WIDTH//2, "x"))
+        elif cmd == "nuke": self.tnts.append(BombEntity(WIDTH//2, "nuke"))
 
         if user != "Admin": self.user_stats[user] = self.user_stats.get(user, 0) + 1
 

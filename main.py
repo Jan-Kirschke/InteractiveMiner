@@ -29,12 +29,12 @@ def youtube_chat_reader(channel_id, q):
     # 2. Mit dem Chat verbinden
     print("Verbinde mit Live-Chat...")
     try:
-        chat = pytchat.create(video_id=video_id)
+        chat = pytchat.create(video_id=video_id, interruptable=False)
         print("Erfolgreich mit Live-Chat verbunden! Warte auf Befehle...")
         
         while chat.is_alive():
             for c in chat.get().sync_items():
-                msg = c.message.lower() # Alles klein machen für den Check
+                msg = c.message.lower().replace("!", "").strip() # Alles klein machen für den Check
                 user = c.author.name
                 
                 # Nur Befehle durchlassen, die das Spiel auch versteht
