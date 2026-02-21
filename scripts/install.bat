@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0.."
 echo Creating virtual environment...
 python -m venv venv
 if errorlevel 1 (
@@ -18,6 +19,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo.
+echo Downloading FFmpeg for YouTube streaming...
+python scripts\download_ffmpeg.py
 echo.
 echo Done! Virtual environment created and packages installed.
 echo To activate the venv manually, run: venv\Scripts\activate.bat

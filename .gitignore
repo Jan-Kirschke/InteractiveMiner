@@ -1,5 +1,20 @@
+# Virtual environments
 /venv/
-.mypy_cache
-venv
 .venv
-/venv
+
+# Caches
+__pycache__/
+.mypy_cache/
+
+# Runtime data
+data/quiz_data.db
+data/quiz_data.db.bak
+quiz_data.db
+quiz_data.db.bak
+
+# FFmpeg binary (auto-downloaded)
+scripts/ffmpeg.exe
+scripts/ffmpeg/
+
+# System files
+assets/images/desktop.ini

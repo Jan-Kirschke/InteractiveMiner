@@ -485,9 +485,9 @@ class Game:
 
         # --- Schriften ---
         try:
-            self.font = pygame.font.Font("assets/fonts/minecraft.ttf", 18)
-            self.big_font = pygame.font.Font("assets/fonts/minecraft.ttf", 30)
-            self.mega_font = pygame.font.Font("assets/fonts/minecraft.ttf", 50)
+            self.font = pygame.font.Font("shared/fonts/minecraft.ttf", 18)
+            self.big_font = pygame.font.Font("shared/fonts/minecraft.ttf", 30)
+            self.mega_font = pygame.font.Font("shared/fonts/minecraft.ttf", 50)
         except:
             self.font = pygame.font.SysFont("Arial", 16, bold=True)
             self.big_font = pygame.font.SysFont("Arial", 24, bold=True)

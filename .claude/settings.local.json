@@ -1,7 +1,22 @@
 {
   "permissions": {
     "allow": [
-      "Bash(timeout 8 python:*)"
+      "Bash(timeout 8 python:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(ls:*)",
+      "WebFetch(domain:opentdb.com)",
+      "WebSearch",
+      "Bash(./venv/Scripts/pip install:*)",
+      "Bash(./venv/Scripts/python:*)",
+      "Bash(venv/Scripts/python:*)",
+      "Bash(git mv:*)",
+      "Bash(venv/Scripts/pip install:*)",
+      "Bash(\"C:\\\\Users\\\\mauri\\\\Documents\\\\InteractiveMiner\\\\scripts\\\\ffmpeg.exe\" -version)",
+      "Bash(timeout 5 scripts/ffmpeg.exe:*)",
+      "Bash(timeout 8 scripts/ffmpeg.exe:*)",
+      "Bash(echo:*)"
     ]
   }
 }
