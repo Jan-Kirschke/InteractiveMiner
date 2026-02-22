@@ -20,7 +20,7 @@ from quiz.config import (
     SPEED_BONUS_TIER1_MULT, SPEED_BONUS_TIER2_MULT,
     STREAK_BONUS_PER, MAX_STREAK_MULT,
     OTDB_BASE_URL, OTDB_TOKEN_URL, OTDB_BATCH_SIZE,
-    OTDB_MIN_CACHE, OTDB_REQUEST_COOLDOWN,
+    OTDB_MIN_CACHE, OTDB_REQUEST_COOLDOWN, OTDB_SEEN_EXPIRY,
     VOTABLE_CATEGORIES,
     DOUBLE_POINTS_CHANCE, DOUBLE_POINTS_MULT,
     COMEBACK_BONUS, COMEBACK_STREAK_THRESHOLD,
@@ -93,6 +93,7 @@ class QuizLogic:
         self._fetch_in_progress = False
         self._current_category_id = None
         self._fallback_idx = 0
+        self._seen_questions: dict[str, float] = {}  # question_text -> timestamp
 
         # Current round
         self.current_question: Question | None = None
@@ -191,8 +192,13 @@ class QuizLogic:
             if questions:
                 # Only add if category hasn't changed while we were fetching
                 if self._current_category_id == cat_at_fetch:
-                    self._question_cache.extend(questions)
-                    print(f"[OTDB] Cached {len(questions)} questions (total: {len(self._question_cache)})")
+                    # Filter out recently seen questions
+                    self._purge_seen()
+                    fresh = [q for q in questions if self._hash_question(q) not in self._seen_questions]
+                    if len(fresh) < len(questions):
+                        print(f"[OTDB] Filtered {len(questions) - len(fresh)} duplicate(s)")
+                    self._question_cache.extend(fresh)
+                    print(f"[OTDB] Cached {len(fresh)} questions (total: {len(self._question_cache)}, seen: {len(self._seen_questions)})")
                 else:
                     print(f"[OTDB] Discarded {len(questions)} questions (category changed during fetch)")
         except Exception as e:
@@ -239,9 +245,22 @@ class QuizLogic:
             ))
         return questions
 
+    @staticmethod
+    def _hash_question(q: Question) -> str:
+        return q.text
+
+    def _purge_seen(self):
+        now = time.time()
+        self._seen_questions = {
+            h: t for h, t in self._seen_questions.items()
+            if now - t < OTDB_SEEN_EXPIRY
+        }
+
     def _pop_question(self) -> Question:
         if self._question_cache:
-            return self._question_cache.pop(0)
+            q = self._question_cache.pop(0)
+            self._seen_questions[self._hash_question(q)] = time.time()
+            return q
         q = FALLBACK_QUESTIONS[self._fallback_idx % len(FALLBACK_QUESTIONS)]
         self._fallback_idx += 1
         options = list(q.options)
@@ -552,14 +571,23 @@ class QuizLogic:
         """Schedule filler bot answers for this round."""
         self._scheduled_bots = []
 
-        # Count unique real players across last 5 rounds
+        # Method 1: rolling window of recent round participants
         if self._recent_real_answers:
             real_players = set().union(*self._recent_real_answers)
         else:
             real_players = set()
-        real_count = len(real_players)
+        window_count = len(real_players)
 
-        # Fill to exactly MIN_PLAYERS (proportional: 3 real = 1 bot, 2 real = 2 bots, etc.)
+        # Method 2: non-bot players active this session (immediate detection)
+        db_count = sum(
+            1 for u, p in self.db._players.items()
+            if not u.startswith(BOT_PREFIX)
+            and p.last_seen >= self.session_start_time
+        )
+
+        real_count = max(window_count, db_count)
+
+        # Fill to exactly MIN_PLAYERS
         bots_needed = max(0, MIN_PLAYERS - real_count)
 
         if bots_needed == 0:
@@ -606,15 +634,31 @@ class QuizLogic:
               f"(real_count={real_count}, bots_needed={bots_needed})")
 
     def _process_bot_answers(self):
-        """Process any scheduled bot answers whose time has arrived."""
+        """Process scheduled bot answers, skipping bots if real players filled the lobby."""
         now = time.time()
         remaining = []
+
+        # Live counts — recalculated as bots answer within this loop
+        real_in_round = sum(
+            1 for u in self.current_answers if not u.startswith(BOT_PREFIX)
+        )
+        bots_in_round = sum(
+            1 for u in self.current_answers if u.startswith(BOT_PREFIX)
+        )
+
         for bot_name, choice, answer_time in self._scheduled_bots:
             if now >= answer_time:
+                # Dynamic cap: skip this bot if we already have enough players
+                if real_in_round + bots_in_round >= MIN_PLAYERS:
+                    print(f"[Game] {bot_name} skipped (lobby full: "
+                          f"{real_in_round} real + {bots_in_round} bots)")
+                    continue
+
                 if bot_name not in self.current_answers:
                     self.current_answers[bot_name] = (choice, now)
                     self.db.get_or_create_player(bot_name)
                     self.sound_queue.append("answer_lock")
+                    bots_in_round += 1
                     print(f"[Game] {bot_name} locked in answer {choice + 1}")
             else:
                 remaining.append((bot_name, choice, answer_time))
