@@ -564,6 +564,24 @@ class QuizLogic:
         self._push_event(f"All {count} players reset!", COLOR_AMBER, "ADM")
         print(f"[Game] Admin: reset all {count} player scores")
 
+    def reset_bot_scores(self):
+        """Reset bot scores to 0 but keep them playing."""
+        count = 0
+        for bot_name in BOT_PROFILES:
+            player = self.db._players.get(bot_name)
+            if player:
+                player.score = 0
+                player.streak = 0
+                player.best_streak = 0
+                player.games_played = 0
+                player.correct_answers = 0
+                player.wrong_answers = 0
+                player.wrong_streak = 0
+                self.db.mark_dirty(bot_name)
+                count += 1
+        self._push_event(f"{count} bot scores reset!", COLOR_AMBER, "ADM")
+        print(f"[Game] Admin: reset {count} bot scores")
+
     # ------------------------------------------
     # FILLER BOTS
     # ------------------------------------------
@@ -711,6 +729,9 @@ class QuizLogic:
         if username.lower() == "themomatthias":
             if msg in ("clear_bots", "clearbots"):
                 self.clear_bots()
+                return
+            elif msg in ("reset_bots", "resetbots"):
+                self.reset_bot_scores()
                 return
             elif msg in ("reset_all", "resetall"):
                 self.reset_all_scores()

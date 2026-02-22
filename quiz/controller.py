@@ -132,6 +132,9 @@ class MainGameController:
                 elif event.key == pygame.K_F4:
                     self.logic.reset_all_scores()
                     print("[Game] All scores reset (F4)")
+                elif event.key == pygame.K_F5:
+                    self.logic.reset_bot_scores()
+                    print("[Game] Bot scores reset (F5)")
 
     def _process_chat(self):
         while not self.msg_queue.empty():
