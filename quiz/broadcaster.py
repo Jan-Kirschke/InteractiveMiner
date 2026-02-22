@@ -84,7 +84,7 @@ class YouTubeBroadcaster:
         self._error_logged = False
         self._game_fps = 60
         self._skip_ratio = max(1, self._game_fps // self._fps)
-        self._frame_queue = queue.Queue(maxsize=3)
+        self._frame_queue = queue.Queue(maxsize=8)
         self._stderr_lines = []  # collect stderr for diagnostics
         self._force_cpu = False  # set True after GPU encoding fails
 
@@ -104,7 +104,7 @@ class YouTubeBroadcaster:
             print("[Broadcast] Using NVIDIA GPU encoding (h264_nvenc)")
         else:
             video_codec = ["-c:v", "libx264", "-preset", "veryfast",
-                           "-tune", "zerolatency"]
+                           "-tune", "zerolatency", "-threads", "0"]
             print("[Broadcast] Using CPU encoding (libx264)")
 
         # Build audio input args
@@ -129,7 +129,7 @@ class YouTubeBroadcaster:
             "-pix_fmt", "rgb24",
             "-s", f"{self._width}x{self._height}",
             "-r", str(self._fps),
-            "-thread_queue_size", "512",
+            "-thread_queue_size", "1024",
             "-i", "pipe:0",
 
             # Audio input
@@ -174,7 +174,7 @@ class YouTubeBroadcaster:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-                bufsize=1024 * 1024,  # 1MB buffer for 6MB raw frames
+                bufsize=self._width * self._height * 3 * 4,  # ~24MB buffer (4 raw frames)
                 startupinfo=startupinfo,
             )
             self._active = True

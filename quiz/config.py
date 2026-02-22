@@ -219,6 +219,6 @@ COMPETITION_ALERT_THRESHOLD = 20  # points gap to trigger "close race" alert
 # ==========================================
 STREAM_ENABLED = True              # Set True to stream to YouTube Live
 YOUTUBE_STREAM_KEY = "d4t6-3q2b-0hem-5hms-3y37"             # Your YouTube stream key (from YouTube Studio)
-STREAM_FPS = 60                     # Stream output framerate (game runs at 60, stream at 30)
-STREAM_BITRATE = "4500k"            # Video bitrate for 1080p
+STREAM_FPS = 30                     # Stream output framerate (30fps is ideal for quiz content)
+STREAM_BITRATE = "6000k"            # Video bitrate for 1080p30
 FFMPEG_PATH = "ffmpeg"              # Path to ffmpeg binary (auto-downloaded to scripts/)
