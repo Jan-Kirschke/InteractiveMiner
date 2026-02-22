@@ -50,6 +50,7 @@ REVEAL_DISPLAY_TIME = 8
 LEADERBOARD_DISPLAY_TIME = 10
 THEME_VOTE_TIME = 20
 ROUNDS_BEFORE_VOTE = 5
+LATE_ANSWER_GRACE = 5  # seconds to accept answers/votes after a phase ends (chat delay)
 
 # ==========================================
 # SCORING
@@ -113,20 +114,32 @@ VOTABLE_CATEGORIES = {
 # ==========================================
 # CHAT / YOUTUBE CONNECTION
 # ==========================================
-# Option 1: Set a specific video ID (overrides auto-detection)
+# Set the VIDEO ID of your live stream to read chat from it.
+# Find it in YouTube Studio: the part after watch?v= in your stream URL.
+# Example: VIDEO_ID = "dQw4w9WgXcQ"
+# Leave empty to auto-detect from the channels below.
 VIDEO_ID = ""
 
-# Option 2: Set your channel and let the script find the live stream automatically.
-# Use ONE of these (the first non-empty one is used):
-CHANNEL_USERNAME = "ChatVsBedrock"   # YouTube handle without @ (e.g. "JanKirschke")
-CHANNEL_ID = "UCmDgp2YS176ot2n7nFpLRzA"         # Channel ID (e.g. "UCxxxxxxxxxxxxxxxxxxxxxx")
-CHANNEL_URL = ""        # Full channel URL (e.g. "https://www.youtube.com/@JanKirschke")
-
-# Fake chat mode (for offline testing only)
-FAKE_CHAT_ENABLED = False   # Set True for offline testing with bot players
+# YouTube channels to search for livestreams (tried in order)
+# Auto-detection uses HTTP /live page + scrapetube as fallback.
+CHANNEL_IDS = [
+    "UCnv51D67E_oLPfHmQU_6prw",  # The Lifelong Quiz (primary)
+    "UCmDgp2YS176ot2n7nFpLRzA",  # Chat vs Bedrock
+]
 
 # How often to retry finding a livestream if none is active (seconds)
-STREAM_POLL_INTERVAL = 30
+STREAM_POLL_INTERVAL = 20
+
+# ==========================================
+# FILLER BOTS
+# ==========================================
+MIN_PLAYERS = 4  # Bots fill lobby until this many real players participate
+BOT_DIFFICULTY = {
+    "easy":   {"accuracy": 0.25, "speed_min": 0.50, "speed_max": 0.90},
+    "medium": {"accuracy": 0.55, "speed_min": 0.25, "speed_max": 0.70},
+    "hard":   {"accuracy": 0.70, "speed_min": 0.05, "speed_max": 0.45},
+}
+# speed = fraction of question time when bot answers (0.0 = instant, 1.0 = deadline)
 
 # ==========================================
 # DATABASE
@@ -135,7 +148,7 @@ from pathlib import Path as _Path
 _ROOT = _Path(__file__).resolve().parent.parent
 
 DB_PATH = str(_ROOT / "data" / "quiz_data.db")
-DB_SAVE_INTERVAL = 30  # seconds
+DB_SAVE_INTERVAL = 10  # seconds
 
 # ==========================================
 # ASSETS

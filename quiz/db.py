@@ -11,6 +11,8 @@ import os
 from quiz.config import DB_PATH
 from quiz.models import Player
 
+BOT_PREFIX = "[Bot] "
+
 
 class QuizDatabase:
     def __init__(self, db_path=DB_PATH):
@@ -89,7 +91,9 @@ class QuizDatabase:
         )
         return sorted_players[:n]
 
-    def get_player_count(self) -> int:
+    def get_player_count(self, exclude_bots: bool = False) -> int:
+        if exclude_bots:
+            return sum(1 for u in self._players if not u.startswith(BOT_PREFIX))
         return len(self._players)
 
     def remove_players(self, usernames: list[str]):
@@ -113,6 +117,16 @@ class QuizDatabase:
         if username in self._players:
             self._players[username].reset()
             self._dirty.add(username)
+
+    def reset_all_players(self):
+        """Reset scores/stats for all players."""
+        count = 0
+        for player in self._players.values():
+            player.reset()
+            self._dirty.add(player.username)
+            count += 1
+        print(f"[DB] Reset all {count} players")
+        return count
 
     def save_all(self):
         if not self._dirty:

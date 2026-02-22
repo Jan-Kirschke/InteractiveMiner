@@ -27,6 +27,7 @@ from quiz.config import (
     STREAK_MILESTONES, ACHIEVEMENTS,
     CHAT_FEED_MAX, CHAT_FEED_DURATION,
     COMPETITION_ALERT_THRESHOLD,
+    MIN_PLAYERS, BOT_DIFFICULTY, LATE_ANSWER_GRACE,
     COLOR_CORRECT, COLOR_TEXT_GOLD, COLOR_AMBER, COLOR_RANK_DIAMOND,
 )
 from quiz.models import (
@@ -64,6 +65,14 @@ FALLBACK_QUESTIONS = [
 ]
 
 
+BOT_PREFIX = "[Bot] "
+BOT_PROFILES = [
+    "[Bot] Rookie",
+    "[Bot] Scholar",
+    "[Bot] Professor",
+]
+
+
 class QuizLogic:
     def __init__(self, db: QuizDatabase):
         self.db = db
@@ -71,6 +80,10 @@ class QuizLogic:
         self.state_timer = 0.0
         self.state_start_time = 0.0
         self.state_duration = 0.0
+
+        # Grace period: remember previous state so late messages still count
+        self._prev_state = GameState.WAITING
+        self._prev_state_end_time = 0.0
 
         # Questions
         self._question_cache: list[Question] = []
@@ -103,6 +116,11 @@ class QuizLogic:
         self.competition_alert = ""  # close race message
         self.new_players_this_round: list[str] = []
         self._known_players: set[str] = set(db._players.keys())
+
+        # Filler bots
+        self._scheduled_bots: list[tuple[str, int, float]] = []  # (name, choice, answer_time)
+        self._recent_real_answers: list[set[str]] = []  # rolling window of real player sets
+        self._bots_active = False
 
         # Kick off token fetch + pre-fill cache
         self._fetch_session_token()
@@ -243,8 +261,10 @@ class QuizLogic:
 
         self.state_timer -= dt
 
-        # Timer sounds during ASKING
+        # Bot answers + timer sounds during ASKING
         if self.state == GameState.ASKING:
+            self._process_bot_answers()
+
             remaining = self.time_remaining
             frac = self.time_fraction
             if remaining <= 5:
@@ -258,6 +278,8 @@ class QuizLogic:
             self._on_state_expired()
 
     def _transition_to(self, state: GameState):
+        self._prev_state = self.state
+        self._prev_state_end_time = time.time()
         self.state = state
         self.state_start_time = time.time()
         self.sound_queue.append("whoosh")
@@ -297,6 +319,15 @@ class QuizLogic:
     # STATE ENTRY ACTIONS
     # ------------------------------------------
     def _enter_asking(self):
+        # Track real players from previous round (before clearing answers)
+        if self.current_answers:
+            real_this_round = {
+                u for u in self.current_answers if not u.startswith(BOT_PREFIX)
+            }
+            self._recent_real_answers.append(real_this_round)
+            if len(self._recent_real_answers) > 5:
+                self._recent_real_answers.pop(0)
+
         self.current_question = self._pop_question()
         self.current_answers = {}
         self.question_start_time = time.time()
@@ -310,6 +341,9 @@ class QuizLogic:
                 "DOUBLE POINTS ROUND!", COLOR_TEXT_GOLD, "2X",
             )
             self.sound_queue.append("double_points")
+
+        # Schedule filler bots
+        self._schedule_bots()
 
     def _enter_revealing(self):
         self.round_count += 1
@@ -483,6 +517,98 @@ class QuizLogic:
             )
 
     # ------------------------------------------
+    # ADMIN ACTIONS
+    # ------------------------------------------
+    def clear_bots(self):
+        """Remove all bot players from DB and cancel scheduled bot answers."""
+        self._scheduled_bots = []
+        self._bots_active = False
+        self.db.remove_players(BOT_PROFILES)
+        # Also remove from current round answers
+        for bot_name in BOT_PROFILES:
+            self.current_answers.pop(bot_name, None)
+        self._push_event("Bots cleared!", COLOR_CORRECT, "ADM")
+        print("[Game] Admin: all bots cleared")
+
+    def reset_all_scores(self):
+        """Reset scores for all players."""
+        count = self.db.reset_all_players()
+        self._push_event(f"All {count} players reset!", COLOR_AMBER, "ADM")
+        print(f"[Game] Admin: reset all {count} player scores")
+
+    # ------------------------------------------
+    # FILLER BOTS
+    # ------------------------------------------
+    def _schedule_bots(self):
+        """Schedule filler bot answers for this round."""
+        self._scheduled_bots = []
+
+        # Count unique real players across last 5 rounds
+        if self._recent_real_answers:
+            real_players = set().union(*self._recent_real_answers)
+        else:
+            real_players = set()
+        real_count = len(real_players)
+
+        # Fill to exactly MIN_PLAYERS (proportional: 3 real = 1 bot, 2 real = 2 bots, etc.)
+        bots_needed = max(0, MIN_PLAYERS - real_count)
+
+        if bots_needed == 0:
+            if self._bots_active:
+                self._bots_active = False
+                self.db.remove_players(BOT_PROFILES)
+                self._push_event(
+                    "Enough players! Bots retired.", COLOR_CORRECT, "BYE",
+                )
+                print(f"[Game] Bots retired ({real_count} real players)")
+            return
+
+        # Remove bots that are no longer needed
+        active_bots = BOT_PROFILES[:bots_needed]
+        retired_bots = BOT_PROFILES[bots_needed:]
+        if retired_bots and self._bots_active:
+            self.db.remove_players(retired_bots)
+            print(f"[Game] Retired {len(retired_bots)} bot(s), {bots_needed} remain ({real_count} real players)")
+
+        self._bots_active = True
+
+        if not self.current_question:
+            return
+
+        correct_idx = self.current_question.correct_index
+        num_options = len(self.current_question.options)
+        diff = BOT_DIFFICULTY["easy"]
+
+        for bot_name in active_bots:
+            # Pick answer based on easy accuracy
+            if random.random() < diff["accuracy"]:
+                choice = correct_idx
+            else:
+                wrong_choices = [i for i in range(num_options) if i != correct_idx]
+                choice = random.choice(wrong_choices)
+
+            # Schedule answer time
+            speed_frac = random.uniform(diff["speed_min"], diff["speed_max"])
+            answer_time = self.question_start_time + speed_frac * QUESTION_DISPLAY_TIME
+
+            self._scheduled_bots.append((bot_name, choice, answer_time))
+
+    def _process_bot_answers(self):
+        """Process any scheduled bot answers whose time has arrived."""
+        now = time.time()
+        remaining = []
+        for bot_name, choice, answer_time in self._scheduled_bots:
+            if now >= answer_time:
+                if bot_name not in self.current_answers:
+                    self.current_answers[bot_name] = (choice, now)
+                    self.db.get_or_create_player(bot_name)
+                    self.sound_queue.append("answer_lock")
+                    print(f"[Game] {bot_name} locked in answer {choice + 1}")
+            else:
+                remaining.append((bot_name, choice, answer_time))
+        self._scheduled_bots = remaining
+
+    # ------------------------------------------
     # VOTE RESOLUTION
     # ------------------------------------------
     def _resolve_vote(self):
@@ -515,35 +641,97 @@ class QuizLogic:
             )
             return
 
-        if msg in ("1", "2", "3", "4"):
-            choice = int(msg) - 1
+        # Admin commands (themomatthias only)
+        if username.lower() == "themomatthias":
+            if msg in ("clear_bots", "clearbots"):
+                self.clear_bots()
+                return
+            elif msg in ("reset_all", "resetall"):
+                self.reset_all_scores()
+                return
 
-            if self.state == GameState.ASKING:
-                if username not in self.current_answers:
+        # Accept "1", "2", "3", "4" — already normalized by chat (punctuation stripped)
+        # Also handle edge cases: "1 ", "answer 2", etc. — check first char
+        answer = ""
+        if msg in ("1", "2", "3", "4"):
+            answer = msg
+        elif len(msg) <= 10 and msg and msg[0] in "1234":
+            # Short message starting with a valid digit (e.g. "1!" normalized to "1")
+            answer = msg[0]
+
+        if answer:
+            choice = int(answer) - 1
+
+            # Determine effective state: use grace period for late messages
+            effective_state = self.state
+            in_grace = False
+            if self.state not in (GameState.ASKING, GameState.THEME_VOTE):
+                elapsed = time.time() - self._prev_state_end_time
+                if elapsed < LATE_ANSWER_GRACE and self._prev_state in (GameState.ASKING, GameState.THEME_VOTE):
+                    effective_state = self._prev_state
+                    in_grace = True
+
+            if effective_state == GameState.ASKING:
+                player = self.db.get_or_create_player(username)
+                old_answer = self.current_answers.get(username)
+
+                if in_grace and self.current_question:
+                    if old_answer is None:
+                        # Late first answer — score immediately
+                        self.current_answers[username] = (choice, time.time())
+                        correct_idx = self.current_question.correct_index
+                        if choice == correct_idx:
+                            pts = BASE_POINTS  # no speed bonus for late
+                            player.record_correct(pts)
+                            print(f"[Game] {username} late answer {msg} - CORRECT (+{pts} pts, grace period)")
+                        else:
+                            player.record_wrong()
+                            print(f"[Game] {username} late answer {msg} - wrong (grace period)")
+                        self.db.mark_dirty(username)
+                        self.sound_queue.append("answer_lock")
+                    else:
+                        # Can't change answer after time expired
+                        print(f"[Game] {username} tried to change answer during grace period (denied)")
+                elif old_answer is None:
+                    # First answer
                     self.current_answers[username] = (choice, time.time())
                     self.sound_queue.append("answer_lock")
-                    player = self.db.get_or_create_player(username)
                     print(f"[Game] {username} locked in answer {msg}")
+                else:
+                    # Changed answer — update choice and timestamp
+                    old_choice = old_answer[0]
+                    if old_choice != choice:
+                        self.current_answers[username] = (choice, time.time())
+                        self.sound_queue.append("answer_lock")
+                        print(f"[Game] {username} changed answer from {old_choice + 1} to {msg}")
+                    else:
+                        print(f"[Game] {username} already picked {msg}")
 
-                    # Welcome new players
-                    if username not in self._known_players:
-                        self._known_players.add(username)
+                # Welcome new players (skip bots)
+                if username not in self._known_players:
+                    self._known_players.add(username)
+                    if not username.startswith(BOT_PREFIX):
                         self.new_players_this_round.append(username)
                         self._push_event(
                             f"Welcome {username}! First time here",
                             COLOR_CORRECT, "NEW",
                         )
-                else:
-                    print(f"[Game] {username} already answered this round")
 
-            elif self.state == GameState.THEME_VOTE:
+            elif effective_state == GameState.THEME_VOTE:
                 if self.vote_state:
-                    vote_num = int(msg)
+                    vote_num = int(answer)
                     if vote_num in self.vote_state.options:
                         old_vote = self.vote_state.votes.get(username)
                         self.vote_state.votes[username] = vote_num
+                        cat_name = self.vote_state.options[vote_num][1]
+                        late_tag = " (late, grace period)" if in_grace else ""
                         if old_vote is None:
                             self.sound_queue.append("vote")
+                            print(f"[Game] {username} voted #{vote_num} ({cat_name}){late_tag}")
+                        else:
+                            print(f"[Game] {username} changed vote to #{vote_num} ({cat_name}){late_tag}")
+                    else:
+                        print(f"[Game] {username} voted {vote_num} but options are {list(self.vote_state.options.keys())}")
 
             else:
                 print(f"[Game] {username} sent '{msg}' during {self.state.name} (ignored)")

@@ -6,14 +6,13 @@ echo ==========================================
 echo.
 echo Options:
 echo   1. Enter a specific Video ID
-echo   2. Auto-detect from channel (uses quiz/config.py settings)
+echo   2. Auto-detect from configured channels (uses quiz/config.py CHANNEL_IDS)
 echo.
 set /p CHOICE="Enter Video ID (or press Enter for auto-detect): "
 cd /d "%~dp0.."
 if "%CHOICE%"=="" (
     echo.
-    echo Auto-detecting livestream from configured channel...
-    echo Make sure CHANNEL_USERNAME is set in quiz/config.py
+    echo Auto-detecting livestream from configured channels...
     echo Press ESC to quit, F1 to skip phase.
     echo.
     venv\Scripts\python -m quiz.game
