@@ -31,13 +31,15 @@ def _find_ffmpeg(configured_path: str) -> str:
 
 
 def _detect_nvenc(ffmpeg_path: str) -> bool:
-    """Check if FFmpeg has NVIDIA h264_nvenc encoder available."""
+    """Test if NVIDIA h264_nvenc actually works (not just listed)."""
     try:
         result = subprocess.run(
-            [ffmpeg_path, "-hide_banner", "-encoders"],
-            capture_output=True, text=True, timeout=5,
+            [ffmpeg_path, "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "nullsrc=s=256x256:d=0.1:r=1",
+             "-c:v", "h264_nvenc", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=10,
         )
-        return "h264_nvenc" in result.stdout
+        return result.returncode == 0
     except Exception:
         return False
 
@@ -84,6 +86,7 @@ class YouTubeBroadcaster:
         self._skip_ratio = max(1, self._game_fps // self._fps)
         self._frame_queue = queue.Queue(maxsize=3)
         self._stderr_lines = []  # collect stderr for diagnostics
+        self._force_cpu = False  # set True after GPU encoding fails
 
     def start(self):
         """Launch the FFmpeg subprocess and begin streaming."""
@@ -94,7 +97,7 @@ class YouTubeBroadcaster:
         rtmp_url = f"rtmps://a.rtmps.youtube.com/live2/{self._stream_key}"
 
         # Detect GPU encoder
-        use_nvenc = _detect_nvenc(self._ffmpeg_path)
+        use_nvenc = not self._force_cpu and _detect_nvenc(self._ffmpeg_path)
         if use_nvenc:
             video_codec = ["-c:v", "h264_nvenc", "-preset", "p3",
                            "-tune:v", "ll", "-rc", "cbr"]
@@ -218,13 +221,20 @@ class YouTubeBroadcaster:
 
             # Check if FFmpeg is still alive
             if proc.poll() is not None:
+                code = proc.returncode
                 if not self._error_logged:
-                    code = proc.returncode
                     print(f"[Broadcast] FFmpeg exited (code {code})")
                     for line in self._stderr_lines:
                         print(f"[Broadcast]   {line}")
                     self._error_logged = True
                 self._active = False
+                # Auto-retry with CPU encoding if GPU failed
+                if not self._force_cpu and code != 0:
+                    print("[Broadcast] GPU encoding failed, retrying with CPU (libx264)...")
+                    self._force_cpu = True
+                    self._proc = None
+                    self.start()
+                    return
                 break
 
             # Get next frame from queue
