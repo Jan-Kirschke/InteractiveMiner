@@ -991,49 +991,61 @@ class UIManager:
         )
 
         y = 12
-        # Round
+        dot_r = 6
+        dot_gap = 10       # gap between dot and its label
+        group_gap = 24      # gap between indicator groups
+
+        # Round (left side)
         self._text_shadowed(
             f"Round #{data.get('round_count', 0)}",
             self.font_small, COLOR_TEXT_PRIMARY, (20, y),
         )
 
-        # Category
+        # Category (center)
         cat = data.get("category", "")
         ct = self.font_small.render(f"Category: {cat}", True, COLOR_AMBER)
         self.screen.blit(ct, (SCREEN_WIDTH // 2 - ct.get_width() // 2, y))
 
-        # Right side HUD: Players | STREAM | CHAT status
-        # Layout from right to left with proper spacing
+        # Right side: dynamically laid out from right edge to left
+        # Order (right to left): CHAT | STREAM | Players
+        rx = SCREEN_WIDTH - 20  # right margin
 
-        # Player count (rightmost group, left side)
-        pc = data.get("player_count", 0)
-        self._text_shadowed(
-            f"{pc} Players", self.font_small, COLOR_TEXT_SECONDARY,
-            (SCREEN_WIDTH - 580, y),
-        )
-
-        # Broadcast status (STREAM indicator)
-        broadcasting = data.get("broadcasting", False)
-        stream_color = COLOR_CONNECTED if broadcasting else COLOR_DISCONNECTED
-        pygame.draw.circle(self.screen, stream_color, (SCREEN_WIDTH - 470, y + 10), 6)
-        stream_label = "STREAM" if broadcasting else "NO STREAM"
-        st = self.font_small.render(stream_label, True, stream_color)
-        self.screen.blit(st, (SCREEN_WIDTH - 458, y))
-
-        # Chat connection status (detailed, shows status text)
+        # 1. CHAT status (rightmost)
         connected = data.get("connected", False)
         chat_status = data.get("chat_status", "")
         chat_msgs = data.get("chat_msg_count", 0)
         chat_color = COLOR_CONNECTED if connected else COLOR_DISCONNECTED
-        pygame.draw.circle(self.screen, chat_color, (SCREEN_WIDTH - 330, y + 10), 6)
         if connected:
             chat_label = f"CHAT ({chat_msgs} msgs)"
         else:
             chat_label = chat_status if chat_status else "NO CHAT"
-        if len(chat_label) > 35:
-            chat_label = chat_label[:33] + ".."
-        ct2 = self.font_small.render(chat_label, True, chat_color)
-        self.screen.blit(ct2, (SCREEN_WIDTH - 318, y))
+        if len(chat_label) > 30:
+            chat_label = chat_label[:28] + ".."
+        chat_surf = self.font_small.render(chat_label, True, chat_color)
+        rx -= chat_surf.get_width()
+        self.screen.blit(chat_surf, (rx, y))
+        rx -= dot_gap + dot_r
+        pygame.draw.circle(self.screen, chat_color, (rx, y + 10), dot_r)
+        rx -= dot_r + group_gap
+
+        # 2. STREAM status
+        broadcasting = data.get("broadcasting", False)
+        stream_color = COLOR_CONNECTED if broadcasting else COLOR_DISCONNECTED
+        stream_label = "STREAM" if broadcasting else "NO STREAM"
+        stream_surf = self.font_small.render(stream_label, True, stream_color)
+        rx -= stream_surf.get_width()
+        self.screen.blit(stream_surf, (rx, y))
+        rx -= dot_gap + dot_r
+        pygame.draw.circle(self.screen, stream_color, (rx, y + 10), dot_r)
+        rx -= dot_r + group_gap
+
+        # 3. Player count
+        pc = data.get("player_count", 0)
+        players_surf = self.font_small.render(f"{pc} Players", True, COLOR_TEXT_SECONDARY)
+        rx -= players_surf.get_width()
+        self._text_shadowed(
+            f"{pc} Players", self.font_small, COLOR_TEXT_SECONDARY, (rx, y),
+        )
 
     # ------------------------------------------
     # PARTICLES

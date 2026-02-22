@@ -82,6 +82,7 @@ class MainGameController:
         # Track tick sounds to avoid flooding
         self._last_tick_time = 0
         self._prev_logic_state = None
+        self._music_started = False
 
     def _on_stream_found(self, video_id: str):
         """Callback from StreamWatcher when a live stream is detected."""
@@ -107,6 +108,7 @@ class MainGameController:
             self.logic.update(dt)
             self._save_on_state_change()
             self._play_sounds()
+            self._start_music_when_ready()
             self._render()
             self._broadcast_frame()
             self._periodic_save()
@@ -148,6 +150,12 @@ class MainGameController:
                 self.sounds.play_throttled(sound_name, 0.3)
             else:
                 self.sounds.play(sound_name)
+
+    def _start_music_when_ready(self):
+        """Start background music once it's finished generating."""
+        if not self._music_started and self.sounds.music_ready:
+            self.sounds.start_music()
+            self._music_started = True
 
     def _render(self):
         state = self.logic.state
@@ -210,6 +218,7 @@ class MainGameController:
             return
         self._shutdown_done = True
         print("[Game] Shutting down...")
+        self.sounds.stop_music()
         self.broadcaster.stop()
         self._stream_watcher.stop()
         self.chat.stop()

@@ -204,8 +204,7 @@ COMPETITION_ALERT_THRESHOLD = 20  # points gap to trigger "close race" alert
 # YOUTUBE STREAMING (via FFmpeg)
 # ==========================================
 STREAM_ENABLED = True              # Set True to stream to YouTube Live
-import os as _os
-YOUTUBE_STREAM_KEY = _os.environ.get("YOUTUBE_STREAM_KEY", "")  # Set via environment variable
+YOUTUBE_STREAM_KEY = "d4t6-3q2b-0hem-5hms-3y37"             # Your YouTube stream key (from YouTube Studio)
 STREAM_FPS = 60                     # Stream output framerate (game runs at 60, stream at 30)
 STREAM_BITRATE = "4500k"            # Video bitrate for 1080p
 FFMPEG_PATH = "ffmpeg"              # Path to ffmpeg binary (auto-downloaded to scripts/)

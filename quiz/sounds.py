@@ -8,6 +8,7 @@ import pygame
 import math
 import array
 import random as _rnd
+import threading
 
 
 SAMPLE_RATE = 44100
@@ -349,8 +350,106 @@ def _generate_answer_lock():
     return _make_sound(_lowpass(buf, 0.4))
 
 
+# ------------------------------------------
+# BACKGROUND MUSIC - Jazzy Chill Loop
+# ------------------------------------------
+
+def _generate_background_music():
+    """
+    Generate a looping jazzy background track — dark poker room ambience.
+    ii-V-I-vi progression with walking bass, soft pad, and Rhodes comping.
+    Uses wavetable synthesis for performance (~5s generation in background thread).
+    """
+    bpm = 72
+    beat_dur = 60.0 / bpm          # ~0.833s per beat
+    total_beats = 32               # 8 bars × 4 beats
+    total_dur = total_beats * beat_dur  # ~26.67s loop
+    n_samples = int(SAMPLE_RATE * total_dur)
+
+    # Jazz chord progression: 2 bars (8 beats) per chord
+    progression = [
+        {   # Dm9 — warm minor start
+            "pad": [293.66, 349.23, 440.0, 523.25],       # D4 F4 A4 C5
+            "walk": [73.42, 87.31, 110.0, 130.81,         # D2 F2 A2 C3
+                     73.42, 98.0, 110.0, 87.31],           # D2 G2 A2 F2
+            "rhodes": [587.33, 698.46, 880.0],             # D5 F5 A5
+        },
+        {   # G13 — dominant tension
+            "pad": [196.0, 246.94, 293.66, 349.23],       # G3 B3 D4 F4
+            "walk": [98.0, 123.47, 146.83, 174.61,        # G2 B2 D3 F3
+                     98.0, 110.0, 130.81, 123.47],         # G2 A2 C3 B2
+            "rhodes": [392.0, 493.88, 587.33],             # G4 B4 D5
+        },
+        {   # Cmaj9 — bright resolution
+            "pad": [261.63, 329.63, 392.0, 493.88],       # C4 E4 G4 B4
+            "walk": [65.41, 82.41, 98.0, 123.47,          # C2 E2 G2 B2
+                     65.41, 73.42, 98.0, 110.0],           # C2 D2 G2 A2
+            "rhodes": [523.25, 659.25, 783.99],            # C5 E5 G5
+        },
+        {   # Am7 — melancholy loop-back to Dm
+            "pad": [220.0, 261.63, 329.63, 392.0],        # A3 C4 E4 G4
+            "walk": [55.0, 65.41, 82.41, 98.0,            # A1 C2 E2 G2
+                     55.0, 73.42, 82.41, 65.41],           # A1 D2 E2 C2
+            "rhodes": [440.0, 523.25, 659.25],             # A4 C5 E5
+        },
+    ]
+
+    # Pre-compute wavetables for all needed frequencies (fast lookup vs sin())
+    all_freqs = set()
+    for ch in progression:
+        all_freqs.update(ch["pad"])
+        all_freqs.update(ch["walk"])
+        all_freqs.update(ch["rhodes"])
+
+    tables = {}
+    for freq in all_freqs:
+        period = max(1, round(SAMPLE_RATE / freq))
+        tables[freq] = [math.sin(2 * math.pi * i / period) for i in range(period)]
+
+    buf = array.array("h")
+    vol = MASTER_VOL * 0.25  # Very subtle background level
+
+    for i in range(n_samples):
+        t = i / SAMPLE_RATE
+        beat_pos = t / beat_dur
+        g_beat = int(beat_pos)
+        frac = beat_pos - g_beat
+
+        chord = progression[(g_beat // 8) % len(progression)]
+        bass_f = chord["walk"][g_beat % 8]
+
+        val = 0.0
+
+        # ── Walking bass: warm, round, with gentle per-note decay ──
+        bt = tables[bass_f]
+        bass_env = max(0.25, 1.0 - frac * 0.75)
+        val += bt[i % len(bt)] * bass_env * 0.45
+
+        # ── Chord pad: ultra-soft sustained voicing ──
+        for f in chord["pad"]:
+            tt = tables[f]
+            val += tt[i % len(tt)] * 0.04
+
+        # ── Rhodes comping on beats 1 & 3: bell-like touch ──
+        bar_beat = g_beat % 4
+        if bar_beat in (0, 2):
+            rh_env = math.exp(-frac * 5) * 0.06
+            for f in chord["rhodes"]:
+                rt = tables[f]
+                val += rt[i % len(rt)] * rh_env
+
+        # ── Subtle brush texture on beats 2 & 4 ──
+        if bar_beat in (1, 3) and frac < 0.12:
+            val += (_rnd.random() * 2 - 1) * (1.0 - frac / 0.12) * 0.025
+
+        val *= vol
+        buf.append(max(-32767, min(32767, int(val * 32767))))
+
+    return _make_sound(_lowpass(buf, 0.15))
+
+
 class SoundManager:
-    """Generates and manages all quiz sound effects."""
+    """Generates and manages all quiz sound effects + background music."""
 
     def __init__(self):
         try:
@@ -359,12 +458,23 @@ class SoundManager:
         except pygame.error:
             print("[Sound] Mixer init failed, sounds disabled")
             self._enabled = False
+            self._music_sound = None
+            self._music_channel = None
             return
 
         self._enabled = True
         self._sounds = {}
         self._last_play_time = {}
+        self._music_sound = None
+        self._music_channel = None
+
+        # More mixer channels for music + simultaneous SFX
+        pygame.mixer.set_num_channels(16)
+
         self._generate_all()
+
+        # Generate background music in a background thread (takes ~5-10s)
+        threading.Thread(target=self._generate_music_bg, daemon=True).start()
 
     def _generate_all(self):
         init = pygame.mixer.get_init()
@@ -388,6 +498,36 @@ class SoundManager:
         for name, snd in self._sounds.items():
             print(f"  {name}: {snd.get_length():.2f}s")
         print("[Sound] All sounds ready")
+
+    def _generate_music_bg(self):
+        """Generate background music in a background thread."""
+        try:
+            print("[Sound] Generating background music (this takes a few seconds)...")
+            self._music_sound = _generate_background_music()
+            print(f"[Sound] Background music ready ({self._music_sound.get_length():.1f}s loop)")
+        except Exception as e:
+            print(f"[Sound] Music generation failed: {e}")
+
+    @property
+    def music_ready(self) -> bool:
+        return self._music_sound is not None
+
+    def start_music(self):
+        """Start the background music loop."""
+        if not self._enabled or not self._music_sound:
+            return
+        if self._music_channel and self._music_channel.get_busy():
+            return  # Already playing
+        self._music_channel = self._music_sound.play(loops=-1)
+        if self._music_channel:
+            self._music_channel.set_volume(0.5)
+        print("[Sound] Background music started")
+
+    def stop_music(self):
+        """Stop the background music."""
+        if self._music_channel:
+            self._music_channel.fadeout(1000)
+            self._music_channel = None
 
     def play(self, name: str):
         if not self._enabled:
