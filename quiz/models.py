@@ -28,10 +28,11 @@ class Player:
     games_played: int = 0
     correct_answers: int = 0
     wrong_answers: int = 0
+    wrong_streak: int = 0
     last_seen: float = field(default_factory=time.time)
 
     def record_correct(self, points: int):
-        was_wrong_streak = getattr(self, "wrong_streak", 0)
+        was_wrong_streak = self.wrong_streak
         self.wrong_streak = 0
         self.score += points
         self.streak += 1
@@ -46,7 +47,7 @@ class Player:
         self._was_comeback = (was_wrong_streak >= 3)  # for comeback detection
 
     def record_wrong(self):
-        self.wrong_streak = getattr(self, "wrong_streak", 0) + 1
+        self.wrong_streak += 1
         self.streak = 0
         self.wrong_answers += 1
         self.games_played += 1

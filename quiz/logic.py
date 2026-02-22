@@ -184,11 +184,16 @@ class QuizLogic:
         threading.Thread(target=self._fetch_worker, daemon=True).start()
 
     def _fetch_worker(self):
+        cat_at_fetch = self._current_category_id
         try:
-            questions = self._fetch_questions(self._current_category_id)
+            questions = self._fetch_questions(cat_at_fetch)
             if questions:
-                self._question_cache.extend(questions)
-                print(f"[OTDB] Cached {len(questions)} questions (total: {len(self._question_cache)})")
+                # Only add if category hasn't changed while we were fetching
+                if self._current_category_id == cat_at_fetch:
+                    self._question_cache.extend(questions)
+                    print(f"[OTDB] Cached {len(questions)} questions (total: {len(self._question_cache)})")
+                else:
+                    print(f"[OTDB] Discarded {len(questions)} questions (category changed during fetch)")
         except Exception as e:
             print(f"[OTDB] Fetch error: {e}")
         finally:
@@ -328,9 +333,12 @@ class QuizLogic:
             if len(self._recent_real_answers) > 5:
                 self._recent_real_answers.pop(0)
 
+        self._ensure_cache()
         self.current_question = self._pop_question()
         self.current_answers = {}
         self.question_start_time = time.time()
+        cat_name = VOTABLE_CATEGORIES.get(self._current_category_id, "Any")
+        print(f"[Game] Question: category={self.current_question.category} (requested={cat_name}, cache={len(self._question_cache)})")
         self.new_players_this_round = []
         self.sound_queue.append("new_question")
 
@@ -398,7 +406,7 @@ class QuizLogic:
                     pts = int(pts * DOUBLE_POINTS_MULT)
 
                 # Comeback bonus
-                was_wrong = getattr(player, "wrong_streak", 0)
+                was_wrong = player.wrong_streak
                 if was_wrong >= COMEBACK_STREAK_THRESHOLD:
                     pts += COMEBACK_BONUS
                     self._push_event(
@@ -614,7 +622,7 @@ class QuizLogic:
     def _resolve_vote(self):
         if not self.vote_state or not self.vote_state.votes:
             cid = random.choice(list(VOTABLE_CATEGORIES.keys()))
-            self._current_category_id = cid
+            self._set_category(cid)
             return
 
         counts = self.vote_state.vote_counts()
@@ -622,11 +630,21 @@ class QuizLogic:
         winners = [opt for opt, cnt in counts.items() if cnt == max_votes]
         winner = random.choice(winners)
         cid, name = self.vote_state.options[winner]
-        self._current_category_id = cid
+        self._set_category(cid)
         self._push_event(
             f"Next category: {name}!", COLOR_TEXT_GOLD, "VOTE",
         )
         print(f"[Vote] Winner: {name} ({max_votes} votes)")
+
+    def _set_category(self, category_id):
+        """Change category and flush stale questions from the cache."""
+        if category_id != self._current_category_id:
+            old_count = len(self._question_cache)
+            self._question_cache.clear()
+            if old_count > 0:
+                cat_name = VOTABLE_CATEGORIES.get(category_id, category_id)
+                print(f"[OTDB] Category changed to {cat_name}, flushed {old_count} cached questions")
+        self._current_category_id = category_id
 
     # ------------------------------------------
     # CHAT COMMAND PROCESSING
@@ -759,6 +777,9 @@ class QuizLogic:
 
     @property
     def current_category_name(self) -> str:
+        # Show the actual question's category (from OTDB), not the configured one
+        if self.current_question and self.current_question.category:
+            return self.current_question.category
         if self._current_category_id and self._current_category_id in VOTABLE_CATEGORIES:
             return VOTABLE_CATEGORIES[self._current_category_id]
         return "General"

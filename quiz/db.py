@@ -20,6 +20,11 @@ class QuizDatabase:
         self._lock = threading.Lock()
         self._dirty = set()  # usernames that need flushing
 
+        # Ensure data directory exists
+        db_dir = os.path.dirname(db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+
         # Handle corrupted DB
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -48,9 +53,16 @@ class QuizDatabase:
                 games_played    INTEGER DEFAULT 0,
                 correct_answers INTEGER DEFAULT 0,
                 wrong_answers   INTEGER DEFAULT 0,
+                wrong_streak    INTEGER DEFAULT 0,
                 last_seen       REAL DEFAULT 0
             )
         """)
+        # Migrate: add wrong_streak column if missing (existing DBs)
+        try:
+            self._conn.execute("ALTER TABLE players ADD COLUMN wrong_streak INTEGER DEFAULT 0")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_players_score
             ON players(score DESC)
@@ -69,6 +81,7 @@ class QuizDatabase:
                 games_played=row["games_played"],
                 correct_answers=row["correct_answers"],
                 wrong_answers=row["wrong_answers"],
+                wrong_streak=row["wrong_streak"] if "wrong_streak" in row.keys() else 0,
                 last_seen=row["last_seen"],
             )
             self._players[p.username] = p
@@ -142,14 +155,15 @@ class QuizDatabase:
                     data.append((
                         p.username, p.score, p.streak, p.best_streak,
                         p.rank, p.games_played, p.correct_answers,
-                        p.wrong_answers, p.last_seen,
+                        p.wrong_answers, p.wrong_streak, p.last_seen,
                     ))
             if data:
                 self._conn.executemany("""
                     INSERT OR REPLACE INTO players
                     (username, score, streak, best_streak, rank,
-                     games_played, correct_answers, wrong_answers, last_seen)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     games_played, correct_answers, wrong_answers,
+                     wrong_streak, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, data)
                 self._conn.commit()
                 print(f"[DB] Saved {len(data)} players")
