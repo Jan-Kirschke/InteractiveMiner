@@ -164,7 +164,7 @@ class MainGameController:
             "state_name": state.name,
             "round_count": self.logic.round_count,
             "category": self.logic.current_category_name,
-            "player_count": self.db.get_player_count(exclude_bots=True),
+            "player_count": self.db.get_player_count(exclude_bots=False),
             "connected": self.chat.is_connected,
             "broadcasting": self.broadcaster.is_active,
             "chat_status": self.chat.status_text,

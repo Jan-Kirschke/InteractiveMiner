@@ -70,6 +70,7 @@ BOT_PROFILES = [
     "[Bot] Rookie",
     "[Bot] Scholar",
     "[Bot] Professor",
+    "[Bot] Maverick",
 ]
 
 
@@ -600,6 +601,9 @@ class QuizLogic:
             answer_time = self.question_start_time + speed_frac * QUESTION_DISPLAY_TIME
 
             self._scheduled_bots.append((bot_name, choice, answer_time))
+
+        print(f"[Game] Bots: scheduled {len(self._scheduled_bots)} bots "
+              f"(real_count={real_count}, bots_needed={bots_needed})")
 
     def _process_bot_answers(self):
         """Process any scheduled bot answers whose time has arrived."""
