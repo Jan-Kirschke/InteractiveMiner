@@ -40,33 +40,115 @@ from quiz.models import (
 from quiz.db import QuizDatabase
 
 
-# Hardcoded fallback questions if API is unavailable
+# Hardcoded fallback questions if API is unavailable (80+ across many categories)
+# correct_index is placeholder — options get shuffled before serving
+def _q(text, correct, wrong, category="General", difficulty="easy"):
+    """Helper: build a Question with correct answer placed at index 0 (shuffled later)."""
+    return Question(text, correct, [correct] + wrong, 0, category, difficulty)
+
 FALLBACK_QUESTIONS = [
-    Question("What is the capital of France?", "Paris",
-             ["London", "Berlin", "Paris", "Madrid"], 2, "Geography", "easy"),
-    Question("How many legs does a spider have?", "8",
-             ["6", "8", "10", "12"], 1, "Animals", "easy"),
-    Question("What planet is known as the Red Planet?", "Mars",
-             ["Venus", "Mars", "Jupiter", "Saturn"], 1, "Science", "easy"),
-    Question("Who painted the Mona Lisa?", "Leonardo da Vinci",
-             ["Michelangelo", "Leonardo da Vinci", "Raphael", "Donatello"], 1, "Art", "easy"),
-    Question("What is the largest ocean on Earth?", "Pacific Ocean",
-             ["Atlantic Ocean", "Indian Ocean", "Pacific Ocean", "Arctic Ocean"], 2, "Geography", "easy"),
-    Question("In what year did the Titanic sink?", "1912",
-             ["1905", "1912", "1920", "1898"], 1, "History", "easy"),
-    Question("What element does 'O' represent on the periodic table?", "Oxygen",
-             ["Gold", "Osmium", "Oxygen", "Oganesson"], 2, "Science", "easy"),
-    Question("How many strings does a standard guitar have?", "6",
-             ["4", "5", "6", "8"], 2, "Music", "easy"),
-    Question("What is the smallest country in the world?", "Vatican City",
-             ["Monaco", "Vatican City", "San Marino", "Liechtenstein"], 1, "Geography", "easy"),
-    Question("Which gas do plants absorb from the atmosphere?", "Carbon Dioxide",
-             ["Oxygen", "Nitrogen", "Carbon Dioxide", "Hydrogen"], 2, "Science", "easy"),
-    Question("What is the hardest natural substance on Earth?", "Diamond",
-             ["Gold", "Iron", "Diamond", "Platinum"], 2, "Science", "medium"),
-    Question("Who wrote 'Romeo and Juliet'?", "William Shakespeare",
-             ["Charles Dickens", "William Shakespeare", "Jane Austen", "Mark Twain"], 1, "Literature", "easy"),
+    # --- Geography ---
+    _q("What is the capital of France?", "Paris", ["London", "Berlin", "Madrid"], "Geography"),
+    _q("What is the largest ocean on Earth?", "Pacific Ocean", ["Atlantic Ocean", "Indian Ocean", "Arctic Ocean"], "Geography"),
+    _q("What is the smallest country in the world?", "Vatican City", ["Monaco", "San Marino", "Liechtenstein"], "Geography"),
+    _q("Which country has the longest coastline?", "Canada", ["Russia", "Australia", "Indonesia"], "Geography"),
+    _q("What is the tallest mountain in the world?", "Mount Everest", ["K2", "Kangchenjunga", "Mont Blanc"], "Geography"),
+    _q("Which river is the longest in the world?", "Nile", ["Amazon", "Yangtze", "Mississippi"], "Geography"),
+    _q("What is the capital of Japan?", "Tokyo", ["Osaka", "Kyoto", "Nagoya"], "Geography"),
+    _q("Which desert is the largest in the world?", "Sahara", ["Gobi", "Kalahari", "Arabian"], "Geography"),
+    _q("In which country would you find Machu Picchu?", "Peru", ["Bolivia", "Chile", "Colombia"], "Geography"),
+    _q("What is the capital of Australia?", "Canberra", ["Sydney", "Melbourne", "Brisbane"], "Geography"),
+    _q("Which continent has the most countries?", "Africa", ["Asia", "Europe", "South America"], "Geography"),
+    _q("What is the deepest ocean trench?", "Mariana Trench", ["Tonga Trench", "Java Trench", "Puerto Rico Trench"], "Geography", "medium"),
+    # --- Science ---
+    _q("What planet is known as the Red Planet?", "Mars", ["Venus", "Jupiter", "Saturn"], "Science"),
+    _q("What element does 'O' represent on the periodic table?", "Oxygen", ["Gold", "Osmium", "Oganesson"], "Science"),
+    _q("What is the hardest natural substance on Earth?", "Diamond", ["Gold", "Iron", "Platinum"], "Science", "medium"),
+    _q("Which gas do plants absorb from the atmosphere?", "Carbon Dioxide", ["Oxygen", "Nitrogen", "Hydrogen"], "Science"),
+    _q("What is the speed of light approximately?", "300,000 km/s", ["150,000 km/s", "500,000 km/s", "1,000,000 km/s"], "Science", "medium"),
+    _q("How many bones are in the adult human body?", "206", ["180", "215", "256"], "Science"),
+    _q("What planet is closest to the Sun?", "Mercury", ["Venus", "Earth", "Mars"], "Science"),
+    _q("What is the chemical symbol for gold?", "Au", ["Ag", "Go", "Gd"], "Science"),
+    _q("What is the largest planet in our solar system?", "Jupiter", ["Saturn", "Neptune", "Uranus"], "Science"),
+    _q("What is the powerhouse of the cell?", "Mitochondria", ["Nucleus", "Ribosome", "Golgi apparatus"], "Science"),
+    _q("What gas makes up most of Earth's atmosphere?", "Nitrogen", ["Oxygen", "Carbon Dioxide", "Argon"], "Science"),
+    _q("How many planets are in our solar system?", "8", ["7", "9", "10"], "Science"),
+    _q("What is the boiling point of water in Celsius?", "100", ["90", "110", "120"], "Science"),
+    _q("Which planet has the most moons?", "Saturn", ["Jupiter", "Uranus", "Neptune"], "Science", "medium"),
+    # --- History ---
+    _q("In what year did the Titanic sink?", "1912", ["1905", "1920", "1898"], "History"),
+    _q("Who was the first person to walk on the Moon?", "Neil Armstrong", ["Buzz Aldrin", "Yuri Gagarin", "John Glenn"], "History"),
+    _q("In which year did World War II end?", "1945", ["1943", "1944", "1946"], "History"),
+    _q("Who was the first President of the United States?", "George Washington", ["Thomas Jefferson", "Abraham Lincoln", "John Adams"], "History"),
+    _q("Which ancient wonder was located in Egypt?", "Great Pyramid of Giza", ["Hanging Gardens", "Colossus of Rhodes", "Temple of Artemis"], "History"),
+    _q("What year did the Berlin Wall fall?", "1989", ["1987", "1991", "1985"], "History"),
+    _q("Which empire built the Colosseum?", "Roman Empire", ["Greek Empire", "Ottoman Empire", "Byzantine Empire"], "History"),
+    _q("Who discovered penicillin?", "Alexander Fleming", ["Louis Pasteur", "Marie Curie", "Joseph Lister"], "History"),
+    _q("In what year did Columbus reach the Americas?", "1492", ["1488", "1500", "1476"], "History"),
+    _q("What was the name of the ship the Pilgrims sailed to America?", "Mayflower", ["Santa Maria", "Endeavour", "Beagle"], "History"),
+    # --- Animals ---
+    _q("How many legs does a spider have?", "8", ["6", "10", "12"], "Animals"),
+    _q("What is the fastest land animal?", "Cheetah", ["Lion", "Horse", "Gazelle"], "Animals"),
+    _q("What is the largest mammal?", "Blue Whale", ["Elephant", "Giraffe", "Hippopotamus"], "Animals"),
+    _q("How many hearts does an octopus have?", "3", ["1", "2", "5"], "Animals"),
+    _q("What is a group of wolves called?", "Pack", ["Herd", "Flock", "Swarm"], "Animals"),
+    _q("Which bird is known for its ability to mimic speech?", "Parrot", ["Crow", "Owl", "Eagle"], "Animals"),
+    _q("What is the tallest animal in the world?", "Giraffe", ["Elephant", "Ostrich", "Moose"], "Animals"),
+    _q("Which animal can change its color to blend in?", "Chameleon", ["Gecko", "Iguana", "Frog"], "Animals"),
+    _q("What is the only mammal capable of true flight?", "Bat", ["Flying squirrel", "Sugar glider", "Colugo"], "Animals"),
+    # --- Art & Literature ---
+    _q("Who painted the Mona Lisa?", "Leonardo da Vinci", ["Michelangelo", "Raphael", "Donatello"], "Art"),
+    _q("Who wrote 'Romeo and Juliet'?", "William Shakespeare", ["Charles Dickens", "Jane Austen", "Mark Twain"], "Literature"),
+    _q("Who wrote '1984'?", "George Orwell", ["Aldous Huxley", "Ray Bradbury", "H.G. Wells"], "Literature"),
+    _q("Which artist painted the ceiling of the Sistine Chapel?", "Michelangelo", ["Leonardo da Vinci", "Raphael", "Caravaggio"], "Art"),
+    _q("Who wrote 'The Great Gatsby'?", "F. Scott Fitzgerald", ["Ernest Hemingway", "John Steinbeck", "William Faulkner"], "Literature"),
+    _q("Which art movement did Salvador Dali belong to?", "Surrealism", ["Impressionism", "Cubism", "Pop Art"], "Art", "medium"),
+    _q("Who wrote 'Harry Potter'?", "J.K. Rowling", ["J.R.R. Tolkien", "C.S. Lewis", "Roald Dahl"], "Literature"),
+    _q("Who painted 'Starry Night'?", "Vincent van Gogh", ["Claude Monet", "Pablo Picasso", "Edvard Munch"], "Art"),
+    # --- Music ---
+    _q("How many strings does a standard guitar have?", "6", ["4", "5", "8"], "Music"),
+    _q("Who is known as the 'King of Pop'?", "Michael Jackson", ["Elvis Presley", "Prince", "Freddie Mercury"], "Music"),
+    _q("What instrument has 88 keys?", "Piano", ["Organ", "Accordion", "Harpsichord"], "Music"),
+    _q("Which band released 'Bohemian Rhapsody'?", "Queen", ["The Beatles", "Led Zeppelin", "Pink Floyd"], "Music"),
+    _q("What is the highest female singing voice?", "Soprano", ["Alto", "Mezzo-soprano", "Contralto"], "Music"),
+    _q("Who composed the 'Moonlight Sonata'?", "Beethoven", ["Mozart", "Chopin", "Bach"], "Music"),
+    # --- Film & TV ---
+    _q("What is the highest-grossing film of all time?", "Avatar", ["Avengers: Endgame", "Titanic", "Star Wars"], "Film"),
+    _q("Who directed 'Jurassic Park'?", "Steven Spielberg", ["James Cameron", "George Lucas", "Ridley Scott"], "Film"),
+    _q("Which movie features the quote 'I'll be back'?", "The Terminator", ["Predator", "Total Recall", "Commando"], "Film"),
+    _q("In 'The Wizard of Oz', what color are Dorothy's slippers?", "Ruby red", ["Silver", "Gold", "Blue"], "Film"),
+    _q("Who played Jack in the movie 'Titanic'?", "Leonardo DiCaprio", ["Brad Pitt", "Matt Damon", "Johnny Depp"], "Film"),
+    # --- Food & Drink ---
+    _q("What fruit is known as the 'king of fruits'?", "Durian", ["Mango", "Pineapple", "Jackfruit"], "Food", "medium"),
+    _q("What country is sushi originally from?", "Japan", ["China", "Korea", "Thailand"], "Food"),
+    _q("What is the main ingredient in guacamole?", "Avocado", ["Tomato", "Lime", "Onion"], "Food"),
+    _q("Which nut is used to make marzipan?", "Almond", ["Walnut", "Cashew", "Pistachio"], "Food"),
+    _q("What is the most consumed beverage in the world after water?", "Tea", ["Coffee", "Milk", "Juice"], "Food"),
+    # --- Sports ---
+    _q("How many players are on a soccer team on the field?", "11", ["9", "10", "12"], "Sports"),
+    _q("In which sport is the term 'love' used for zero?", "Tennis", ["Badminton", "Cricket", "Golf"], "Sports"),
+    _q("How long is an Olympic swimming pool in meters?", "50", ["25", "75", "100"], "Sports"),
+    _q("What country hosted the 2016 Summer Olympics?", "Brazil", ["Russia", "Japan", "China"], "Sports"),
+    _q("Which sport uses a puck?", "Ice Hockey", ["Field Hockey", "Lacrosse", "Polo"], "Sports"),
+    # --- Technology ---
+    _q("What does 'HTTP' stand for?", "HyperText Transfer Protocol", ["High Tech Transfer Protocol", "HyperText Transmission Process", "High Transfer Text Protocol"], "Technology"),
+    _q("Who co-founded Apple with Steve Jobs?", "Steve Wozniak", ["Bill Gates", "Tim Cook", "Elon Musk"], "Technology"),
+    _q("What year was the first iPhone released?", "2007", ["2005", "2008", "2010"], "Technology"),
+    _q("What does 'CPU' stand for?", "Central Processing Unit", ["Computer Personal Unit", "Central Program Utility", "Core Processing Unit"], "Technology"),
+    _q("Which programming language is named after a type of coffee?", "Java", ["Python", "Ruby", "Go"], "Technology"),
+    # --- Mythology ---
+    _q("In Greek mythology, who is the king of the gods?", "Zeus", ["Poseidon", "Hades", "Apollo"], "Mythology"),
+    _q("What creature has the body of a lion and the head of a human?", "Sphinx", ["Griffin", "Manticore", "Chimera"], "Mythology", "medium"),
+    _q("Who is the Norse god of thunder?", "Thor", ["Odin", "Loki", "Freya"], "Mythology"),
+    _q("In mythology, what was Medusa's hair made of?", "Snakes", ["Worms", "Vines", "Eels"], "Mythology"),
+    # --- Math ---
+    _q("What is the value of Pi rounded to two decimals?", "3.14", ["3.16", "3.12", "3.41"], "Mathematics"),
+    _q("What is a triangle with all equal sides called?", "Equilateral", ["Isosceles", "Scalene", "Right"], "Mathematics"),
+    _q("What is the square root of 144?", "12", ["11", "13", "14"], "Mathematics"),
+    _q("How many sides does a hexagon have?", "6", ["5", "7", "8"], "Mathematics"),
 ]
+
+del _q  # clean up helper from module namespace
 
 
 BOT_PREFIX = "[Bot] "
@@ -112,8 +194,10 @@ class QuizLogic:
         # Theme voting
         self.vote_state: ThemeVoteState | None = None
 
-        # Leaderboard cache
+        # Leaderboard cache & position change tracking
         self._leaderboard: list[Player] = []
+        self._prev_positions: dict[str, int] = {}  # username -> 1-indexed position
+        self.leaderboard_changes: list[dict] = []   # [{username, old_pos, new_pos}]
 
         # --- Addictive mechanics ---
         self.is_double_points = False
@@ -128,7 +212,8 @@ class QuizLogic:
 
         # Filler bots
         self._scheduled_bots: list[tuple[str, int, float]] = []  # (name, choice, answer_time)
-        self._recent_real_answers: list[set[str]] = []  # rolling window of real player sets
+        self._last_round_real_players: set[str] = set()  # who played last round
+        self._active_bot_names: list[str] = []  # bots currently in play (random subset)
         self._bots_active = False
 
         # Kick off token fetch + pre-fill cache
@@ -205,6 +290,7 @@ class QuizLogic:
                     if len(fresh) < len(questions):
                         print(f"[OTDB] Filtered {len(questions) - len(fresh)} duplicate(s)")
                     self._question_cache.extend(fresh)
+                    random.shuffle(self._question_cache)
                     print(f"[OTDB] Cached {len(fresh)} questions (total: {len(self._question_cache)}, seen: {len(self._seen_questions)})")
                 else:
                     print(f"[OTDB] Discarded {len(questions)} questions (category changed during fetch)")
@@ -268,8 +354,15 @@ class QuizLogic:
             q = self._question_cache.pop(0)
             self._seen_questions[self._hash_question(q)] = time.time()
             return q
-        q = FALLBACK_QUESTIONS[self._fallback_idx % len(FALLBACK_QUESTIONS)]
-        self._fallback_idx += 1
+        # Fallback: pick a random unseen question from the pool
+        self._purge_seen()
+        unseen = [q for q in FALLBACK_QUESTIONS
+                  if self._hash_question(q) not in self._seen_questions]
+        if not unseen:
+            # All seen recently — allow any and clear seen fallbacks
+            unseen = list(FALLBACK_QUESTIONS)
+        q = random.choice(unseen)
+        self._seen_questions[self._hash_question(q)] = time.time()
         options = list(q.options)
         random.shuffle(options)
         correct_index = options.index(q.correct_answer)
@@ -354,14 +447,10 @@ class QuizLogic:
         # Track participation streaks from previous round
         self._update_participation_streaks()
 
-        # Track real players from previous round (before clearing answers)
-        if self.current_answers:
-            real_this_round = {
-                u for u in self.current_answers if not u.startswith(BOT_PREFIX)
-            }
-            self._recent_real_answers.append(real_this_round)
-            if len(self._recent_real_answers) > 5:
-                self._recent_real_answers.pop(0)
+        # Snapshot real players from previous round (before clearing answers)
+        self._last_round_real_players = {
+            u for u in self.current_answers if not u.startswith(BOT_PREFIX)
+        }
 
         self._ensure_cache()
         self.current_question = self._pop_question()
@@ -427,8 +516,54 @@ class QuizLogic:
 
     def _enter_leaderboard(self):
         self._leaderboard = self.db.get_top_players()
+        self._detect_position_changes()
         self.sound_queue.append("fanfare")
         self._check_competition()
+
+    def _detect_position_changes(self):
+        """Compare new leaderboard to previous positions, track top-5 climbers."""
+        self.leaderboard_changes = []
+        new_positions = {}
+        for i, player in enumerate(self._leaderboard):
+            new_positions[player.username] = i + 1  # 1-indexed
+
+        for username, new_pos in new_positions.items():
+            if new_pos > 5:
+                continue  # only track top 5
+            old_pos = self._prev_positions.get(username)
+            if old_pos is None:
+                # New entry into top 5
+                if len(self._prev_positions) > 0:  # skip first round
+                    self.leaderboard_changes.append({
+                        "username": username,
+                        "old_pos": 0,
+                        "new_pos": new_pos,
+                    })
+            elif new_pos < old_pos:
+                # Climbed up
+                self.leaderboard_changes.append({
+                    "username": username,
+                    "old_pos": old_pos,
+                    "new_pos": new_pos,
+                })
+
+        if self.leaderboard_changes:
+            self.sound_queue.append("rank_up")
+            for change in self.leaderboard_changes:
+                name = change["username"]
+                if change["old_pos"] == 0:
+                    self._push_event(
+                        f"{name} enters the TOP {change['new_pos']}!",
+                        COLOR_TEXT_GOLD, "UP",
+                    )
+                else:
+                    self._push_event(
+                        f"{name} climbs to #{change['new_pos']}!",
+                        COLOR_TEXT_GOLD, "UP",
+                    )
+
+        # Save current positions for next comparison
+        self._prev_positions = new_positions
 
     def _enter_theme_vote(self):
         available = list(VOTABLE_CATEGORIES.items())
@@ -698,32 +833,36 @@ class QuizLogic:
     # ------------------------------------------
     # FILLER BOTS
     # ------------------------------------------
+    def _count_real_players(self) -> int:
+        """Count active real players: those who played last round."""
+        return len(self._last_round_real_players)
+
+    def _count_real_in_round(self) -> int:
+        """Count real players who have answered in the current round."""
+        return sum(
+            1 for u in self.current_answers if not u.startswith(BOT_PREFIX)
+        )
+
+    def _count_bots_in_round(self) -> int:
+        """Count bots who have answered in the current round."""
+        return sum(
+            1 for u in self.current_answers if u.startswith(BOT_PREFIX)
+        )
+
     def _schedule_bots(self):
         """Schedule filler bot answers for this round."""
         self._scheduled_bots = []
 
-        # Method 1: rolling window of recent round participants
-        if self._recent_real_answers:
-            real_players = set().union(*self._recent_real_answers)
-        else:
-            real_players = set()
-        window_count = len(real_players)
+        # Use last round's real player count as our estimate
+        real_count = self._count_real_players()
 
-        # Method 2: non-bot players active this session (immediate detection)
-        db_count = sum(
-            1 for u, p in self.db._players.items()
-            if not u.startswith(BOT_PREFIX)
-            and p.last_seen >= self.session_start_time
-        )
-
-        real_count = max(window_count, db_count)
-
-        # Fill to exactly MIN_PLAYERS
+        # Fill to exactly MIN_PLAYERS total
         bots_needed = max(0, MIN_PLAYERS - real_count)
 
         if bots_needed == 0:
             if self._bots_active:
                 self._bots_active = False
+                self._active_bot_names = []
                 self.db.remove_players(BOT_PROFILES)
                 self._push_event(
                     "Enough players! Bots retired.", COLOR_CORRECT, "BYE",
@@ -731,13 +870,17 @@ class QuizLogic:
                 print(f"[Game] Bots retired ({real_count} real players)")
             return
 
+        # Randomly select which bots to use this round
+        available_bots = list(BOT_PROFILES)
+        random.shuffle(available_bots)
+        active_bots = available_bots[:bots_needed]
+
         # Remove bots that are no longer needed
-        active_bots = BOT_PROFILES[:bots_needed]
-        retired_bots = BOT_PROFILES[bots_needed:]
+        retired_bots = [b for b in BOT_PROFILES if b not in active_bots]
         if retired_bots and self._bots_active:
             self.db.remove_players(retired_bots)
-            print(f"[Game] Retired {len(retired_bots)} bot(s), {bots_needed} remain ({real_count} real players)")
 
+        self._active_bot_names = active_bots
         self._bots_active = True
 
         if not self.current_question:
@@ -746,40 +889,76 @@ class QuizLogic:
         correct_idx = self.current_question.correct_index
         num_options = len(self.current_question.options)
         diff = BOT_DIFFICULTY["easy"]
+        q_time = self.state_duration  # respects lightning round
 
         for bot_name in active_bots:
-            # Pick answer based on easy accuracy
             if random.random() < diff["accuracy"]:
                 choice = correct_idx
             else:
                 wrong_choices = [i for i in range(num_options) if i != correct_idx]
                 choice = random.choice(wrong_choices)
 
-            # Schedule answer time
             speed_frac = random.uniform(diff["speed_min"], diff["speed_max"])
-            answer_time = self.question_start_time + speed_frac * QUESTION_DISPLAY_TIME
-
+            answer_time = self.question_start_time + speed_frac * q_time
             self._scheduled_bots.append((bot_name, choice, answer_time))
 
-        print(f"[Game] Bots: scheduled {len(self._scheduled_bots)} bots "
-              f"(real_count={real_count}, bots_needed={bots_needed})")
+        print(f"[Game] Bots: scheduled {bots_needed} bots "
+              f"(real_count={real_count}, bots={[b.replace(BOT_PREFIX,'') for b in active_bots]})")
+
+    def _remove_excess_bots(self):
+        """Remove bots mid-round when real players join. Called after a real player answers."""
+        real_in_round = self._count_real_in_round()
+
+        # If real players alone fill the lobby, remove ALL bots
+        if real_in_round >= MIN_PLAYERS:
+            bots_to_remove = [u for u in self.current_answers if u.startswith(BOT_PREFIX)]
+            for bot_name in bots_to_remove:
+                del self.current_answers[bot_name]
+            self._scheduled_bots = []
+            if bots_to_remove:
+                print(f"[Game] Removed {len(bots_to_remove)} bot(s) "
+                      f"(real players: {real_in_round})")
+            if self._bots_active:
+                self._bots_active = False
+                self._active_bot_names = []
+                self.db.remove_players(BOT_PROFILES)
+                self._push_event(
+                    "Enough players! Bots retired.", COLOR_CORRECT, "BYE",
+                )
+            return
+
+        # Otherwise, trim bots so total = MIN_PLAYERS
+        bots_in_round = [u for u in self.current_answers if u.startswith(BOT_PREFIX)]
+        total = real_in_round + len(bots_in_round)
+        excess = total - MIN_PLAYERS
+
+        if excess > 0:
+            # Randomly pick which bots to remove
+            random.shuffle(bots_in_round)
+            to_remove = bots_in_round[:excess]
+            for bot_name in to_remove:
+                del self.current_answers[bot_name]
+            # Also cancel any scheduled bots that are now excess
+            scheduled_names = {b[0] for b in self._scheduled_bots}
+            active_bot_answers = {u for u in self.current_answers if u.startswith(BOT_PREFIX)}
+            self._scheduled_bots = [
+                (name, choice, t) for name, choice, t in self._scheduled_bots
+                if name in active_bot_answers or (real_in_round + len(active_bot_answers) < MIN_PLAYERS)
+            ]
+            print(f"[Game] Trimmed {len(to_remove)} bot(s) "
+                  f"(real: {real_in_round}, bots remaining: {len(bots_in_round) - len(to_remove)})")
 
     def _process_bot_answers(self):
-        """Process scheduled bot answers, skipping bots if real players filled the lobby."""
+        """Process scheduled bot answers, dynamically adjusting for real player count."""
         now = time.time()
         remaining = []
 
-        # Live counts — recalculated as bots answer within this loop
-        real_in_round = sum(
-            1 for u in self.current_answers if not u.startswith(BOT_PREFIX)
-        )
-        bots_in_round = sum(
-            1 for u in self.current_answers if u.startswith(BOT_PREFIX)
-        )
+        real_in_round = self._count_real_in_round()
+        bots_in_round = self._count_bots_in_round()
 
         for bot_name, choice, answer_time in self._scheduled_bots:
             if now >= answer_time:
-                # Dynamic cap: skip this bot if we already have enough players
+                # Dynamic cap: skip if we already have enough total players
                 if real_in_round + bots_in_round >= MIN_PLAYERS:
                     print(f"[Game] {bot_name} skipped (lobby full: "
                           f"{real_in_round} real + {bots_in_round} bots)")
@@ -927,6 +1106,10 @@ class QuizLogic:
                         print(f"[Game] {username} changed answer from {old_choice + 1} to {msg}")
                     else:
                         print(f"[Game] {username} already picked {msg}")
+
+                # Dynamically adjust bots when a real player answers
+                if not username.startswith(BOT_PREFIX):
+                    self._remove_excess_bots()
 
                 # Welcome new players (skip bots)
                 if username not in self._known_players:

@@ -89,10 +89,10 @@ RANK_COLORS = {
 # ==========================================
 OTDB_BASE_URL = "https://opentdb.com/api.php"
 OTDB_TOKEN_URL = "https://opentdb.com/api_token.php"
-OTDB_BATCH_SIZE = 10
-OTDB_MIN_CACHE = 3
+OTDB_BATCH_SIZE = 50  # max supported by OTDB API
+OTDB_MIN_CACHE = 10   # prefetch aggressively for variety
 OTDB_REQUEST_COOLDOWN = 6.0
-OTDB_SEEN_EXPIRY = 3600  # seconds before a seen question can reappear (1 hour)
+OTDB_SEEN_EXPIRY = 14400  # 4 hours before a seen question can reappear
 NUM_ANSWER_OPTIONS = 4
 
 # ==========================================

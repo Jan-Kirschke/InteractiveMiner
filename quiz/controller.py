@@ -179,6 +179,7 @@ class MainGameController:
             "answer_count": self.logic.answer_count,
             "result": self.logic.last_result,
             "leaderboard": self.logic.leaderboard,
+            "leaderboard_changes": self.logic.leaderboard_changes,
             "vote_state": self.logic.vote_state,
             "is_double_points": self.logic.is_double_points,
             "mini_event": self.logic.mini_event,

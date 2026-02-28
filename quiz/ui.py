@@ -84,6 +84,30 @@ class SmokeParticle:
         self.life = random.uniform(8, 20)
 
 
+class PixelSparkle:
+    """Minecraft-style square sparkle particle with twinkle effect."""
+    __slots__ = ("x", "y", "vx", "vy", "color", "life", "max_life",
+                 "size", "twinkle_speed", "twinkle_offset")
+
+    def __init__(self, x, y, color=None):
+        self.x = x + random.uniform(-60, 60)
+        self.y = y + random.uniform(-15, 15)
+        self.vx = random.uniform(-1.5, 1.5)
+        self.vy = random.uniform(-2.5, -0.3)
+        # Gold/white/amber pixel colors for enchantment glow
+        if color is None:
+            color = random.choice([
+                (255, 215, 0), (255, 255, 180), (212, 175, 55),
+                (255, 240, 100), (200, 180, 80), (255, 255, 255),
+            ])
+        self.color = color
+        self.max_life = random.uniform(0.6, 1.8)
+        self.life = self.max_life
+        self.size = random.choice([2, 3, 4])  # pixel sizes
+        self.twinkle_speed = random.uniform(6, 14)
+        self.twinkle_offset = random.uniform(0, 6.28)
+
+
 # ==========================================
 # UI MANAGER
 # ==========================================
@@ -96,6 +120,7 @@ class UIManager:
 
         # Particles
         self.particles: list[Particle] = []
+        self.sparkles: list[PixelSparkle] = []
         self.smoke: list[SmokeParticle] = [SmokeParticle() for _ in range(25)]
 
         # Animation state
@@ -177,6 +202,8 @@ class UIManager:
             self._last_state = state
             if state == GameState.LEADERBOARD:
                 self._leaderboard_anim_start = time.time()
+            else:
+                self.sparkles.clear()
 
         dt = 1.0 / FPS
 
@@ -234,6 +261,7 @@ class UIManager:
 
         # Particles
         self._update_and_draw_particles(dt)
+        self._update_and_draw_sparkles(dt)
 
         pygame.display.flip()
 
@@ -689,7 +717,11 @@ class UIManager:
         top_players: list[Player] = data.get("leaderboard", [])
         round_count = data.get("round_count", 0)
         player_count = data.get("player_count", 0)
+        changes = data.get("leaderboard_changes", [])
         elapsed = time.time() - self._leaderboard_anim_start
+
+        # Build lookup: username -> change dict
+        change_map = {c["username"]: c for c in changes}
 
         cx = SCREEN_WIDTH // 2
 
@@ -736,12 +768,32 @@ class UIManager:
             offset_x = int((1 - row_progress) * 300)
             row_alpha = _alpha(255 * row_progress)
 
+            change = change_map.get(player.username)
+            has_change = change is not None and row_progress > 0.8
+
             row_surf = pygame.Surface((table_w, row_h - 4), pygame.SRCALPHA)
 
-            row_color = (50, 42, 20, row_alpha) if i == 0 else (
-                (35, 32, 28, row_alpha) if i % 2 == 0 else (28, 25, 22, row_alpha)
-            )
+            if has_change:
+                # Highlighted row background with golden glow
+                pulse = 0.6 + 0.4 * math.sin(time.time() * 4)
+                glow_alpha = int(row_alpha * pulse)
+                row_color = (70, 60, 20, glow_alpha)
+            elif i == 0:
+                row_color = (50, 42, 20, row_alpha)
+            else:
+                row_color = (35, 32, 28, row_alpha) if i % 2 == 0 else (28, 25, 22, row_alpha)
+
             pygame.draw.rect(row_surf, row_color, (0, 0, table_w, row_h - 4), border_radius=8)
+
+            # Glowing border for changed rows
+            if has_change:
+                border_pulse = 0.5 + 0.5 * math.sin(time.time() * 5)
+                border_alpha = int(200 * border_pulse)
+                pygame.draw.rect(
+                    row_surf, (255, 215, 0, border_alpha),
+                    (0, 0, table_w, row_h - 4),
+                    width=2, border_radius=8,
+                )
 
             # Rank number
             rank_text = "1" if i == 0 else str(i + 1)
@@ -782,6 +834,25 @@ class UIManager:
 
             self.screen.blit(row_surf, (table_x + offset_x, ry))
 
+            # Position change popup + sparkles
+            if has_change:
+                popup_delay = delay + 0.4
+                popup_progress = ease_out_elastic(
+                    min(1.0, max(0, (elapsed - popup_delay) / 0.6)),
+                )
+                if popup_progress > 0:
+                    actual_row_x = table_x + offset_x
+                    self._draw_position_popup(
+                        change, actual_row_x + table_w + 10, ry,
+                        row_h - 4, popup_progress,
+                    )
+                    # Spawn sparkle particles along the row
+                    if random.random() < 0.35:
+                        sx = actual_row_x + random.uniform(0, table_w)
+                        sy = ry + (row_h - 4) / 2
+                        if len(self.sparkles) < MAX_PARTICLES:
+                            self.sparkles.append(PixelSparkle(sx, sy))
+
         # Footer
         footer_y = header_y + 55 + len(top_players) * row_h + 25
         footer_fade = min(1.0, max(0, (elapsed - 1.5) / 0.4))
@@ -800,6 +871,58 @@ class UIManager:
             self.font_small, COLOR_TEXT_DIM, footer_y + 35,
             _alpha(255 * footer_fade),
         )
+
+    # ------------------------------------------
+    # POSITION CHANGE POPUP
+    # ------------------------------------------
+    def _draw_position_popup(self, change, x, y, h, progress):
+        """Draw a popup badge showing position climb with bounce animation."""
+        old_pos = change["old_pos"]
+        new_pos = change["new_pos"]
+
+        if old_pos == 0:
+            label = f"NEW #{new_pos}!"
+        else:
+            delta = old_pos - new_pos
+            label = f"+{delta}" if delta > 0 else f"#{new_pos}"
+
+        # Badge dimensions
+        badge_w = 120
+        badge_h = h
+
+        # Bounce scale from elastic easing
+        scale = min(1.0, progress)
+        scaled_w = int(badge_w * scale)
+        scaled_h = int(badge_h * scale)
+        if scaled_w < 10 or scaled_h < 10:
+            return
+
+        badge_surf = pygame.Surface((scaled_w, scaled_h), pygame.SRCALPHA)
+        popup_alpha = _alpha(255 * min(1.0, progress * 2))
+
+        # Background with golden glow
+        pygame.draw.rect(
+            badge_surf, (60, 50, 10, popup_alpha),
+            (0, 0, scaled_w, scaled_h), border_radius=8,
+        )
+        pulse = 0.6 + 0.4 * math.sin(time.time() * 5)
+        border_alpha = int(popup_alpha * pulse)
+        pygame.draw.rect(
+            badge_surf, (255, 215, 0, border_alpha),
+            (0, 0, scaled_w, scaled_h), width=2, border_radius=8,
+        )
+
+        # Arrow + text
+        arrow = self.font_medium.render(label, True, COLOR_TEXT_GOLD)
+        ax = scaled_w // 2 - arrow.get_width() // 2
+        ay = scaled_h // 2 - arrow.get_height() // 2
+        arrow.set_alpha(popup_alpha)
+        badge_surf.blit(arrow, (ax, ay))
+
+        # Center badge vertically on the row
+        bx = min(x, SCREEN_WIDTH - scaled_w - 10)
+        by = y + (h - scaled_h) // 2
+        self.screen.blit(badge_surf, (bx, by))
 
     # ------------------------------------------
     # THEME VOTE STATE
@@ -1159,3 +1282,29 @@ class UIManager:
             self.screen.blit(surf, (int(p.x - size), int(p.y - size)))
             alive.append(p)
         self.particles = alive
+
+    def _update_and_draw_sparkles(self, dt):
+        """Render minecraft-style pixel sparkle particles (square, twinkling)."""
+        alive = []
+        for s in self.sparkles:
+            s.life -= dt
+            if s.life <= 0:
+                continue
+            s.vy += 1.5 * dt  # light gravity
+            s.x += s.vx
+            s.y += s.vy
+            frac = s.life / s.max_life
+
+            # Twinkle: oscillate alpha for enchantment sparkle effect
+            twinkle = 0.3 + 0.7 * abs(math.sin(
+                time.time() * s.twinkle_speed + s.twinkle_offset,
+            ))
+            alpha = _alpha(255 * frac * twinkle)
+            size = s.size
+
+            # Draw as a pixel square (minecraft style)
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+            surf.fill((*s.color[:3], alpha))
+            self.screen.blit(surf, (int(s.x), int(s.y)))
+            alive.append(s)
+        self.sparkles = alive
