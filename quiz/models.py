@@ -29,6 +29,8 @@ class Player:
     correct_answers: int = 0
     wrong_answers: int = 0
     wrong_streak: int = 0
+    participation_streak: int = 0
+    streak_shield: bool = False
     last_seen: float = field(default_factory=time.time)
 
     def record_correct(self, points: int):
@@ -48,7 +50,14 @@ class Player:
 
     def record_wrong(self):
         self.wrong_streak += 1
-        self.streak = 0
+        # Streak shield: halve streak instead of resetting to 0
+        if self.streak_shield and self.streak > 0:
+            self.streak = self.streak // 2
+            self.streak_shield = False
+            self._shield_used = True
+        else:
+            self.streak = 0
+            self._shield_used = False
         self.wrong_answers += 1
         self.games_played += 1
         self.last_seen = time.time()
@@ -69,6 +78,8 @@ class Player:
         self.correct_answers = 0
         self.wrong_answers = 0
         self.wrong_streak = 0
+        self.participation_streak = 0
+        self.streak_shield = False
 
 
 @dataclass

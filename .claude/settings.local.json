@@ -16,7 +16,8 @@
       "Bash(\"C:\\\\Users\\\\mauri\\\\Documents\\\\InteractiveMiner\\\\scripts\\\\ffmpeg.exe\" -version)",
       "Bash(timeout 5 scripts/ffmpeg.exe:*)",
       "Bash(timeout 8 scripts/ffmpeg.exe:*)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "Bash(python:*)"
     ]
   }
 }

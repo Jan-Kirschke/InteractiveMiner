@@ -48,7 +48,7 @@ COLOR_RANK_LEGEND = (255, 69, 0)
 QUESTION_DISPLAY_TIME = 30
 REVEAL_DISPLAY_TIME = 8
 LEADERBOARD_DISPLAY_TIME = 10
-THEME_VOTE_TIME = 20
+THEME_VOTE_TIME = 30
 ROUNDS_BEFORE_VOTE = 5
 LATE_ANSWER_GRACE = 5  # seconds to accept answers/votes after a phase ends (chat delay)
 
@@ -206,6 +206,23 @@ ACHIEVEMENTS = {
     "rank_legend":   {"name": "Living Legend",     "desc": "Reach Legend rank"},
     "centurion":     {"name": "Centurion",        "desc": "Play 100 rounds"},
 }
+
+# Mini events (only one can trigger per round, checked in priority order)
+LIGHTNING_ROUND_CHANCE = 0.08   # 8% chance: shorter time, 1.5x points
+JACKPOT_CHANCE = 0.10           # 10% chance: random correct player wins jackpot
+FIRST_BLOOD_CHANCE = 0.15       # 15% chance: fastest correct player gets bonus
+LIGHTNING_TIME = 15             # seconds (instead of 30)
+LIGHTNING_MULT = 1.5
+JACKPOT_BONUS = 25              # flat bonus for jackpot winner
+FIRST_BLOOD_BONUS = 15          # flat bonus for first correct answerer
+
+# Participation rewards
+PARTICIPATION_MILESTONES = [5, 10, 20, 50, 100]  # rounds participated in a row
+PARTICIPATION_BONUS = 10        # points per milestone
+STREAK_SHIELD_THRESHOLD = 5    # correct streak needed to earn a shield
+
+# Command cooldown
+COMMAND_COOLDOWN = 30           # seconds between score/clear commands per player
 
 # Chat feed
 CHAT_FEED_MAX = 6           # show last N events on screen

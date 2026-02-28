@@ -181,6 +181,7 @@ class MainGameController:
             "leaderboard": self.logic.leaderboard,
             "vote_state": self.logic.vote_state,
             "is_double_points": self.logic.is_double_points,
+            "mini_event": self.logic.mini_event,
             "events": self.logic.get_recent_events(),
             "competition_alert": self.logic.competition_alert,
         }

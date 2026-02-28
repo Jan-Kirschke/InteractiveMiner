@@ -219,6 +219,11 @@ class UIManager:
         if data.get("is_double_points") and state == GameState.ASKING:
             self._draw_double_points_banner(phase_age)
 
+        # Mini event banner
+        mini_event = data.get("mini_event", "")
+        if mini_event and state == GameState.ASKING:
+            self._draw_mini_event_banner(mini_event, phase_age)
+
         # Competition alert
         alert = data.get("competition_alert", "")
         if alert and state == GameState.LEADERBOARD:
@@ -503,6 +508,27 @@ class UIManager:
         self._text_centered(
             f"{answer_count} answers", self.font_small,
             COLOR_TEXT_SECONDARY, timer_y + 58,
+        )
+
+        # Rotating command hints
+        hints = [
+            'Type 1-4 to answer',
+            'Type "score" to check your points',
+            'Type "clear" to reset your score',
+        ]
+        hint_cycle = 4.0  # seconds per hint
+        hint_idx = int(time.time() / hint_cycle) % len(hints)
+        # Fade in/out within each cycle
+        cycle_pos = (time.time() % hint_cycle) / hint_cycle
+        if cycle_pos < 0.15:
+            hint_alpha = ease_out_cubic(cycle_pos / 0.15)
+        elif cycle_pos > 0.85:
+            hint_alpha = 1.0 - ease_out_cubic((cycle_pos - 0.85) / 0.15)
+        else:
+            hint_alpha = 1.0
+        self._text_centered(
+            hints[hint_idx], self.font_small,
+            COLOR_TEXT_DIM, timer_y + 84, _alpha(180 * hint_alpha),
         )
 
     # ------------------------------------------
@@ -946,6 +972,55 @@ class UIManager:
         self.screen.blit(banner_surf, (SCREEN_WIDTH // 2 - 200, 35))
 
         txt = self.font_medium.render("DOUBLE POINTS!", True, COLOR_TEXT_GOLD)
+        txt.set_alpha(alpha)
+        self.screen.blit(
+            txt,
+            (SCREEN_WIDTH // 2 - txt.get_width() // 2, 43),
+        )
+
+    # ------------------------------------------
+    # MINI EVENT BANNER
+    # ------------------------------------------
+    def _draw_mini_event_banner(self, event_type, phase_age):
+        configs = {
+            "lightning": {
+                "text": "LIGHTNING ROUND!",
+                "bg": (0, 40, 80),
+                "border": (100, 180, 255),
+                "text_color": (100, 180, 255),
+            },
+            "first_blood": {
+                "text": "FIRST BLOOD BONUS!",
+                "bg": (80, 10, 10),
+                "border": (255, 80, 80),
+                "text_color": (255, 80, 80),
+            },
+            "jackpot": {
+                "text": "JACKPOT ROUND!",
+                "bg": (50, 10, 80),
+                "border": (180, 100, 255),
+                "text_color": (180, 100, 255),
+            },
+        }
+        cfg = configs.get(event_type)
+        if not cfg:
+            return
+
+        pulse = 0.7 + 0.3 * math.sin(time.time() * 4)
+        alpha = int(220 * pulse)
+
+        banner_surf = pygame.Surface((400, 50), pygame.SRCALPHA)
+        pygame.draw.rect(
+            banner_surf, (*cfg["bg"], alpha),
+            (0, 0, 400, 50), border_radius=10,
+        )
+        pygame.draw.rect(
+            banner_surf, (*cfg["border"], alpha),
+            (0, 0, 400, 50), width=2, border_radius=10,
+        )
+        self.screen.blit(banner_surf, (SCREEN_WIDTH // 2 - 200, 35))
+
+        txt = self.font_medium.render(cfg["text"], True, cfg["text_color"])
         txt.set_alpha(alpha)
         self.screen.blit(
             txt,

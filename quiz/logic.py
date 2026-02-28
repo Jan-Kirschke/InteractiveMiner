@@ -29,6 +29,10 @@ from quiz.config import (
     COMPETITION_ALERT_THRESHOLD,
     MIN_PLAYERS, BOT_DIFFICULTY, LATE_ANSWER_GRACE,
     COLOR_CORRECT, COLOR_TEXT_GOLD, COLOR_AMBER, COLOR_RANK_DIAMOND,
+    LIGHTNING_ROUND_CHANCE, JACKPOT_CHANCE, FIRST_BLOOD_CHANCE,
+    LIGHTNING_TIME, LIGHTNING_MULT, JACKPOT_BONUS, FIRST_BLOOD_BONUS,
+    PARTICIPATION_MILESTONES, PARTICIPATION_BONUS, STREAK_SHIELD_THRESHOLD,
+    COMMAND_COOLDOWN,
 )
 from quiz.models import (
     GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent,
@@ -113,11 +117,14 @@ class QuizLogic:
 
         # --- Addictive mechanics ---
         self.is_double_points = False
+        self.mini_event = ""  # "lightning", "jackpot", "first_blood", or ""
         self.event_feed: list[GameEvent] = []
         self.sound_queue: list[str] = []  # sound names to play this frame
         self.competition_alert = ""  # close race message
         self.new_players_this_round: list[str] = []
         self._known_players: set[str] = set(db._players.keys())
+        self._command_cooldowns: dict[str, float] = {}  # username -> last command time
+        self._participants_this_round: set[str] = set()  # tracks who answered this round
 
         # Filler bots
         self._scheduled_bots: list[tuple[str, int, float]] = []  # (name, choice, answer_time)
@@ -344,6 +351,9 @@ class QuizLogic:
     # STATE ENTRY ACTIONS
     # ------------------------------------------
     def _enter_asking(self):
+        # Track participation streaks from previous round
+        self._update_participation_streaks()
+
         # Track real players from previous round (before clearing answers)
         if self.current_answers:
             real_this_round = {
@@ -356,6 +366,7 @@ class QuizLogic:
         self._ensure_cache()
         self.current_question = self._pop_question()
         self.current_answers = {}
+        self._participants_this_round = set()
         self.question_start_time = time.time()
         cat_name = VOTABLE_CATEGORIES.get(self._current_category_id, "Any")
         print(f"[Game] Question: category={self.current_question.category} (requested={cat_name}, cache={len(self._question_cache)})")
@@ -369,6 +380,37 @@ class QuizLogic:
                 "DOUBLE POINTS ROUND!", COLOR_TEXT_GOLD, "2X",
             )
             self.sound_queue.append("double_points")
+
+        # Mini event roll (only one per round, priority order)
+        self.mini_event = ""
+        if not self.is_double_points:
+            roll = random.random()
+            if roll < LIGHTNING_ROUND_CHANCE:
+                self.mini_event = "lightning"
+                self._push_event(
+                    "LIGHTNING ROUND! 15s, 1.5x points!",
+                    (100, 180, 255), "ZAP",
+                )
+                self.sound_queue.append("double_points")
+            elif roll < LIGHTNING_ROUND_CHANCE + FIRST_BLOOD_CHANCE:
+                self.mini_event = "first_blood"
+                self._push_event(
+                    f"FIRST BLOOD! +{FIRST_BLOOD_BONUS} pts for fastest!",
+                    (255, 80, 80), "1ST",
+                )
+                self.sound_queue.append("double_points")
+            elif roll < LIGHTNING_ROUND_CHANCE + FIRST_BLOOD_CHANCE + JACKPOT_CHANCE:
+                self.mini_event = "jackpot"
+                self._push_event(
+                    f"JACKPOT ROUND! Random winner gets +{JACKPOT_BONUS} pts!",
+                    (180, 100, 255), "JP",
+                )
+                self.sound_queue.append("double_points")
+
+        # Override question time for lightning round
+        if self.mini_event == "lightning":
+            self.state_duration = LIGHTNING_TIME
+            self.state_timer = LIGHTNING_TIME
 
         # Schedule filler bots
         self._schedule_bots()
@@ -400,6 +442,42 @@ class QuizLogic:
         self.vote_state = ThemeVoteState(options=options)
 
     # ------------------------------------------
+    # PARTICIPATION STREAKS
+    # ------------------------------------------
+    def _update_participation_streaks(self):
+        """Update participation streaks at the start of a new round (for previous round)."""
+        if not self.current_answers:
+            return
+        all_players = set(self.db._players.keys())
+        participated = {
+            u for u in self.current_answers if not u.startswith(BOT_PREFIX)
+        }
+        for username in participated:
+            player = self.db._players.get(username)
+            if not player:
+                continue
+            player.participation_streak += 1
+            # Award streak shield when threshold reached
+            if player.streak >= STREAK_SHIELD_THRESHOLD and not player.streak_shield:
+                player.streak_shield = True
+            # Participation milestones
+            if player.participation_streak in PARTICIPATION_MILESTONES:
+                player.score += PARTICIPATION_BONUS
+                self._push_event(
+                    f"{username} played {player.participation_streak} rounds! +{PARTICIPATION_BONUS} pts",
+                    COLOR_AMBER, "PLAY",
+                )
+                self.sound_queue.append("streak")
+            self.db.mark_dirty(username)
+
+        # Reset participation streak for players who didn't participate
+        for username in all_players - participated:
+            player = self.db._players.get(username)
+            if player and player.participation_streak > 0 and not username.startswith(BOT_PREFIX):
+                player.participation_streak = 0
+                self.db.mark_dirty(username)
+
+    # ------------------------------------------
     # QUESTION RESOLUTION & SCORING
     # ------------------------------------------
     def _resolve_question(self) -> RoundResult:
@@ -420,6 +498,10 @@ class QuizLogic:
 
             if choice == correct_idx:
                 pts = self._calculate_points(timestamp, player.streak)
+
+                # Lightning round multiplier
+                if self.mini_event == "lightning":
+                    pts = int(pts * LIGHTNING_MULT)
 
                 # Double points
                 if self.is_double_points:
@@ -444,6 +526,13 @@ class QuizLogic:
                 correct_players.append((username, pts, answer_time))
             else:
                 player.record_wrong()
+                # Streak shield notification
+                if getattr(player, '_shield_used', False):
+                    self._push_event(
+                        f"{username} SHIELD! Streak saved (x{player.streak})",
+                        (100, 180, 255), "SHD",
+                    )
+                    self.sound_queue.append("streak")
                 wrong_players.append((username, choice))
 
             self.db.mark_dirty(username)
@@ -455,6 +544,30 @@ class QuizLogic:
             fastest = min(correct_players, key=lambda x: x[2])
             fastest_player = fastest[0]
             fastest_time = fastest[2]
+
+        # Mini event: First Blood bonus
+        if self.mini_event == "first_blood" and correct_players:
+            fb_name = fastest_player
+            fb_player = self.db.get_or_create_player(fb_name)
+            fb_player.score += FIRST_BLOOD_BONUS
+            self.db.mark_dirty(fb_name)
+            self._push_event(
+                f"{fb_name} FIRST BLOOD! +{FIRST_BLOOD_BONUS} bonus ({fastest_time:.1f}s)",
+                (255, 80, 80), "1ST",
+            )
+            self.sound_queue.append("rank_up")
+
+        # Mini event: Jackpot - random correct player wins bonus
+        if self.mini_event == "jackpot" and correct_players:
+            jp_name, _, _ = random.choice(correct_players)
+            jp_player = self.db.get_or_create_player(jp_name)
+            jp_player.score += JACKPOT_BONUS
+            self.db.mark_dirty(jp_name)
+            self._push_event(
+                f"{jp_name} wins the JACKPOT! +{JACKPOT_BONUS} pts!",
+                (180, 100, 255), "JP",
+            )
+            self.sound_queue.append("rank_up")
 
         return RoundResult(
             question=self.current_question,
@@ -715,13 +828,34 @@ class QuizLogic:
     # ------------------------------------------
     # CHAT COMMAND PROCESSING
     # ------------------------------------------
+    def _check_command_cooldown(self, username: str) -> bool:
+        """Return True if the player can use a command (not on cooldown)."""
+        now = time.time()
+        last = self._command_cooldowns.get(username, 0)
+        if now - last < COMMAND_COOLDOWN:
+            return False
+        self._command_cooldowns[username] = now
+        return True
+
     def process_message(self, username: str, message: str):
         msg = message.strip().lower()
 
-        if msg == "reset":
+        if msg in ("reset", "clear"):
+            if not self._check_command_cooldown(username):
+                return
             self.db.reset_player(username)
             self._push_event(
                 f"{username} reset their score", (150, 140, 130), "RST",
+            )
+            return
+
+        if msg in ("score", "points"):
+            if not self._check_command_cooldown(username):
+                return
+            player = self.db.get_or_create_player(username)
+            self._push_event(
+                f"{username}: {player.score:,} pts | {player.rank} | x{player.streak} streak",
+                COLOR_TEXT_GOLD, "PTS",
             )
             return
 

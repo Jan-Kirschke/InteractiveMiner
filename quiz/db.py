@@ -57,12 +57,17 @@ class QuizDatabase:
                 last_seen       REAL DEFAULT 0
             )
         """)
-        # Migrate: add wrong_streak column if missing (existing DBs)
-        try:
-            self._conn.execute("ALTER TABLE players ADD COLUMN wrong_streak INTEGER DEFAULT 0")
-            self._conn.commit()
-        except sqlite3.OperationalError:
-            pass  # Column already exists
+        # Migrate: add columns if missing (existing DBs)
+        for col, typedef in [
+            ("wrong_streak", "INTEGER DEFAULT 0"),
+            ("participation_streak", "INTEGER DEFAULT 0"),
+            ("streak_shield", "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                self._conn.execute(f"ALTER TABLE players ADD COLUMN {col} {typedef}")
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_players_score
             ON players(score DESC)
@@ -82,6 +87,8 @@ class QuizDatabase:
                 correct_answers=row["correct_answers"],
                 wrong_answers=row["wrong_answers"],
                 wrong_streak=row["wrong_streak"] if "wrong_streak" in row.keys() else 0,
+                participation_streak=row["participation_streak"] if "participation_streak" in row.keys() else 0,
+                streak_shield=bool(row["streak_shield"]) if "streak_shield" in row.keys() else False,
                 last_seen=row["last_seen"],
             )
             self._players[p.username] = p
@@ -155,15 +162,18 @@ class QuizDatabase:
                     data.append((
                         p.username, p.score, p.streak, p.best_streak,
                         p.rank, p.games_played, p.correct_answers,
-                        p.wrong_answers, p.wrong_streak, p.last_seen,
+                        p.wrong_answers, p.wrong_streak,
+                        p.participation_streak, int(p.streak_shield),
+                        p.last_seen,
                     ))
             if data:
                 self._conn.executemany("""
                     INSERT OR REPLACE INTO players
                     (username, score, streak, best_streak, rank,
                      games_played, correct_answers, wrong_answers,
-                     wrong_streak, last_seen)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     wrong_streak, participation_streak, streak_shield,
+                     last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, data)
                 self._conn.commit()
                 print(f"[DB] Saved {len(data)} players")
