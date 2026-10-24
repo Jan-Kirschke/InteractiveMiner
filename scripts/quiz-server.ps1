@@ -28,6 +28,20 @@ if (-not $server -or -not $sshKey) {
 
 if ($args.Count -eq 0) { $cmd = @("help") } else { $cmd = $args }
 
+# Windows SSH ignores a key file that other accounts may read, then falls back to a password
+# prompt (there is no password). Keep the key readable by this user only.
+if (Test-Path $sshKey) {
+    icacls $sshKey /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
+} else {
+    Write-Error "SSH key not found: $sshKey"
+}
+
+if ($cmd[0] -eq "key" -and $cmd.Count -gt 1) {
+    Write-Host "Type only: .\scripts\quiz-server.ps1 key"
+    Write-Host "Then paste the stream key when it asks. Do not put the key on the command line."
+    exit 1
+}
+
 if ($cmd[0] -eq "shell") {
     ssh -i $sshKey "root@$server"
     exit $LASTEXITCODE
