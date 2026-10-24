@@ -27,6 +27,7 @@ from quiz.config import (
     LIGHTNING_QUESTION, BONUS_QUESTIONS, FINAL_QUESTION_MULT, DIFFICULTY_RAMP,
     DIFFICULTY_TIERS, DIFFICULTY_MULT,
     FORMAT_ROTATION, SURVIVOR_POT, SURVIVOR_MIN, TEAM_WIN_BONUS,
+    COMMUNITY_GOAL_PER_PLAYER, COMMUNITY_GOAL_MIN,
     BASE_POINTS, SPEED_BONUS_TIER1_THRESHOLD, SPEED_BONUS_TIER2_THRESHOLD,
     SPEED_BONUS_TIER1_MULT, SPEED_BONUS_TIER2_MULT,
     COMBO_STEPS,
@@ -246,7 +247,7 @@ BUILDUP_OPENERS = ("Here comes question {n}.", "Question {n}, get ready.", "On t
                    "Next hurdle: question {n}.", "Eyes up for question {n}.", "Question {n} is on its way.")
 BUILDUP_FILLERS = ("The fastest right answers score the most", "Streaks multiply your points",
                    "Type 1 to 4 in chat the moment it appears", "Every point counts on the weekly ladder")
-BUILDUP_FACTS = ("perfect", "lead", "streak", "hardest", "tier_history", "last")   # rotated, never twice in a row
+BUILDUP_FACTS = ("perfect", "lead", "goal", "streak", "hardest", "tier_history", "last")   # rotated, never twice in a row
 
 
 CROWD_KINDS = ("majority", "minority")
@@ -384,6 +385,10 @@ class QuizLogic:
         self.team_count = {"gold": 0, "teal": 0}          # real members who answered this match
         self._team_members: dict[str, str] = {}
         self._team_leader = ""
+        # Community goal: right answers on Q1-Q9 by real players; reaching the goal makes Q10 a jackpot
+        self.community_goal = COMMUNITY_GOAL_MIN
+        self.community_correct = 0
+        self.community_jackpot = False
         self._recent_categories: list = []   # the last voted categories: the vote does not offer them again
         self._tier_results: dict[str, list[int]] = {}   # this match: tier -> [real answers, right]
         self._tier_last: dict[str, list[int]] = {}      # the same for the last match
@@ -696,6 +701,9 @@ class QuizLogic:
         self.team_count = {"gold": 0, "teal": 0}
         self._team_members = {}
         self._team_leader = ""
+        self.community_goal = max(COMMUNITY_GOAL_MIN, COMMUNITY_GOAL_PER_PLAYER * self.match_player_count)
+        self.community_correct = 0
+        self.community_jackpot = False
         self.sound_queue.append("show_open")
         if self.match_format == "classic":
             self._say(f"Match {self.match_no}: {self.match_category}. "
@@ -804,7 +812,7 @@ class QuizLogic:
         leaders = heapq.nlargest(2, (s for s in self.standings.values() if s.points > 0 and not is_bot(s.username)),
                                  key=lambda s: s.points)
         facts = self._buildup_facts(q, leaders, stakes)
-        prefer = ["tier"] if self.level_up else ["lead"] if event == "final" else []
+        prefer = (["tier"] if self.level_up else ["jackpot", "lead"] if event == "final" else [])
         turn = n % len(BUILDUP_FACTS)
         order = prefer + list(BUILDUP_FACTS[turn:] + BUILDUP_FACTS[:turn])
         pick = next((k for k in order if k in facts and k != self._last_fact), None)
@@ -878,6 +886,11 @@ class QuizLogic:
             else:
                 tail = f", and {stakes} points are up for grabs" if self.is_double_points else ""
                 facts["lead"] = (f"{a.username} leads by {a.points - leaders[1].points}{tail}", a.username)
+        if self.community_jackpot and self.is_double_points:
+            facts["jackpot"] = (f"Chat unlocked the jackpot: every right answer +{JACKPOT_BONUS}", None)
+        elif not self.community_jackpot and self.q_index < MATCH_LENGTH:
+            left = self.community_goal - self.community_correct
+            facts["goal"] = (f"Chat needs {left} more right answers for a jackpot final", None)
         best = max(((self.db._players[u].streak, u) for u in self.standings
                     if not is_bot(u) and u in self.db._players), default=(0, ""))
         if best[0] >= 3:
@@ -921,6 +934,7 @@ class QuizLogic:
         survivors_before = len(self.perfect) if self.perfect is not None else -1
         self._track_perfect(res)
         self._format_status(survivors_before)
+        self._count_community(res)
         self.pips.append("done" if res.total_answers and res.correct_rate >= 0.5 else "miss")
         self._stinger_due = True
         self._say(host_line_for_result(res, self.round_count))
@@ -943,6 +957,23 @@ class QuizLogic:
             tally[0] += real
             tally[1] += len(scored)
         self.perfect = scored if self.perfect is None else self.perfect & scored
+
+    def _count_community(self, res: RoundResult):
+        """Community goal: Q1-Q9 real right answers; half-way and the unlock each announce once."""
+        if self.q_index >= MATCH_LENGTH or self.community_jackpot:
+            return
+        before = self.community_correct
+        self.community_correct += sum(1 for u, _, _ in res.correct_players if not is_bot(u))
+        goal = self.community_goal
+        if self.community_correct >= goal:
+            self.community_jackpot = True
+            self._push_event(f"COMMUNITY GOAL! {goal} right answers: every right answer on the final "
+                             f"wins +{JACKPOT_BONUS}", COLOR_EVENT_PURPLE, "GOAL")
+            self.sound_queue.append("power_up")
+        elif before * 2 < goal <= self.community_correct * 2:
+            self._push_event(f"Community goal half-way: {self.community_correct}/{goal} right answers",
+                             COLOR_EVENT_PURPLE, "GOAL")
+            self.sound_queue.append("crowd")
 
     def _format_status(self, survivors_before: int):
         """After each reveal: the survivors or the team race; at halftime, the leader as well."""
@@ -1189,6 +1220,8 @@ class QuizLogic:
                 pts = int(self._calculate_points(timestamp, player.streak) * self.question_mult(q))
                 if half:
                     pts = max(1, pts // 2)   # 50:50 joker: two guesses, half the points
+                if self.community_jackpot and self.is_double_points and not is_bot(username):
+                    pts += JACKPOT_BONUS     # chat reached the community goal: every right answer on the final
                 if player.wrong_streak >= COMEBACK_STREAK_THRESHOLD:
                     pts += COMEBACK_BONUS
                     self._push_event(f"{username} COMEBACK! +{COMEBACK_BONUS}", COLOR_CORRECT, "BACK")

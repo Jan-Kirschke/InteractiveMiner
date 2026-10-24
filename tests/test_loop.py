@@ -539,6 +539,74 @@ def test_halftime_after_question_five(game):
     assert any(e.text.startswith("HALFTIME") and "alice" in e.text for e in game.event_feed)
 
 
+# ------------------------------------------
+# 5. COMMUNITY GOAL: chat's right answers on Q1-Q9 unlock a jackpot final
+# ------------------------------------------
+def at_question(game, n, right=(), wrong=()):
+    game.q_index = n
+    game.is_double_points = n == 10
+    reveal(game, right, wrong)
+
+
+@pytest.mark.parametrize("last_players,goal", [(0, 10), (1, 10), (6, 30)])
+def test_the_goal_scales_with_the_last_match(game, last_players, goal):
+    game.match_player_count = last_players
+    game._enter_intro()
+    assert game.community_goal == goal and game.community_correct == 0 and not game.community_jackpot
+
+
+def test_real_right_answers_on_q1_to_q9_count(game):
+    game._enter_intro()
+    at_question(game, 1, right=("alice", "bob", BOT), wrong=("carol",))
+    at_question(game, 10, right=("alice",))
+    assert game.community_correct == 2
+
+
+def test_reaching_the_goal_unlocks_the_jackpot_once(game):
+    game._enter_intro()
+    goal = game.community_goal
+    players = [f"p{i}" for i in range(goal // 2)]
+    game.sound_queue.clear()
+    at_question(game, 1, right=players)
+    assert not game.community_jackpot and "crowd" in game.sound_queue          # half-way
+    game.sound_queue.clear()
+    at_question(game, 2, right=players + [f"q{i}" for i in range(goal)])
+    assert game.community_jackpot and game.sound_queue.count("power_up") == 1
+    game.sound_queue.clear()
+    at_question(game, 3, right=players)
+    assert "power_up" not in game.sound_queue
+    assert len([e for e in game.event_feed if "COMMUNITY GOAL" in e.text]) == 1
+
+
+def test_the_jackpot_final_pays_every_real_right_answer(game):
+    game._enter_intro()
+    game.community_jackpot = True
+    game.q_index, game.is_double_points = 10, True
+    classic(game)
+    answer_at(game, "alice", 1)
+    answer_at(game, BOT, 1)
+    answer_at(game, "bob", 0)
+    pts = points(game._resolve_question())
+    assert pts["alice"] == 40 + logic_mod.JACKPOT_BONUS and pts[BOT] == 40 and "bob" not in pts
+
+
+def test_no_jackpot_final_without_the_goal(game):
+    game._enter_intro()
+    game.q_index, game.is_double_points = 10, True
+    classic(game)
+    answer_at(game, "alice", 1)
+    assert points(game._resolve_question())["alice"] == 40
+
+
+def test_buildup_tells_chat_how_far_the_goal_is(game):
+    game._enter_intro()
+    game.community_correct = game.community_goal - 4
+    texts = [buildup_at(game, n)["subline"] for n in range(2, 10)]
+    assert any("4 more right answers" in t for t in texts)
+    game.community_jackpot = True
+    assert "jackpot" in buildup_at(game, 10)["subline"].lower()
+
+
 def test_question_lines_vary(game):
     import re
     lines = []

@@ -101,6 +101,10 @@ FORMAT_ROTATION = ("classic", "speed", "survivors", "teams")
 SURVIVOR_POT = 200         # Survivors: every answer right, and the survivors split this...
 SURVIVOR_MIN = 20          # ...but each gets at least this
 TEAM_WIN_BONUS = 15        # Teams: every member who played on the team with the higher average
+# Community goal: chat's real right answers on Q1-Q9 reach this many per player of the last match
+# (at least the minimum), and every right answer on Q10 earns JACKPOT_BONUS on top
+COMMUNITY_GOAL_PER_PLAYER = 5
+COMMUNITY_GOAL_MIN = 10
 DIFFICULTY_TIERS = ("easy", "medium", "hard")   # a dry tier falls back to its nearest neighbour, lower first
 DIFFICULTY_MULT = {"easy": 1.0, "medium": 1.25, "hard": 1.5}   # on the question's shown difficulty
 
