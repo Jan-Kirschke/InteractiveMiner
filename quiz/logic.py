@@ -286,7 +286,7 @@ class QuizLogic:
 
         self.bank = QuestionBank(db._conn, db._lock)
         self.bank.add([_question_to_item(q) for q in FALLBACK_QUESTIONS], "builtin")
-        for pack in sorted(PACK_DIR.glob("*.json")):  # bundled packs; existing texts are skipped
+        for pack in sorted(p for p in PACK_DIR.glob("*.json") if not p.name.startswith("special_")):  # bundled packs; existing texts are skipped (special_* need their round type)
             self.bank.add(load_items(str(pack)), pack.name)
 
         self._fetch_session_token()
@@ -1023,7 +1023,8 @@ class QuizLogic:
                 self.sound_queue.append("rank_up")
                 return
 
-    def process_message(self, username: str, message: str, raw: str = ""):
+    def process_message(self, username: str, message: str, raw: str = "", at: float | None = None):
+        """at: when the answer arrived (the answer page stamps it on receipt); None = now."""
         msg = message.strip().lower()  # chat already stripped punctuation: "!rank" arrives as "rank"
 
         if msg in ("reset", "clear"):
@@ -1085,7 +1086,7 @@ class QuizLogic:
 
         if self.state in (GameState.ASKING, GameState.LOCKING):
             if self.current_question and choice < len(self.current_question.options):  # "3" on true/false
-                self._record_answer(username, choice)
+                self._record_answer(username, choice, at)
         elif self.state == GameState.LOBBY and self.vote_state:
             vote = choice + 1
             if vote in self.vote_state.options:
@@ -1095,8 +1096,8 @@ class QuizLogic:
                 if username not in self.ready_players and not is_bot(username):
                     self.ready_players.append(username)
 
-    def _record_answer(self, username: str, choice: int):
-        now = time.time()
+    def _record_answer(self, username: str, choice: int, at: float | None = None):
+        now = min(at, time.time()) if at else time.time()
         old = self.current_answers.get(username)
         if old is None:
             self.current_answers[username] = (choice, now)
@@ -1145,6 +1146,9 @@ class QuizLogic:
     def active_player_count(self) -> int:
         """Real players in this round, or last round's if this one has just started."""
         return max(self._count_real_in_round(), len(self._last_round_real_players))
+
+    def announce(self, text: str):
+        self._push_event(text, COLOR_CORRECT, "LINK")
 
     def match_ranking(self, n: int = 5) -> list[MatchStanding]:
         ranked = sorted(self.standings.values(), key=lambda s: (-s.points, s.fastest or 999))

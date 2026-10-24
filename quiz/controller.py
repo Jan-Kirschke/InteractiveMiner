@@ -14,7 +14,7 @@ from quiz.config import (
     DB_SAVE_INTERVAL, DB_PATH, DB_PATH_OFFLINE,
     VIDEO_ID, CHANNEL_IDS,
     STREAM_ENABLED, YOUTUBE_STREAM_KEY, STREAM_FPS, STREAM_BITRATE, STREAM_HEIGHT, STREAM_AUDIO_GAIN_DB, FFMPEG_PATH,
-    STREAM_AUDIO_INPUT, STREAM_OUTPUT, LATE_ANSWER_GRACE, REVEAL_AT,
+    STREAM_AUDIO_INPUT, STREAM_OUTPUT, LATE_ANSWER_GRACE, REVEAL_AT, ANSWER_PORT, ANSWER_URL, MATCH_LENGTH,
 )
 from quiz.models import GameState
 from quiz.db import QuizDatabase
@@ -24,6 +24,7 @@ from quiz.ui import UIManager
 from quiz.sounds import SoundManager
 from quiz.ytchat import page_url
 from quiz.broadcaster import YouTubeBroadcaster
+from quiz.answer_server import AnswerHub, serve
 
 
 class MainGameController:
@@ -44,7 +45,13 @@ class MainGameController:
         self.db = QuizDatabase(DB_PATH_OFFLINE if offline else DB_PATH)
         self.logic = QuizLogic(self.db)
         self.chat = ChatManager(chat_urls, self.msg_queue, offline=offline)
-        self.ui = UIManager(self.screen)
+        self.answers = AnswerHub(self.db._conn, self.db._lock, self.msg_queue) if ANSWER_PORT else None
+        if self.answers and not serve(self.answers, ANSWER_PORT):
+            self.answers = None
+        self._snapshot_at = 0.0
+        self._snapshot_state = None
+        self._points_snapshot: dict[str, dict] = {}
+        self.ui = UIManager(self.screen, answer_url=ANSWER_URL if self.answers else "")
         self.sounds = SoundManager(drumroll_seconds=LATE_ANSWER_GRACE + REVEAL_AT)
 
         # YouTube Live broadcaster (started in run() so frames are available immediately)
@@ -124,7 +131,42 @@ class MainGameController:
     def _process_chat(self):
         while not self.msg_queue.empty():
             msg = self.msg_queue.get()
-            self.logic.process_message(msg.username, msg.message, msg.raw)
+            if msg.message.startswith("link ") and self.answers:
+                if self.answers.link(msg.message.split()[1], msg.username):
+                    self.logic.announce(f"{msg.username} plays on the answer page")
+                continue
+            self.logic.process_message(msg.username, msg.message, msg.raw,
+                                       at=msg.timestamp if msg.source == "web" else None)
+        self._publish_answer_state()
+
+    def _publish_answer_state(self):
+        """Hand the answer page a fresh snapshot 4 times a second (and on every state change)."""
+        if not self.answers:
+            return
+        now = time.time()
+        lg = self.logic
+        changed = lg.state != self._snapshot_state
+        if not changed and now - self._snapshot_at < 0.25:
+            return
+        self._snapshot_at = now
+        q = lg.current_question if lg.state.name in ("ASKING", "LOCKING", "REVEALING") else None
+        state = {
+            "phase": lg.state.name, "match": lg.match_no, "q": lg.q_index, "of": MATCH_LENGTH,
+            "remaining": round(lg.time_remaining, 2), "duration": lg.state_duration,
+            "answers": lg.answer_count, "category": lg.current_category_name,
+            "event": lg.mini_event or ("double" if lg.is_double_points else ""),
+        }
+        if q:
+            state.update(question=q.text, options=q.options)
+            if lg.state.name == "REVEALING":
+                state["correct"] = q.correct_index
+        if lg.state.name == "LOBBY" and lg.vote_state:
+            state["vote"] = {str(k): v[1] for k, v in lg.vote_state.options.items()}
+        if changed:
+            self._snapshot_state = lg.state
+            ranked = [s for s in lg.match_ranking(n=100_000) if not s.username.startswith("[Bot]")]
+            self._points_snapshot = {s.username: {"points": s.points, "rank": i} for i, s in enumerate(ranked, 1)}
+        self.answers.publish(state, self._points_snapshot)
 
     def _play_sounds(self):
         """Play all queued sounds from logic with appropriate rate limiting."""

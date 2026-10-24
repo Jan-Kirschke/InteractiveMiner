@@ -2,3 +2,4 @@ pygame
 scrapetube
 requests
 numpy
+qrcode

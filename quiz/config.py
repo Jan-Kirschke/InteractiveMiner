@@ -282,6 +282,9 @@ STREAM_OUTPUT = _os.environ.get("QUIZ_STREAM_OUTPUT", "")
 STREAM_FPS = 30                     # Stream output framerate (30fps is ideal for quiz content)
 # Output size and bitrate. 720p at 3000k needs about half the CPU and upload of 1080p at 6000k.
 # Game audio boost in dB applied by FFmpeg (the procedural sounds are quiet next to other streams).
+# Private answer page (quiz/answer_server.py). Port 0 = off. The URL is what the stream shows.
+ANSWER_PORT = int(_os.environ.get("QUIZ_ANSWER_PORT", "0"))
+ANSWER_URL = _os.environ.get("QUIZ_ANSWER_URL", "")
 STREAM_AUDIO_GAIN_DB = float(_os.environ.get("QUIZ_AUDIO_GAIN_DB", "0"))
 STREAM_HEIGHT = int(_os.environ.get("QUIZ_STREAM_HEIGHT", "1080"))
 STREAM_BITRATE = _os.environ.get("QUIZ_STREAM_BITRATE", "6000k" if STREAM_HEIGHT >= 1080 else "3000k")
