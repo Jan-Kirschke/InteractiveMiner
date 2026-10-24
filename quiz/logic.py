@@ -36,7 +36,7 @@ from quiz.config import (
     COLOR_CORRECT, COLOR_TEXT_GOLD, COLOR_AMBER, COLOR_RANK_DIAMOND,
     LIGHTNING_TIME, LIGHTNING_MULT, JACKPOT_BONUS, FIRST_BLOOD_BONUS,
     PARTICIPATION_MILESTONES, PARTICIPATION_BONUS, STREAK_SHIELD_THRESHOLD,
-    COMMAND_COOLDOWN,
+    COMMAND_COOLDOWN, SPECIAL_SLOTS,
 )
 from quiz.models import (
     GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding, Duel,
@@ -44,6 +44,7 @@ from quiz.models import (
 from quiz.db import QuizDatabase
 from quiz.bank import QuestionBank, REPEAT_WINDOWS
 from quiz.import_questions import load_items
+from quiz.special import SpecialDecks
 
 PACK_DIR = Path(__file__).resolve().parent / "packs"
 
@@ -289,6 +290,8 @@ class QuizLogic:
         self.bank.add([_question_to_item(q) for q in FALLBACK_QUESTIONS], "builtin")
         for pack in sorted(p for p in PACK_DIR.glob("*.json") if not p.name.startswith("special_")):  # bundled packs; existing texts are skipped (special_* need their round type)
             self.bank.add(load_items(str(pack)), pack.name)
+        self.special = SpecialDecks()
+        self.special_slots = dict(SPECIAL_SLOTS)   # question number -> round type
 
         self._fetch_session_token()
         self._ensure_cache()
@@ -460,6 +463,12 @@ class QuizLogic:
             category=q.category, difficulty=q.difficulty,
         )
 
+    def _special_question(self, slot: str) -> Question | None:
+        """The special round for this match slot, or None (no slot, or its deck is empty)."""
+        if not slot:
+            return None
+        return self.special.draw(slot)
+
     # ------------------------------------------
     # STATE MACHINE
     # ------------------------------------------
@@ -557,7 +566,8 @@ class QuizLogic:
 
         self.q_index += 1
         self._ensure_cache()
-        self.current_question = self._pop_question(DIFFICULTY_RAMP.get(self.q_index, "medium"))
+        self.current_question = (self._special_question(self.special_slots.get(self.q_index, ""))
+                                 or self._pop_question(DIFFICULTY_RAMP.get(self.q_index, "medium")))
         self.current_answers = {}
         self.lock_order = []
         self.question_start_time = time.time()
@@ -606,7 +616,7 @@ class QuizLogic:
 
     def _enter_revealing(self):
         self.round_count += 1
-        if self.current_question:
+        if self.current_question and self.current_question.kind == "classic":  # specials are not in the bank
             real = [(u, c) for u, (c, _) in self.current_answers.items() if not is_bot(u)]
             self.bank.record_result(self.current_question.text, len(real),
                                     sum(1 for _, c in real if c == self.current_question.correct_index))
@@ -759,17 +769,20 @@ class QuizLogic:
             return RoundResult(Question("?", "?", [], 0, "", ""), [], [], 0)
 
         correct_players, wrong_players = [], []
+        answers = self.current_answers
         option_counts = [0] * len(q.options)
-
-        for username, (choice, timestamp) in self.current_answers.items():
+        for choice, _ in answers.values():
             if 0 <= choice < len(option_counts):
                 option_counts[choice] += 1
+        winners, void = [q.correct_index], False
+
+        for username, (choice, timestamp) in answers.items():
             player = self.db.get_or_create_player(username)
             st = self._standing(username)
             old_rank = player.rank
             answer_time = max(0.0, timestamp - self.question_start_time)
 
-            if choice == q.correct_index:
+            if choice in winners:
                 pts = self._calculate_points(timestamp, player.streak)
                 if self.mini_event == "lightning":
                     pts = int(pts * LIGHTNING_MULT)
@@ -815,9 +828,9 @@ class QuizLogic:
 
         return RoundResult(
             question=q, correct_players=correct_players, wrong_players=wrong_players,
-            total_answers=len(self.current_answers),
+            total_answers=len(answers),
             fastest_player=fastest_player, fastest_time=fastest_time,
-            option_counts=option_counts,
+            option_counts=option_counts, winners=winners, void=void,
         )
 
     def _calculate_points(self, answer_timestamp: float, current_streak: int) -> int:

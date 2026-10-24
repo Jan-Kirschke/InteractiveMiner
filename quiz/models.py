@@ -141,6 +141,7 @@ class Question:
     category: str
     difficulty: str
     fact: str = ""  # one line shown on the reveal
+    kind: str = "classic"  # or a special round (quiz/special.py): majority, minority, higher_lower, odd_one_out
 
 
 @dataclass
@@ -152,6 +153,8 @@ class RoundResult:
     fastest_player: str = ""
     fastest_time: float = 0.0
     option_counts: list = field(default_factory=lambda: [0, 0, 0, 0])
+    winners: list = field(default_factory=list)  # option indices that scored (classic: the right one)
+    void: bool = False                           # crowd round with too few real players: nobody scored
 
     @property
     def correct_rate(self) -> float:

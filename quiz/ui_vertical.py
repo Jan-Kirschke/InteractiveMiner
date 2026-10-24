@@ -16,7 +16,7 @@ from quiz.logic import is_bot
 from quiz.models import GameState
 from quiz.ui import (
     UIManager, ACCENT, BAD, DARK_INK, DIFF_COLORS, DIM, EVENT_STYLE, FAINT, GOOD, INK, OPTION_COLORS, TRACK,
-    clamp01, ease_in_out, ease_out_back, ease_out_cubic, heartbeat, lerp, mix, progress,
+    round_style, clamp01, ease_in_out, ease_out_back, ease_out_cubic, heartbeat, lerp, mix, progress,
 )
 
 M = 56                 # side margin
@@ -96,15 +96,20 @@ class VerticalUI(UIManager):
         self._blit(surf, (x + 22, y + 28), "midleft")
         return w
 
-    def _chips(self, logic, q, y):
+    def _chips(self, logic, q, y, revealed=False):
         items = [(q.category.upper(), INK, False), (q.difficulty.upper(), DIFF_COLORS.get(q.difficulty, DIM), False)]
         ev = "final" if logic.is_double_points else logic.mini_event
+        filled = []
         if ev in EVENT_STYLE:
-            label, col = EVENT_STYLE[ev]
-            items.insert(0, (label, col, True))
+            filled.append((*EVENT_STYLE[ev], True))
+        rs = round_style(q, revealed)
+        if rs:
+            filled.append((*rs[:2], True))
+        items = filled + items
         widths = [self._render_name(t, 30, INK, kind="black").get_width() + 44 for t, _, _ in items]
         while sum(widths) + 16 * (len(widths) - 1) > CW and len(items) > 1:
-            items.pop(1 if items[0][2] else 0)   # too wide: drop the category first, keep event + difficulty
+            # too wide: drop the category first, then the difficulty; the filled chips stay
+            items.pop(len(filled) if len(items) > len(filled) else len(items) - 1)
             widths = [self._render_name(t, 30, INK, kind="black").get_width() + 44 for t, _, _ in items]
         x = (W - sum(widths) - 16 * (len(widths) - 1)) // 2
         for (text, col, filled), w in zip(items, widths):
@@ -222,7 +227,7 @@ class VerticalUI(UIManager):
         if not res or not res.question.options:
             return
         q = res.question
-        self._chips(logic, q, 236)
+        self._chips(logic, q, 236, revealed=True)
         bottom = self._question_text(q, 318, 10.0, (64, 56, 50), 3, color=DIM, animate=False)
         top = bottom + 34
         h = 118
@@ -231,7 +236,7 @@ class VerticalUI(UIManager):
         k = ease_out_cubic(progress(age, REVEAL_AT, 0.4))
         rects = self._v_option_rects(top, h, g=18)
         for i, (opt, rect) in enumerate(zip(q.options, rects)):
-            correct = i == q.correct_index
+            correct = i in res.winners
             x, y, w, hh = self._v_option(i, opt, rect, dim=(0.55 * k if reveal and not correct else 0.0),
                                          outline=INK if reveal and correct else None,
                                          lift=int(8 * k) if reveal and correct else 0, right_pad=170)

@@ -50,6 +50,8 @@ PURPLE = (190, 120, 255)
 SHAPE_COLORS = (PINK, BLUE, ORANGE, TEAL, ACCENT, VIOLET)
 DIFF_COLORS = {"easy": GOOD, "medium": ORANGE, "hard": BAD}
 BAND_COLORS = (PINK, BLUE, ORANGE, TEAL)   # answer 1-4 order, front band first
+# Special-round slots (QuizLogic.special_slots): bumper label, colour, sub line
+SPECIAL_BUMPERS = {}
 
 # YouTube Shorts covers the top and bottom of a 1080x1920 frame with its own UI
 SHORTS_SAFE_TOP, SHORTS_SAFE_BOTTOM = 180, 320
@@ -297,7 +299,7 @@ class Transitions:
         elif state == GameState.REVEALING:
             n = logic.q_index + 1
             event = ("final" if n == MATCH_LENGTH else "lightning" if n == LIGHTNING_QUESTION
-                     else "bonus" if n in BONUS_QUESTIONS else "")
+                     else "bonus" if n in BONUS_QUESTIONS else getattr(logic, "special_slots", {}).get(n, ""))
             kind, target = "question", GameState.ASKING
             info = {"n": n, "event": event, "difficulty": DIFFICULTY_RAMP.get(n, "medium"), "pips": list(logic.pips)}
         else:
@@ -396,6 +398,7 @@ class Transitions:
             "final": ("FINAL QUESTION", ACCENT, [("DOUBLE POINTS", INK), ("  ·  EVERYTHING CAN CHANGE", LILAC)]),
             "lightning": ("LIGHTNING ROUND", SKY, [(f"{LIGHTNING_TIME} SECONDS", INK), ("  ·  1.5x POINTS", LILAC)]),
             "bonus": ("BONUS ROUND", PURPLE, [("EXTRA POINTS", INK), ("  ·  UP FOR GRABS", LILAC)]),
+            **SPECIAL_BUMPERS,
         }.get(ev, ("QUESTION", INK, None))
         if sub is None:
             sub = [(f"OF {MATCH_LENGTH}", LILAC)] + ([("  ·  ", LILAC), (diff.upper(), DIFF_COLORS.get(diff, INK))] if diff else [])

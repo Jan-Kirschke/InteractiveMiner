@@ -40,6 +40,13 @@ EVENT_STYLE = {
     "jackpot": ("JACKPOT ROUND", (190, 120, 255)),
 }
 DIFF_COLORS = {"easy": GOOD, "medium": (255, 159, 28), "hard": BAD}
+# Special rounds (quiz/special.py): kind -> (chip label, colour, one-line rule under the question)
+ROUND_STYLE = {}
+
+
+def round_style(q, revealed=False):
+    """(label, colour, rule) for a special round's chip, or None for a classic question."""
+    return ROUND_STYLE.get(q.kind)
 
 # ==========================================
 # LAYOUT
@@ -757,13 +764,17 @@ class UIManager:
         self._blit(d, (x + 18, y + 22), "midleft")
         x += w + 14
         ev = "final" if logic.is_double_points else logic.mini_event
-        if ev in EVENT_STYLE:
-            label, col = EVENT_STYLE[ev]
+        chips = [EVENT_STYLE[ev]] if ev in EVENT_STYLE else []
+        rs = round_style(q, revealed=small)
+        if rs:
+            chips.append(rs[:2])
+        for label, col in chips:
             pulse = 0.75 + 0.25 * math.sin(time.time() * 5)
             e = self._render("black", 22, label, DARK_INK)
             w = e.get_width() + 36
             self.screen.blit(self._alpha_rect(w, 44, (*col, int(255 * pulse) // 16 * 16), 22), (x, y))
             self._blit(e, (x + 18, y + 22), "midleft")
+            x += w + 14
 
         text_w = MAIN_W - (0 if small else 210)
         sizes = (50, 44, 38) if small else (66, 58, 50, 44)
@@ -977,7 +988,7 @@ class UIManager:
         reveal = age >= REVEAL_AT
         k = ease_out_cubic(progress(age, REVEAL_AT, 0.4))
         for i, (opt, rect) in enumerate(zip(q.options, rects)):
-            correct = i == q.correct_index
+            correct = i in res.winners
             x, y, w, h = self._draw_option(
                 i, opt, rect,
                 dim=(0.55 * k if reveal and not correct else 0.0),
