@@ -107,8 +107,8 @@ SPEED_BONUS_TIER1_THRESHOLD = 0.25  # first 25% of time -> 2x
 SPEED_BONUS_TIER2_THRESHOLD = 0.50  # first 50% of time -> 1.5x
 SPEED_BONUS_TIER1_MULT = 2.0
 SPEED_BONUS_TIER2_MULT = 1.5
-STREAK_BONUS_PER = 0.1  # +10% per consecutive correct
-MAX_STREAK_MULT = 3.0
+# Combo: the streak multiplier steps up at these streaks (right answers in a row before this one)
+COMBO_STEPS = ((3, 1.3), (5, 1.5), (10, 2.0), (15, 2.5), (25, 3.0))
 
 # ==========================================
 # RANKS
@@ -236,8 +236,6 @@ DOUBLE_POINTS_MULT = 2.0
 COMEBACK_BONUS = 5                # extra points when breaking a 3+ wrong streak
 COMEBACK_STREAK_THRESHOLD = 3     # wrong answers in a row before comeback triggers
 
-# Streak milestones that trigger special effects
-STREAK_MILESTONES = [3, 5, 10, 15, 25, 50, 100]
 
 # Achievement definitions
 ACHIEVEMENTS = {

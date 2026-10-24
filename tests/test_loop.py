@@ -362,6 +362,35 @@ def test_reveal_lines_never_repeat_twice_in_a_row(game, right, of):
         assert all(f"{round(100 * right / of)}%" in line for line in lines if right)
 
 
+@pytest.mark.parametrize("streak,mult", [(0, 1.0), (2, 1.0), (3, 1.3), (4, 1.3), (5, 1.5), (9, 1.5),
+                                         (10, 2.0), (15, 2.5), (24, 2.5), (25, 3.0), (80, 3.0)])
+def test_combo_multiplier_steps(streak, mult):
+    assert logic_mod.combo_mult(streak) == mult
+
+
+def test_a_combo_pays_from_the_streak_before_the_answer(game):
+    classic(game)
+    game.db.get_or_create_player("alice").streak = 4
+    game.db.get_or_create_player("bob").streak = 2
+    answer_at(game, "alice", 1)
+    answer_at(game, "bob", 1)
+    assert points(game._resolve_question()) == {"alice": 26, "bob": 20}   # 20 x1.3; 20 x1.0
+
+
+def test_combo_steps_share_one_toast_and_one_sound(game):
+    classic(game)
+    for u in ("alice", "bob", "carol", BOT):
+        game.db.get_or_create_player(u).streak = 4
+        answer_at(game, u, 1)
+    game.db.get_or_create_player("dave").streak = 1
+    answer_at(game, "dave", 1)
+    game.sound_queue.clear()
+    game._resolve_question()
+    combos = [e.text for e in game.event_feed if "COMBO" in e.text]
+    assert len(combos) == 1 and "x1.5" in combos[0] and "+2" in combos[0] and "Bot" not in combos[0]
+    assert game.sound_queue.count("combo") == 1 and "streak" not in game.sound_queue
+
+
 def test_question_lines_vary(game):
     import re
     lines = []

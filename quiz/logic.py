@@ -27,12 +27,11 @@ from quiz.config import (
     DIFFICULTY_TIERS, DIFFICULTY_MULT,
     BASE_POINTS, SPEED_BONUS_TIER1_THRESHOLD, SPEED_BONUS_TIER2_THRESHOLD,
     SPEED_BONUS_TIER1_MULT, SPEED_BONUS_TIER2_MULT,
-    STREAK_BONUS_PER, MAX_STREAK_MULT,
+    COMBO_STEPS,
     OTDB_BASE_URL, OTDB_TOKEN_URL, OTDB_BATCH_SIZE,
     OTDB_MIN_CACHE, OTDB_REQUEST_COOLDOWN, OTDB_SEEN_EXPIRY,
     VOTABLE_CATEGORIES, RECENT_CATEGORIES,
     COMEBACK_BONUS, COMEBACK_STREAK_THRESHOLD,
-    STREAK_MILESTONES,
     CHAT_FEED_MAX, CHAT_FEED_DURATION,
     MIN_PLAYERS, BOT_DIFFICULTY,
     COLOR_CORRECT, COLOR_TEXT_GOLD, COLOR_AMBER, COLOR_RANK_DIAMOND,
@@ -203,6 +202,14 @@ QUESTION_LINES = ("Question {n} of {of}. {cat}, {diff}.", "Here it is: {cat}, {d
                   "{cat}, {diff}: question {n} of {of}.", "Question {n}! {cat}, {diff}.")
 
 
+COMBO_NAMES = {3: "ON FIRE", 5: "UNSTOPPABLE", 10: "LEGENDARY", 15: "QUIZ MACHINE", 25: "GODLIKE"}
+
+
+def combo_mult(streak: int) -> float:
+    """The streak multiplier: x1.3 from 3 right in a row, x1.5 from 5, x2 from 10, x2.5 from 15, x3 from 25."""
+    return next((m for at, m in reversed(COMBO_STEPS) if streak >= at), 1.0)
+
+
 def tier_rank(difficulty: str) -> int:
     """easy 0, medium 1, hard 2 (an unknown label counts as medium)."""
     return DIFFICULTY_TIERS.index(difficulty) if difficulty in DIFFICULTY_TIERS else 1
@@ -358,6 +365,7 @@ class QuizLogic:
         self._last_fact = ""               # the build-up fact kind used last, never twice in a row
         self._line_turn = 0                # rotates the build-up wordings
         self._ask_turn = 0                 # rotates the question wordings
+        self._combo_hits: list[tuple[int, str]] = []   # (streak, player) reaching a combo step this reveal
         self._recent_categories: list = []   # the last voted categories: the vote does not offer them again
         self._tier_results: dict[str, list[int]] = {}   # this match: tier -> [real answers, right]
         self._tier_last: dict[str, list[int]] = {}      # the same for the last match
@@ -1094,6 +1102,14 @@ class QuizLogic:
         correct_players.sort(key=lambda c: c[2])
         fastest_player, fastest_time = (correct_players[0][0], correct_players[0][2]) if correct_players else ("", 0.0)
 
+        if self._combo_hits:   # one toast for the round: the biggest step, and how many others stepped up
+            n, top = max(self._combo_hits)
+            more = len(self._combo_hits) - 1
+            self._push_event(f"{top}: {n} in a row, {COMBO_NAMES.get(n, 'COMBO')} COMBO x{combo_mult(n):g}"
+                             + (f" (+{more} more combos)" if more else ""), COLOR_TEXT_GOLD, "FIRE")
+            self.sound_queue.append("combo")
+            self._combo_hits = []
+
         unlocked = [u for u, _, _ in correct_players if not is_bot(u) and u not in self.halves_used
                     and self.standings[u].streak == HALF_STREAK]
         if unlocked:
@@ -1142,18 +1158,14 @@ class QuizLogic:
             speed_mult = SPEED_BONUS_TIER2_MULT
         else:
             speed_mult = 1.0
-        streak_mult = min(MAX_STREAK_MULT, 1.0 + current_streak * STREAK_BONUS_PER)
+        streak_mult = combo_mult(current_streak)
         return max(1, int(BASE_POINTS * speed_mult * streak_mult))
 
     def _check_achievements(self, player: Player, answer_time: float, old_rank: str):
         if player.correct_answers == 1:
             self._push_event(f"{player.username} got their first answer right!", COLOR_TEXT_GOLD, "ACH")
-        if player.streak in STREAK_MILESTONES:
-            names = {3: "On Fire", 5: "Unstoppable", 10: "Legendary Streak", 15: "Quiz Machine",
-                     25: "GODLIKE", 50: "Transcendent", 100: "The Chosen One"}
-            self._push_event(f"{player.username}: {names.get(player.streak, 'Streak')} (x{player.streak})",
-                             COLOR_TEXT_GOLD, "FIRE")
-            self.sound_queue.append("streak")
+        if any(player.streak == at for at, _ in COMBO_STEPS):
+            self._combo_hits.append((player.streak, player.username))
         if answer_time < 2.0:
             self._push_event(f"{player.username} SPEED DEMON ({answer_time:.1f}s)", COLOR_RANK_DIAMOND, "FAST")
         if player.rank != old_rank:
