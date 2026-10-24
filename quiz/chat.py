@@ -47,6 +47,17 @@ class ChatManager:
         self._status_text = "Initializing..."
         self._last_status_log = 0.0
         self._wake = threading.Event()
+        self._reopen = False
+
+    def pin(self, urls: list[str]):
+        """Read chat from `urls` from now on (the YouTube API made a new broadcast): drop the
+        current chat and open the new one at once."""
+        self._urls = urls
+        self._reopen = True
+        self._wake.set()
+        if self._running and not self._offline and self._thread is None:
+            self._thread = threading.Thread(target=self._real_chat_thread, daemon=True)
+            self._thread.start()
 
     def start(self):
         self._running = True
@@ -76,6 +87,10 @@ class ChatManager:
     def _real_chat_thread(self):
         waiting_logged = False
         while self._running:
+            self._reopen = False
+            self._wake.clear()   # pin() sets it; stop() sets _running first, so this never loses a stop
+            if not self._running:
+                break
             chat = self._find_chat()
             if not chat:
                 self._status_text = "Waiting for the stream to go live..."
@@ -89,7 +104,7 @@ class ChatManager:
             self._status_text = f"LIVE - reading chat ({chat.video_id})"
             print(f"[Chat] Connected to live chat of video {chat.video_id}")
             failures = 0
-            while self._running and chat.alive:
+            while self._running and chat.alive and not self._reopen:
                 try:
                     messages, wait = chat.poll()
                     failures = 0
@@ -105,7 +120,9 @@ class ChatManager:
                 self._log_status()
                 self._wake.wait(wait)
             self._connected = False
-            if self._running:
+            if self._running and self._reopen:
+                print(f"[Chat] Switching to {self._urls[0] if self._urls else 'no chat'}")
+            elif self._running:
                 print("[Chat] Live chat ended or lost, looking for it again")
 
     def _put(self, author: str, text: str, sent: float):

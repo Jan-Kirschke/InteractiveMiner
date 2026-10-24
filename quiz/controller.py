@@ -27,6 +27,9 @@ from quiz.ui_vertical import VerticalUI
 from quiz.sounds import ShowCues, SoundManager
 from quiz.ytchat import page_url
 from quiz.broadcaster import YouTubeBroadcaster
+from quiz import ytapi
+
+END_BROADCAST_SECONDS = 8   # shutdown waits at most this long for YouTube (TimeoutStopSec=20)
 
 
 def init_pygame():
@@ -69,6 +72,7 @@ class MainGameController:
             game_fps=FPS, audio_input=STREAM_AUDIO_INPUT, output=STREAM_OUTPUT,
             out_height=STREAM_OUT_HEIGHT, audio_gain_db=STREAM_AUDIO_GAIN_DB,
         )
+        self.youtube = self._make_youtube(offline)
 
         # Periodic save timer
         self._last_save_time = time.time()
@@ -79,6 +83,19 @@ class MainGameController:
         self._last_tick_time = 0
         self._prev_logic_state = None
         self._music_started = False
+
+    def _make_youtube(self, offline: bool):
+        """The broadcast keeper when the YouTube API is set up (a token file exists), else None:
+        then YouTube's own broadcast handling and the /live chat lookup run exactly as before."""
+        if offline or not STREAM_ENABLED or not YOUTUBE_STREAM_KEY or not ytapi.configured():
+            return None
+        api = ytapi.YouTubeAPI(YOUTUBE_STREAM_KEY)
+        return ytapi.BroadcastKeeper(api, is_streaming=lambda: self.broadcaster.is_active,
+                                     on_video=self._pin_chat)
+
+    def _pin_chat(self, video_id: str):
+        print(f"YouTube: chat pinned to video {video_id}")
+        self.chat.pin([page_url(video_id=video_id)])
 
     def _request_stop(self, signum, _frame):
         print(f"[Game] Signal {signum} received, shutting down")
@@ -95,6 +112,8 @@ class MainGameController:
         if STREAM_ENABLED and (YOUTUBE_STREAM_KEY or STREAM_OUTPUT):
             self._broadcast_frame()  # Pre-fill queue with first frame
             self.broadcaster.start()
+            if self.youtube:
+                self.youtube.start()   # its own thread: creates/binds/starts the broadcast, then watches it
 
         print("[Game] The Lifelong Quiz is running!")
 
@@ -237,10 +256,18 @@ class MainGameController:
             return
         self._shutdown_done = True
         print("[Game] Shutting down...")
+        # End the YouTube broadcast in parallel with the rest of the shutdown, bounded in time.
+        deadline = time.monotonic() + END_BROADCAST_SECONDS
+        youtube = getattr(self, "youtube", None)
+        ending = youtube.end(END_BROADCAST_SECONDS) if youtube else None
         self.sounds.stop_music()
         self.broadcaster.stop()
         self.chat.stop()
         self.db.save_all()
         self.db.close()
         pygame.quit()
+        if ending:
+            ending.join(max(0.0, deadline - time.monotonic()))
+            if ending.is_alive():
+                print("YouTube: no answer in time, leaving the broadcast to YouTube")
         print("[Game] Goodbye!")
