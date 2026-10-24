@@ -965,6 +965,8 @@ class UIManager:
             self._blit(n, (x + 24 + ox, ry), "midleft", alpha=255 * p)
             if bot:
                 self._text("black", 15, "BOT", FAINT, (x + 34 + n.get_width() + ox, ry), "midleft", alpha=200 * p)
+            elif name in logic.half_picks:
+                self._text("black", 18, "50:50", ACCENT, (x + 36 + n.get_width() + ox, ry), "midleft", alpha=255 * p)
             self._text("bold", 20, f"{at:.1f}s", DIM, (x + RAIL_W - 24, ry), "midright", alpha=255 * p)
         if not rows:
             self._text("bold", 24, "Be the first: type 1-4!", FAINT, (x + 24, y + 80))

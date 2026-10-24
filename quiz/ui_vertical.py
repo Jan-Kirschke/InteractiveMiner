@@ -224,7 +224,8 @@ class VerticalUI(UIManager):
         hint = "TYPE 1 OR 2 IN CHAT" if n == 2 else "TYPE 1, 2, 3 OR 4 IN CHAT"
         label = f"{locked} LOCKED IN" if locked else hint
         r = self._text("black", 34, label, ACCENT, (W // 2, ly), "center")
-        names = [nm.replace("[Bot] ", "") for nm, _ in reversed(logic.lock_order[-3:])]
+        names = [nm.replace("[Bot] ", "") + (" (50:50)" if nm in logic.half_picks else "")
+                 for nm, _ in reversed(logic.lock_order[-3:])]
         if names:
             self._blit(self._fit_name("  -  ".join(names), 28, DIM, CW, kind="semi"), (W // 2, r.bottom + 22), "center")
 

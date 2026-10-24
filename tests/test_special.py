@@ -333,6 +333,104 @@ def test_a_full_match_plays_every_special_slot(game, monkeypatch):
     assert kinds[2] == "higher_lower" and kinds[4] in ("majority", "minority") and kinds[6] == "odd_one_out"
 
 
+# ------------------------------------------
+# 50:50 JOKER (chat): "!half 1 3" names two options once per match on a 3+ streak; pays half
+# ------------------------------------------
+def classic(game, correct=1, options=("A", "B", "C", "D")):
+    from quiz.models import Question
+    game.current_question = Question("Q?", options[correct], list(options), correct, "Test", "easy")
+    game.current_answers, game.lock_order, game.half_picks = {}, [], {}
+
+
+def on_streak(game, user, n=3):
+    game._standing(user).streak = n
+
+
+def test_half_pays_half_when_the_right_answer_is_one_of_the_two(game):
+    classic(game, correct=1)
+    on_streak(game, "alice")
+    game.process_message("alice", "half 1 2", "!half 1 2", at=game.question_start_time + 1)
+    answer_at(game, "bob", 1, 1)
+    res = game._resolve_question()
+    pts = {u: p for u, p, _ in res.correct_players}
+    assert pts == {"alice": 10, "bob": 20}                  # 10 x 2 speed, halved
+    assert res.option_counts == [0.5, 1.5, 0, 0]            # the split still adds up to the players
+    assert game.standings["alice"].streak == 4               # a hit keeps the streak going
+
+
+def test_half_misses_when_neither_pick_is_right(game):
+    classic(game, correct=1)
+    on_streak(game, "alice")
+    game.process_message("alice", "half 13", "!half 1,3")   # chat strips the comma
+    res = game._resolve_question()
+    assert res.correct_players == [] and game.standings["alice"].streak == 0
+
+
+@pytest.mark.parametrize("msg", ["half", "half 1", "half 1 1", "half 1 2 3", "half 1 5", "half 12 3"])
+def test_half_needs_exactly_two_different_options(game, msg):
+    classic(game)
+    on_streak(game, "alice")
+    game.process_message("alice", msg, "!" + msg)
+    assert "alice" not in game.current_answers and "alice" not in game.halves_used
+
+
+def test_half_needs_a_streak_and_works_once_per_match(game):
+    classic(game)
+    on_streak(game, "alice", 2)
+    game.process_message("alice", "half 1 2")
+    assert "alice" not in game.current_answers               # streak 2: still locked
+    on_streak(game, "alice", 3)
+    game.process_message("alice", "half 1 2")
+    assert game.half_picks == {"alice": (0, 1)}
+    classic(game)                                            # next question, same match
+    game.process_message("alice", "half 1 2")
+    assert "alice" not in game.current_answers
+    game._enter_intro()                                      # a new match hands it back
+    assert not game.halves_used
+
+
+def test_half_is_not_offered_on_crowd_or_two_option_rounds_or_to_bots(game):
+    crowd(game)
+    game.half_picks = {}
+    on_streak(game, "alice")
+    game.process_message("alice", "half 1 2")
+    classic(game, correct=0, options=("More", "Less"))
+    game.process_message("alice", "half 1 2")                # would cover both answers
+    classic(game)
+    on_streak(game, BOT_PREFIX + "Rookie")
+    game.process_message(BOT_PREFIX + "Rookie", "half 1 2")
+    assert game.half_picks == {} and game.halves_used == set()
+
+
+def test_plain_answer_after_half_replaces_it_but_the_joker_is_spent(game):
+    classic(game, correct=1)
+    on_streak(game, "alice")
+    game.process_message("alice", "half 1 2")
+    game.process_message("alice", "1")                       # changed her mind: just A
+    assert "alice" not in game.half_picks and "alice" in game.halves_used
+    res = game._resolve_question()
+    assert res.correct_players == []
+
+
+def test_half_after_time_is_up_only_as_a_first_answer(game):
+    classic(game)
+    on_streak(game, "alice")
+    on_streak(game, "bob")
+    game.process_message("alice", "3")
+    game.state = GameState.LOCKING
+    game.process_message("alice", "half 1 2")                # answers are locked
+    game.process_message("bob", "half 1 2")                  # a late first answer still counts
+    assert game.half_picks == {"bob": (0, 1)} and game.current_answers["alice"][0] == 2
+
+
+def test_reaching_the_streak_announces_the_joker(game):
+    classic(game, correct=1)
+    on_streak(game, "alice", 2)
+    answer_at(game, "alice", 1, 3)
+    game._resolve_question()
+    assert any("50:50" in e.text and "alice" in e.text for e in game.event_feed)
+
+
 def test_empty_deck_falls_back_to_a_classic_question(game, tmp_path):
     game.special = SpecialDecks([write_pack(tmp_path, [])])
     game.special_slots = {2: "odd_one_out"}

@@ -9,6 +9,8 @@ Special question types and rounds that fit "answer 1-4 in chat or on the phone p
 - `_resolve_question` scores `choice == q.correct_index`. `Question` has no type field.
 - Bots answer from `correct_index`.
 
+**Built (2026-10-24, branch feature/matches):** the shared plumbing, Crowd Mind, Lonely Answer, Higher or Lower, Odd One Out and the 50:50 joker. `config.SPECIAL_SLOTS = {2: "higher_lower", 4: "majority", 6: "odd_one_out"}` gives every 10-question match 3 special rounds. 30% of the Crowd Mind slots secretly play as Lonely Answer (`LONELY_CHANCE`). Closest Call is not built, so `special_number.json` stays inert. Tests: `tests/test_special.py`.
+
 ## Shared plumbing (once, for all top 4)
 
 1. `Question` gains `kind: str = "classic"` and `value: float | None = None`.
@@ -101,9 +103,9 @@ Q10 becomes up to five 8 s questions for the match top 5. Wrong or no answer mea
 
 One question per match where a crew scores (20 points to each member playing) if most of its members pick right. The screen shows crew bars per option. Input is 1-4. Code: a `_resolve_question` branch reusing the `crew_race` grouping.
 
-## 9. 50:50 Lifeline (streak reward): M
+## 9. 50:50 Lifeline (streak reward): BUILT, chat only
 
-Once per match, players on a 3+ streak send `!half` (chat) or tap 50:50 (phone). Two wrong options disappear on their own phone only, and that answer pays half. Phone-first, because the stream screen is shared. Code: per-user state in `answer_server.py`.
+The phone page is gone and the stream screen is shared, so nothing can disappear for one player. Instead, once per match, a player on a 3-answer streak in that match (`HALF_STREAK`) names two options: `!half 1 3` (also `!5050 1 3`, `!half 1,3`). If the right answer is one of them, it pays half; otherwise it is a normal wrong answer. Not on crowd rounds or two-option questions. The screen shows "plays the 50:50 joker" and a 50:50 tag in the locked-in list, never the two options. Each pick counts as half a vote in the answer split. A plain `1`-`4` while the question runs replaces it, and the joker stays spent. Reaching the streak announces "50:50 joker unlocked". Code: `QuizLogic._cmd_half`, `half_picks`, `halves_used`.
 
 ## 10. Poll Then Truth: M
 
