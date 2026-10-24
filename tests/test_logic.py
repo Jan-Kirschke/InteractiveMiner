@@ -210,3 +210,11 @@ def test_crew_and_duel_record_survive_restart(game, tmp_path):
     p = db2._players["alice"]
     assert (p.crew, p.duel_wins) == ("Owls", 2)
     db2.close()
+
+
+def test_true_false_rejects_options_3_and_4(game):
+    game.current_question = Question("Sun is a star?", "True", ["True", "False"], 0, "Science", "easy")
+    game.process_message("alice", "3")
+    assert "alice" not in game.current_answers
+    game.process_message("alice", "1")
+    assert game.current_answers["alice"][0] == 0

@@ -10,6 +10,7 @@ import html
 import random
 import re
 import threading
+from pathlib import Path
 
 try:
     import requests
@@ -39,6 +40,10 @@ from quiz.models import (
     GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding, Duel,
 )
 from quiz.db import QuizDatabase
+from quiz.bank import QuestionBank, REPEAT_WINDOWS
+from quiz.import_questions import load_items
+
+PACK_DIR = Path(__file__).resolve().parent / "packs"
 
 
 # Hardcoded fallback questions if API is unavailable (80+ across many categories)
@@ -275,6 +280,11 @@ class QuizLogic:
         self._active_bot_names: list[str] = []
         self._bots_active = False
 
+        self.bank = QuestionBank(db._conn, db._lock)
+        self.bank.add([_question_to_item(q) for q in FALLBACK_QUESTIONS], "builtin")
+        for pack in sorted(PACK_DIR.glob("*.json")):  # bundled packs; existing texts are skipped
+            self.bank.add(load_items(str(pack)), pack.name)
+
         self._fetch_session_token()
         self._ensure_cache()
 
@@ -331,6 +341,8 @@ class QuizLogic:
     # QUESTION FETCHING
     # ------------------------------------------
     def _ensure_cache(self):
+        if self.bank.count(self._current_category_id, unseen_for=REPEAT_WINDOWS[0]) >= 3 * OTDB_MIN_CACHE:
+            return  # the bank still holds plenty this category has not asked for a week
         if len(self._question_cache) >= OTDB_MIN_CACHE:
             return
         if self._fetch_in_progress:
@@ -345,6 +357,8 @@ class QuizLogic:
         try:
             questions = self._fetch_questions(cat_at_fetch)
             if questions:
+                added = self.bank.add([_question_to_item(q, cat_at_fetch) for q in questions], "otdb")
+                print(f"[Bank] +{added} new questions")
                 # Only add if category hasn't changed while we were fetching
                 if self._current_category_id == cat_at_fetch:
                     # Filter out recently seen questions
@@ -414,6 +428,11 @@ class QuizLogic:
 
     def _pop_question(self, difficulty: str = "") -> Question:
         """Next question, preferring the requested difficulty (match ramp: easy -> hard)."""
+        q = self.bank.pick(self._current_category_id, difficulty)
+        if q:
+            self._seen_questions[self._hash_question(q)] = time.time()
+            self._question_cache = [c for c in self._question_cache if c.text != q.text]
+            return q
         if self._question_cache:
             idx = next((i for i, q in enumerate(self._question_cache)
                         if q.difficulty == difficulty), 0)
@@ -576,6 +595,10 @@ class QuizLogic:
 
     def _enter_revealing(self):
         self.round_count += 1
+        if self.current_question:
+            real = [(u, c) for u, (c, _) in self.current_answers.items() if not is_bot(u)]
+            self.bank.record_result(self.current_question.text, len(real),
+                                    sum(1 for _, c in real if c == self.current_question.correct_index))
         before = {p.username: i for i, p in enumerate(self.db.get_weekly_top(n=50), 1)}
         self.last_result = self._resolve_question()
         self._announce_overtakes(before)
@@ -1052,7 +1075,8 @@ class QuizLogic:
         choice = int(msg) - 1
 
         if self.state in (GameState.ASKING, GameState.LOCKING):
-            self._record_answer(username, choice)
+            if self.current_question and choice < len(self.current_question.options):  # "3" on true/false
+                self._record_answer(username, choice)
         elif self.state == GameState.LOBBY and self.vote_state:
             vote = choice + 1
             if vote in self.vote_state.options:
@@ -1131,6 +1155,14 @@ class QuizLogic:
     @property
     def uptime(self) -> float:
         return time.time() - self.session_start_time
+
+
+def _question_to_item(q: Question, cat_id=None) -> dict:
+    return {
+        "text": q.text, "correct": q.correct_answer,
+        "wrong": [o for o in q.options if o != q.correct_answer],
+        "category": q.category, "difficulty": q.difficulty, "fact": q.fact, "cat_id": cat_id,
+    }
 
 
 def is_bot(username: str) -> bool:

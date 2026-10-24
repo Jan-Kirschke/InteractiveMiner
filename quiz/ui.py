@@ -918,13 +918,18 @@ class UIManager:
                     self.burst(x + w // 2, y + h // 2, n=70, power=0.8)
 
         p = ease_out_cubic(progress(age, 1.5, 0.4))
-        sy = rects[2][1] + rects[2][3] + 24 + int((1 - p) * 30)
+        last = rects[len(q.options) - 1]  # true/false uses one row
+        sy = last[1] + last[3] + 24 + int((1 - p) * 30)
         if sy + 66 <= BODY_BOTTOM + 30:
             self._panel(MAIN_X, sy, MAIN_W, 66, radius=18)
             knew = int(round(res.correct_rate * 100))
             self._text("display", 38, f"{knew}% KNEW IT", GOOD if knew >= 50 else ACCENT, (MAIN_X + 26, sy + 33), "midleft", alpha=255 * p)
-            self._blit(self._fit_name(f"The answer: {q.correct_answer}", 28, INK, MAIN_W - 380, kind="semi"),
-                       (MAIN_X + 330, sy + 33), "midleft", alpha=255 * p)
+            line = q.fact or f"The answer: {q.correct_answer}"
+            lines, size = self._fit_wrap(line, "semi", (28, 24), MAIN_W - 380, 2)
+            lh = int(size * 1.1)
+            for j, part in enumerate(lines):
+                self._blit(self._render_name(part, size, INK, kind="semi"),
+                           (MAIN_X + 330, sy + 33 - len(lines) * lh / 2 + j * lh + lh / 2), "midleft", alpha=255 * p)
 
         x, y = RAIL_X, BODY_Y
         h = 230

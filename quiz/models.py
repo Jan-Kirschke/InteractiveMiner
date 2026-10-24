@@ -140,6 +140,7 @@ class Question:
     correct_index: int  # 0-based index of correct answer in options
     category: str
     difficulty: str
+    fact: str = ""  # one line shown on the reveal
 
 
 @dataclass
