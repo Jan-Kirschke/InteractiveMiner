@@ -443,10 +443,17 @@ class UIManager:
             self._burst_done = set()
             if state == GameState.LOBBY:
                 self._vote_bars = {}
+            elif state == BUILDUP:
+                # The next question is already served; its options must not show before ASKING.
+                # The build-up's cover closes over the last frame of the state before, frozen.
+                self._freeze = self.screen.copy()
         age = now - self._state_enter
         self.fx.cue(logic, now)
 
-        if not self.fx.covered(now):   # a cut-away hides everything: skip the frame underneath
+        if state == BUILDUP:
+            if not self.fx.covered(now) and getattr(self, "_freeze", None) is not None:
+                self.screen.blit(self._freeze, (0, 0))
+        elif not self.fx.covered(now):   # a cut-away hides everything: skip the frame underneath
             self._draw_stage(now, dt)
             if state == GameState.INTRO:
                 self._draw_intro(logic, age)
@@ -458,11 +465,11 @@ class UIManager:
                     self._draw_question(logic, age, now)
                     self._draw_rail_live(logic, now)
                     self._draw_toast(logic, now)
-                elif state == GameState.REVEALING or (state == BUILDUP and logic.last_result):
-                    self._draw_reveal(logic, age + (99.0 if state == BUILDUP else 0.0))   # under the build-up's cover
+                elif state == GameState.REVEALING:
+                    self._draw_reveal(logic, age)
                 elif state == GameState.PODIUM:
                     self._draw_podium(logic, age)
-                elif state != BUILDUP:
+                else:
                     self._text("display", 90, "THE LIFELONG QUIZ", ACCENT, (SCREEN_WIDTH // 2, 470), "center")
                 self._draw_footer(logic, now)
                 self._draw_player_card(logic, now)

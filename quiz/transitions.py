@@ -45,6 +45,7 @@ import pygame.gfxdraw
 from quiz.config import FONT_DIR, MATCH_LENGTH, LIGHTNING_QUESTION, BONUS_QUESTIONS, LIGHTNING_TIME, DIFFICULTY_RAMP
 from quiz import gfx
 from quiz.models import GameState
+from quiz.special import FORMATS
 from quiz.motion import (clamp01, heartbeat, in_cubic as _in_cubic, in_expo, in_out_cubic as _in_out, lerp,
                          out_back as _out_back, out_cubic as _out_cubic, out_expo, out_quad as _out_quad,
                          progress as _prog, shake, smoothstep)
@@ -102,7 +103,7 @@ def pick_style(n, event="", match_no=0, last=None):
         return "spotlight"
     if n == 1 or n == MATCH_LENGTH // 2 + 1:   # into the first question, and out of halftime
         return "iris"
-    if event == "lightning":
+    if event == "lightning" and last != "slash":   # a Speed match is all lightning: alternate
         return "slash"
     i = (n + 2 * match_no) % len(ROTATION)
     s = ROTATION[i]
@@ -394,7 +395,8 @@ class Transitions:
         if self.kind is not None or self._cued == (state, logic.state_start_time):
             return
         if state == GameState.LOBBY:
-            kind, target, info = "match_open", GameState.INTRO, {"match_no": logic.match_no}
+            kind, target, info = "match_open", GameState.INTRO, {"match_no": logic.match_no,
+                                                                 "format": getattr(logic, "match_format", "classic")}
         elif state == GameState.REVEALING and logic.q_index >= MATCH_LENGTH:
             kind, target, info = "final", GameState.PODIUM, {"match_no": logic.match_no,
                                                              "category": logic.match_category}
@@ -424,7 +426,8 @@ class Transitions:
         b = dict(getattr(logic, "buildup", None) or {})
         n = int(b.get("q_no") or logic.q_index + 1)
         of = int(b.get("of") or MATCH_LENGTH)
-        tier = str(b.get("tier") or DIFFICULTY_RAMP.get(n, "medium")).lower()
+        served = getattr(getattr(logic, "current_question", None), "difficulty", "")   # served at BUILDUP entry
+        tier = str(b.get("tier") or served or DIFFICULTY_RAMP.get(n, "medium")).lower()
         event = b.get("event") or ""
         if not event and n == of:
             event = "final"
@@ -1225,12 +1228,19 @@ class Transitions:
         ring = int(orbit * 0.6)    # the Spotlight LQ logo, at the logo's own proportions
         lq = self._ring_logo_lq(int(ring * 0.86))
         word = gfx.tracked(self.fonts.get("black", max(12, int(ring * 0.105))), "THE LIFELONG QUIZ", INK, max(2, ring // 45))
-        tag = self._line([(f"LIVE  ·  MATCH {self.info.get('match_no', '')}", LILAC)], "black", int(34 * u), 6)
-        s = {"lq": lq, "word": word, "tag": tag, "ring": ring, "orbit": orbit, "rw": max(6, ring // 11),
+        # The tag names the match format in its colour (special.FORMATS), the rule sits under it
+        label, fcol, rule = FORMATS.get(self.info.get("format") or "classic", FORMATS["classic"])
+        max_w = self.w - 2 * self.margin
+        tag = self._fit_line([(f"LIVE  ·  MATCH {self.info.get('match_no', '')}  ·  ", LILAC), (label, fcol)],
+                             "black", (34, 30, 26), 6, max_w - int(40 * u))
+        lines, size = self._wrap(rule, "semi", (32, 28, 26), max_w if self.portrait else int(self.w * 0.5), 2)
+        rule_s = [self._text("semi", size, ln, INK) for ln in lines]
+        rule_h = sum(r.get_height() + int(6 * u) for r in rule_s) + int(14 * u)
+        s = {"lq": lq, "word": word, "tag": tag, "rule": rule_s, "ring": ring, "orbit": orbit, "rw": max(6, ring // 11),
              "lq_y": self.cy - int(ring * 0.044) - lq.get_height() // 2,
              "word_y": self.cy + int(ring * 0.51) - word.get_height() // 2,
              "tag_y": self.cy + orbit + int(30 * u)}
-        if s["tag_y"] + tag.get_height() > self.safe_bottom:
+        if s["tag_y"] + tag.get_height() + rule_h > self.safe_bottom:
             s["tag_y"] = self.cy + ring + int(36 * u)
         self._s = s
         rng = random.Random(self.info.get("match_no", 0))
@@ -1290,6 +1300,11 @@ class Transitions:
                 tx = self.cx - tag.get_width() // 2 + int(14 * u)
                 _rise(screen, tag, tx, s["tag_y"], tp)
                 pygame.draw.circle(screen, BAD, (tx - int(26 * u), s["tag_y"] + tag.get_height() // 2), int(9 * u * tp))
+            y = s["tag_y"] + tag.get_height() + int(14 * u)
+            rp = _out_cubic(_prog(t_in, settle + 0.44, 0.28)) * sink
+            for line in s["rule"] if rp > 0 else ():
+                _rise(screen, line, self.cx - line.get_width() // 2, y, rp)
+                y += line.get_height() + int(6 * u)
             return
         # Uncover: wind up (the ring tightens and turns back while its inside opens onto the
         # intro), then the camera pushes through it

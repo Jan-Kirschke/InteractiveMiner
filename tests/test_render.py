@@ -24,17 +24,6 @@ from quiz.config import SCREEN_WIDTH, SCREEN_HEIGHT, VERTICAL
 from quiz.db import QuizDatabase
 from quiz.models import GameState as S
 
-if os.environ.get("STUB_BUILDUP") and not hasattr(S, "BUILDUP"):
-    # The tension build-up contract before the game loop has it: REVEALING -> BUILDUP -> ASKING
-    bu = object.__new__(S)
-    bu._name_, bu._value_ = "BUILDUP", 99
-    S._member_map_["BUILDUP"] = bu
-    S._value2member_map_[99] = bu
-    S._member_names_.append("BUILDUP")
-    type.__setattr__(S, "BUILDUP", bu)
-    L.STATE_DURATIONS = {**L.STATE_DURATIONS, bu: 4.0}
-BU = getattr(S, "BUILDUP", None)
-
 L.requests = None
 pygame.init()
 pygame.joystick.quit()   # the dummy driver's joystick subsystem leaks Windows USER objects
@@ -50,26 +39,18 @@ def stamped(*a, **k):    # GameEvent stamps the real clock: keep toasts on the f
     push(*a, **k)
     g.event_feed[-1].timestamp = clock[0]
 g._push_event = stamped
-if os.environ.get("STUB_BUILDUP") and "_enter_buildup" not in L.QuizLogic.__dict__:
-    expired = g._on_state_expired
-    def enter_buildup():
-        n = g.q_index + 1
-        g.buildup = {"q_no": n, "of": L.MATCH_LENGTH, "tier": "hard", "stakes": 10 * n, "kind": "classic",
-                     "event": "final" if n == L.MATCH_LENGTH else None, "headline": f"QUESTION {n}",
-                     "subline": "Deklarator leads by 5" if n % 2 else "", "spotlight": "Kenji" if n % 3 else None,
-                     "intensity": (n - 1) / 9}
-        g.buildup_intensity = g.buildup["intensity"]
-    def stub_expired():
-        if g.state == S.REVEALING and g.q_index < L.MATCH_LENGTH:
-            g._transition_to(BU)
-        elif g.state == BU:
-            g.buildup = None
-            g._transition_to(S.ASKING)
-        else:
-            expired()
-    g._on_state_expired = stub_expired
-    g._enter_buildup = enter_buildup
-ui =(VerticalUI if VERTICAL else UIManager)(screen)
+g.db.next_match_number = lambda: int(os.environ["RENDER_MATCH"])   # the match number picks the format
+g._enter_lobby()
+print("format", g.match_format)
+ui = (VerticalUI if VERTICAL else UIManager)(screen)
+def guard(paint):   # the next question is served at BUILDUP entry: its options must not show yet
+    def wrapped(*a, **k):
+        assert g.state != S.BUILDUP, "answer options drawn during BUILDUP"
+        return paint(*a, **k)
+    return wrapped
+for meth in ("_btn", "_btn_lit", "_draw_option"):
+    if hasattr(ui, meth):
+        setattr(ui, meth, guard(getattr(ui, meth)))
 names = ["Deklarator", "QuizQueen_88", "maria.lopez", "Kenji"]
 seen, laps, step = set(), 0, 0
 while laps < 1 and clock[0] < 1_800_000_000.0 + 900:
@@ -83,6 +64,9 @@ while laps < 1 and clock[0] < 1_800_000_000.0 + 900:
         g.process_message(names[step % 4], str(1 + step % 4), "x")
     if g.state == S.ASKING and step % 50 == 0:
         g.process_message(names[0], "!card", "!card")
+    if g.state == S.ASKING and step % 7 == 0:   # power-ups the locked-in list tags
+        g.process_message(names[1], "double", "!double")
+        g.process_message(names[2], "half 1 2", "!half 1 2")
     g.update(dt)
     if before == S.PODIUM and g.state == S.LOBBY:
         laps += 1
@@ -92,19 +76,19 @@ print(sorted(seen))
 '''
 
 
-@pytest.mark.parametrize("buildup", [False, True], ids=["plain", "buildup"])
-@pytest.mark.parametrize("layout", ["vertical", "horizontal"])
-def test_every_state_renders(layout, buildup):
+@pytest.mark.parametrize("layout,match,fmt", [
+    ("vertical", 1, "classic"), ("vertical", 2, "speed"), ("vertical", 3, "survivors"), ("vertical", 4, "teams"),
+    ("horizontal", 1, "classic"), ("horizontal", 4, "teams")])
+def test_every_state_renders(layout, match, fmt):
+    """A whole match of each format: the build-up, the format pods and the podium cards."""
     root = Path(__file__).resolve().parent.parent
     env = {k: v for k, v in os.environ.items() if not k.startswith("QUIZ_")}
-    env.update(QUIZ_LAYOUT=layout, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy", PYTHONPATH=str(root))
-    if buildup:
-        env["STUB_BUILDUP"] = "1"
-    else:
-        env.pop("STUB_BUILDUP", None)
+    env.update(QUIZ_LAYOUT=layout, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy", PYTHONPATH=str(root),
+               RENDER_MATCH=str(match))
     r = subprocess.run([sys.executable, "-c", SCRIPT], cwd=root, env=env, capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, r.stderr[-3000:]
-    for state in ("LOBBY", "INTRO", "ASKING", "LOCKING", "REVEALING", "PODIUM") + (("BUILDUP",) if buildup else ()):
+    assert f"format {fmt}" in r.stdout
+    for state in ("LOBBY", "INTRO", "BUILDUP", "ASKING", "LOCKING", "REVEALING", "PODIUM"):
         assert state in r.stdout
 
 
