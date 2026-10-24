@@ -991,7 +991,7 @@ class QuizLogic:
                 if survivors_before > 0:
                     self._push_event("SURVIVORS wiped out! Nobody gets the pot", COLOR_EVENT_RED, "OUT")
             else:
-                status = f"{n} SURVIVORS left for {SURVIVOR_POT} points"
+                status = f"{n} SURVIVOR{'S' if n > 1 else ''} left for {SURVIVOR_POT} points"
                 color = FORMATS["survivors"][1]
         elif self.team_points is not None:
             s = self.team_scores()
@@ -1020,7 +1020,8 @@ class QuizLogic:
                 self._award_bonus(u, share)
             stats["survivors"] = (len(alive), share)
             if alive:
-                self._push_event(f"{len(alive)} SURVIVORS split the pot: +{share} each!",
+                self._push_event(f"{len(alive)} SURVIVORS split the pot: +{share} each!" if len(alive) > 1
+                                 else f"{alive[0]} SURVIVES ALONE and takes all {share}!",
                                  FORMATS["survivors"][1], "WIN")
                 self.sound_queue.append("jackpot")
         elif self.team_points is not None:
@@ -1567,7 +1568,8 @@ class QuizLogic:
         self.double_picks.add(username)
         self.doubles_used.add(username)
         self._push_event(f"{username} doubles down: x2 or -{DOUBLE_STAKE}!", COLOR_EVENT_BLUE, "x2")
-        self._chat_sounds.append("power_up")
+        if "power_up" not in self._chat_sounds:   # a burst of doubles is one sound
+            self._chat_sounds.append("power_up")
 
     def process_message(self, username: str, message: str, raw: str = "", at: float | None = None):
         """at: when the answer arrived (the answer page stamps it on receipt); None = now."""

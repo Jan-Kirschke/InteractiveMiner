@@ -65,7 +65,21 @@ Every question now opens with `GameState.BUILDUP`: `... REVEALING -> BUILDUP -> 
 - Harder late-show matches: the question bumper (`transitions.py`) reads the static `DIFFICULTY_RAMP`, so a shifted ramp would show the wrong tier. It waits for the visual pass.
 - A hype meter per question: the community goal covers the group moment, and two meters would compete for the screen.
 
+**Status: all of the table is BUILT** (branch `game/loop2`; tests in `tests/test_loop.py`, each rule checked against a named mutant).
+
 **Bots** never survive, never join a team, never count for the community goal and cannot use `!double`.
+
+**Logic fields for the visual pass.** Today these features show only as toasts and host lines.
+
+| Feature | Fields |
+|---|---|
+| Format | `match_format`; `special.FORMATS[fmt]` = (label, colour, rule) |
+| Difficulty | `level_up` (the tier this question stepped up to, else ""); `tier_reached`; `question_mult()`; `question_stakes()` |
+| Combo | `logic.combo_mult(streak)` and `config.COMBO_STEPS`, for a per-player step meter |
+| Survivors | `perfect` (set, or None before Q1); `match_stats["survivors"]` = (count, share) |
+| Teams | `team_points`, `team_count`, `team_scores()` (averages), `special.TEAMS[team]` = (label, colour), `logic.team_of(name)`; `match_stats["team"]` = (winner or "", gold, teal) |
+| Community goal | `community_goal`, `community_correct`, `community_jackpot` |
+| `!double` | `double_picks` (this question), `doubles_used` (this match), `MatchStanding.answered` |
 
 **Sound cues:** `level_up`, `combo`, `round_sting` (format at match open), `halftime`, `jackpot` (survivor and community payouts), `team_win`, `crowd` (goal half-way, team lead change) and `power_up` (goal reached, `!double` earned or used).
 

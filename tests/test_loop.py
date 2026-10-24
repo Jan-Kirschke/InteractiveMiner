@@ -703,6 +703,22 @@ def test_using_double_plays_power_up_on_the_next_frame(game):
     assert "power_up" not in game.sound_queue
 
 
+def test_a_burst_of_doubles_plays_one_sound(game):
+    classic(game)
+    game.state_timer = 20
+    for i in range(300):
+        can_double(game, f"p{i}")
+        game.process_message(f"p{i}", "double")
+    game.update(0.01)
+    assert game.sound_queue.count("power_up") == 1
+
+
+def test_one_survivor_is_singular(game):
+    lobby_for(game, "survivors")
+    reveal(game, right=("alice",))
+    assert any(e.text.startswith("1 SURVIVOR left") for e in game.event_feed)
+
+
 def test_question_lines_vary(game):
     import re
     lines = []
