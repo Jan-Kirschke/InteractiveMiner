@@ -361,7 +361,8 @@ class YouTubeAPI:
             "contentDetails": {"enableAutoStart": True, "enableAutoStop": False,
                                "latencyPreference": "ultraLow", "enableDvr": False,
                                # no enableEmbed: channels not allowed to embed get 400 invalidEmbedSetting
-                               "monitorStream": {"enableMonitorStream": False}},
+                               # the testing step needs the monitor stream (viewers never see it)
+                               "monitorStream": {"enableMonitorStream": True, "broadcastStreamDelayMs": 0}},
         }
         return self.call("POST", "liveBroadcasts", {"part": "snippet,status,contentDetails"}, body)
 
@@ -384,6 +385,15 @@ class YouTubeAPI:
             return
         self._transitioned[bid] = self._clock()
         try:
+            if state in ("created", "ready"):
+                # The quiz channel answers ready -> live with 403 invalidTransition and never auto-starts
+                # (seen 2026-10-24); ready -> testing -> live works, so go through testing.
+                self.call("POST", "liveBroadcasts/transition",
+                          {"broadcastStatus": "testing", "id": bid, "part": "id,status"})
+                for _ in range(12):
+                    if self.broadcast_state(bid) == "testing" or stop.is_set():
+                        break
+                    stop.wait(poll)
             self.call("POST", "liveBroadcasts/transition",
                       {"broadcastStatus": "live", "id": bid, "part": "id,status"})
             self._say(bid, "live", f"YouTube: broadcast {bid} is live (started by the show)")

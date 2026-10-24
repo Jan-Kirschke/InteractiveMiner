@@ -124,6 +124,8 @@ class FakeYouTube:
             target = params["broadcastStatus"]
             if b["status"]["lifeCycleStatus"] == target:
                 return _error(403, "redundantTransition")
+            if target == "live" and b["status"]["lifeCycleStatus"] in ("created", "ready"):
+                return _error(403, "invalidTransition")   # the quiz channel, 2026-10-24: testing first
             if target == "live":
                 stream = next(s for s in self.streams if s["id"] == b["contentDetails"]["boundStreamId"])
                 if stream["status"]["streamStatus"] != "active":
@@ -206,7 +208,7 @@ def test_an_upcoming_broadcast_on_our_stream_is_started_not_duplicated(yt):
     assert api.ensure_broadcast(wait_live=0) == "B-ready"
     assert fake.broadcasts["B-ready"]["status"]["lifeCycleStatus"] == "live"
     assert fake.posts("liveBroadcasts") == []
-    assert fake.posts("liveBroadcasts/transition")[0][2]["broadcastStatus"] == "live"
+    assert [p[2]["broadcastStatus"] for p in fake.posts("liveBroadcasts/transition")] == ["testing", "live"]
 
 
 def test_no_manual_go_live_while_no_video_arrives_and_at_most_one_per_5_min(yt):
@@ -236,7 +238,7 @@ def test_without_a_broadcast_one_is_created_bound_and_categorised(yt, monkeypatc
     assert body["status"] == {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
     assert body["contentDetails"] == {"enableAutoStart": True, "enableAutoStop": False,
                                       "latencyPreference": "ultraLow", "enableDvr": False,
-                                      "monitorStream": {"enableMonitorStream": False}}
+                                      "monitorStream": {"enableMonitorStream": True, "broadcastStreamDelayMs": 0}}
     assert body["snippet"]["title"] == ytapi.DEFAULT_TITLE
     assert not set("<>") & set(body["snippet"]["description"])   # YouTube answers 400 invalidDescription
     assert body["snippet"]["scheduledStartTime"] > ytapi._iso(clock.t)   # must be in the future
