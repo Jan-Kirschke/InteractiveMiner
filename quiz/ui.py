@@ -686,7 +686,7 @@ class UIManager:
         self._panel_title(x, top + oy, w, "CREWS THIS WEEK")
         crews = logic.crew_ladder(n=3)
         for i, (crew, pts, n) in enumerate(crews):
-            ry = top + oy + 78 + i * 34
+            ry = top + oy + 74 + i * 30
             col = ACCENT if i == 0 else INK
             self._blit(self._fit_name(f"{i + 1}  {crew}", 24, col, w - 240), (x + 24, ry), "midleft", alpha=255 * p)
             self._text("bold", 18, f"{n} member{'s' if n != 1 else ''}", DIM, (x + w - 130, ry), "midright", alpha=255 * p)
@@ -699,7 +699,7 @@ class UIManager:
         duels = [d for d in logic.duels if d.match_no == logic.match_no]
         self._panel_title(x, top + oy, w, "DUELS THIS MATCH")
         for i, d in enumerate(duels[:3]):
-            ry = top + oy + 78 + i * 34
+            ry = top + oy + 74 + i * 30
             self._blit(self._fit_name(f"{d.a}  vs  {d.b}", 24, INK if d.accepted else DIM, w - 170),
                        (x + 24, ry), "midleft", alpha=255 * p)
             tag, col = ("ON", BAD) if d.accepted else ("!accept?", FAINT)
@@ -1011,7 +1011,7 @@ class UIManager:
             cards.insert(1, ("CREW OF THE MATCH", f"{crew}  {pts:,}"))
         if logic.duel_results:
             w, l, wp, lp = logic.duel_results[0]
-            cards.insert(1, ("DUEL", f"{w} beat {l}  {wp}-{lp}"))
+            cards.insert(1, (f"DUEL WON  {wp}-{lp}", f"{w} beat {l}"))
         cards.append(("PLAYERS", str(logic.match_player_count)))
         cw = (MAIN_W - 40) // 3
         sp = ease_out_cubic(progress(age, 2.2, 0.4))
