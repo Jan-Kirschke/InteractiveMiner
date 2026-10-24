@@ -33,6 +33,31 @@ Each feature has a one-line rule. Built in this order, one commit each:
 | 5 | Community goal | Chat's right answers on Q1-Q9 reach 5 per player of the last match (at least 10), and Q10 becomes a jackpot: every right answer +25. |
 | 6 | `!double` | Once per match, after 5 answers in it: this question's answer pays x2 if right, or costs up to 20 match points if wrong. |
 
+### Tension build-up (BUILT, operator request, top priority)
+
+Every question now opens with `GameState.BUILDUP`: `... REVEALING -> BUILDUP -> ASKING ...`, and `INTRO -> BUILDUP` for Q1.
+
+- **Length:** `BUILDUP_TIME`, 4 s (`QUIZ_BUILDUP_SECONDS`). `BUILDUP_TIME_BIG`, 6 s, before the final and a difficulty step-up.
+- **Serving:** the question and its event are served at BUILDUP entry, so the build-up can talk about them. Answers still count only from ASKING, so the UI should not show the options during BUILDUP.
+- **`logic.buildup`:** set during BUILDUP and None otherwise. Its keys are exactly the brief's contract: `q_no`, `of`, `tier`, `stakes`, `kind`, `event`, `headline`, `subline`, `spotlight`, `intensity`.
+  - `stakes` = `question_stakes()`: the fastest right answer from a player with no streak. It uses the same `question_mult()` as scoring: difficulty, lightning, final.
+  - `kind` shows a Lonely Answer as `majority`, so the twist stays hidden.
+  - `event` is `final`, `lightning`, `first_blood`, `jackpot` or None.
+- **`headline`:** "QUESTION n · ...". The event wins (FOR DOUBLE POINTS, LIGHTNING ROUND, ...), then a step-up (THE HARD ROUND), then the special round, then THE WARM-UP (Q1) or THE LAST HURDLE (Q9), then a rotating line.
+- **`subline`:** one fact from the match. A step-up says so. The final prefers the lead. Otherwise it rotates through these, never the same kind twice in a row:
+  - "Only 3 players are still perfect" (`logic.perfect`: every answer right, while a crowd round only needs an answer);
+  - "alice leads by 12";
+  - "bob's 6-answer streak is on the line";
+  - "The hardest question so far: only 18% ever got it right" (`bank.stats`, from 15 real answers);
+  - "Last match, only 31% got the hard ones right";
+  - "Only 2 of 9 got the last one right".
+
+  With no fact, a rotating tip is used.
+- **`spotlight`:** the player the fact names, else the match leader, else None. Bots are never named, spotlighted, perfect or counted.
+- **`intensity`:** 0.15 at Q1, rising about 0.08 per question. Step-ups add 0.1, events 0.05 and a race closer than the stakes 0.05. The value is capped at 0.95, never falls within a match, and is 1.0 for the final. `logic.buildup_intensity` keeps the last value and resets to 0 in the lobby.
+- **Host line:** a rotating opener, the fact and "Up to N points". The opener never repeats twice in a row.
+- **Cost:** everything is computed once per question at BUILDUP entry. The scans cover this match's standings (two top scorers, the best streak) and one bank lookup, never per frame or per message.
+
 **Not built, and why:**
 - Category Gauntlet: the lobby vote already makes every non-mixed match one category.
 - `!shield`: `Player.streak_shield` already halves the streak once, earned at a 5-streak.

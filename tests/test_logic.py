@@ -109,6 +109,8 @@ def test_full_match_cycle_records_winner_and_ladders(game):
 
     for q in range(1, 11):
         expire(game)
+        assert game.state == GameState.BUILDUP and game.q_index == q
+        expire(game)
         assert game.state == GameState.ASKING and game.q_index == q
         correct = game.current_question.correct_index
         game.process_message("alice", str(correct + 1))

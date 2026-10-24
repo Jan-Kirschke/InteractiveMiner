@@ -79,6 +79,8 @@ def _env_num(name, default):
 MATCH_LENGTH = 10
 LOBBY_TIME = _env_num("QUIZ_LOBBY_SECONDS", 30)          # category vote, !ready check-ins
 INTRO_TIME = 4             # "MATCH 15" title sting
+BUILDUP_TIME = _env_num("QUIZ_BUILDUP_SECONDS", 4)       # tension beat before every question
+BUILDUP_TIME_BIG = max(BUILDUP_TIME, 6)                  # before the final and a difficulty step-up
 QUESTION_DISPLAY_TIME = _env_num("QUIZ_QUESTION_SECONDS", 30)
 LATE_ANSWER_GRACE = _env_num("QUIZ_LATE_SECONDS", 4)     # "time's up" while late chat messages still arrive
 REVEAL_AT = 1.1   # seconds into the reveal before the right answer lights up (answer split counts up first)

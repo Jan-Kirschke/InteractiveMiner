@@ -280,6 +280,7 @@ def test_higher_lower_takes_only_1_or_2_and_scores_like_classic(game, monkeypatc
     assert all(0 <= c < 2 for _, c, _ in game._scheduled_bots)
     game.process_message("bob", "3")
     assert "bob" not in game.current_answers
+    q.difficulty = "easy"                                   # x1: difficulty pays is in test_loop.py
     right, wrong = q.correct_index, 1 - q.correct_index
     answer_at(game, "alice", right, 1)
     answer_at(game, "bob", wrong, 1)
@@ -313,6 +314,7 @@ def test_a_full_match_plays_every_special_slot(game, monkeypatch):
     expire(game)                                            # lobby -> intro
     kinds = {}
     for n in range(1, 11):
+        expire(game)                                        # build-up
         expire(game)
         q = game.current_question
         kinds[n] = q.kind

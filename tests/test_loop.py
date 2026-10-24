@@ -117,3 +117,202 @@ def test_dry_tier_in_the_cache_serves_the_nearest_tier(game, monkeypatch):
     monkeypatch.setattr(game.bank, "pick", lambda *a, **k: None)
     game._question_cache = [Question(f"{d}?", "B", ["A", "B"], 1, "T", d) for d in ("easy", "medium", "easy")]
     assert game._pop_question("hard").difficulty == "medium"
+
+
+# ------------------------------------------
+# BUILDUP: the tension beat before every question (brief: "Tension build-up contract", frozen)
+# ------------------------------------------
+BUILDUP_KEYS = {"q_no", "of", "tier", "stakes", "kind", "event", "headline", "subline", "spotlight", "intensity"}
+
+
+def expire(game):
+    game.state_timer = 0
+    game.update(0)
+
+
+def to_lobby(game):
+    game.state = GameState.WAITING
+    game.update(0)
+
+
+def play_match(game, on_state=None):
+    """Lobby -> podium. on_state(game) runs after every state change. Returns buildup dicts, states seen."""
+    to_lobby(game)
+    seen, builds = [game.state], []
+    while game.state != GameState.PODIUM:
+        expire(game)
+        seen.append(game.state)
+        if game.state == GameState.BUILDUP:
+            builds.append(dict(game.buildup))
+        if on_state:
+            on_state(game)
+    return builds, seen
+
+
+def test_buildup_runs_before_every_question(game):
+    builds, seen = play_match(game)
+    asks = [i for i, s in enumerate(seen) if s == GameState.ASKING]
+    assert len(asks) == 10 and all(seen[i - 1] == GameState.BUILDUP for i in asks)
+    assert seen[:4] == [GameState.LOBBY, GameState.INTRO, GameState.BUILDUP, GameState.ASKING]
+    assert [b["q_no"] for b in builds] == list(range(1, 11))
+
+
+def test_buildup_dict_has_exactly_the_contract_keys(game):
+    builds, _ = play_match(game)
+    for b in builds:
+        assert set(b) == BUILDUP_KEYS
+        assert b["of"] == 10 and b["tier"] in ("easy", "medium", "hard", "expert")
+        assert b["headline"] and b["subline"] and 0 <= b["intensity"] <= 1
+        assert b["event"] in (None, "final", "lightning", "first_blood", "jackpot")
+    assert builds[-1]["event"] == "final" and builds[4]["event"] == "lightning"
+
+
+def test_buildup_is_none_outside_buildup(game):
+    to_lobby(game)
+    assert game.buildup is None
+    expire(game)
+    expire(game)
+    assert game.state == GameState.BUILDUP and game.buildup
+    expire(game)
+    assert game.state == GameState.ASKING and game.buildup is None
+
+
+def test_the_buildup_question_is_the_one_asked(game):
+    to_lobby(game)
+    expire(game)
+    expire(game)
+    q = game.current_question
+    expire(game)
+    assert game.current_question is q and game.q_index == 1
+
+
+def test_answers_during_buildup_do_not_count(game):
+    to_lobby(game)
+    expire(game)
+    expire(game)
+    game.process_message("alice", "1")
+    expire(game)
+    assert "alice" not in game.current_answers
+
+
+def test_final_and_level_up_buildups_run_longer(game):
+    game._pop_question = served(None)(game)
+    lengths = {}
+
+    def note(g):
+        if g.state == GameState.BUILDUP:
+            lengths[g.q_index] = g.state_duration
+    play_match(game, note)
+    assert lengths[10] == lengths[4] == lengths[8] == logic_mod.BUILDUP_TIME_BIG
+    assert lengths[2] == logic_mod.BUILDUP_TIME < logic_mod.BUILDUP_TIME_BIG
+
+
+def test_intensity_rises_through_the_match_and_ends_at_full(game):
+    builds, _ = play_match(game)
+    curve = [b["intensity"] for b in builds]
+    assert all(a <= b for a, b in zip(curve, curve[1:])) and curve[0] < 0.5 and curve[-1] == 1.0
+    assert game.buildup_intensity == 1.0
+    expire(game)                                           # podium -> lobby
+    assert game.buildup_intensity == 0.0
+    expire(game)
+    expire(game)
+    assert game.buildup_intensity < 0.5                    # a new match starts light again
+
+
+def test_stakes_are_what_the_fastest_fresh_right_answer_scores(game):
+    stakes, got = {}, {}
+
+    def play(g):
+        n, user = g.q_index, f"fresh{g.q_index}"           # a new player each time: no streak
+        if g.state == GameState.BUILDUP:
+            stakes[n] = g.buildup["stakes"]
+        elif g.state == GameState.ASKING:
+            g.current_answers[user] = (g.current_question.correct_index, g.question_start_time)
+        elif g.state == GameState.REVEALING:
+            got[n] = points(g.last_result)[user]
+    game._pop_question = served(None)(game)
+    play_match(game, play)
+    assert got == stakes
+    assert stakes[1] == 20 and stakes[5] == 37 and stakes[10] == 60   # 20 x1.25 x1.5 lightning; 20 x1.5 x2
+
+
+def standing(game, user, pts):
+    game._standing(user).points = pts
+
+
+def buildup_at(game, n):
+    game.q_index = n - 1
+    game._transition_to(GameState.BUILDUP)
+    return game.buildup
+
+
+def test_bots_are_never_spotlighted_or_named(game):
+    game._enter_intro()
+    standing(game, BOT, 500)
+    game.db.get_or_create_player(BOT).streak = 40
+    standing(game, "alice", 30)
+    standing(game, "bob", 18)
+    game.db.get_or_create_player("bob").streak = 6
+    game.perfect = {"alice", BOT}
+    for n in range(2, 11):
+        b = buildup_at(game, n)
+        assert b["spotlight"] in ("alice", "bob"), n
+        assert "Bot" not in b["subline"] + game.host_line, n
+
+
+def test_buildup_facts_come_from_the_match(game):
+    game._enter_intro()
+    standing(game, "alice", 40)
+    standing(game, "bob", 28)
+    game.db.get_or_create_player("bob").streak = 6
+    game.perfect = {"alice", "bob", "carol"}
+    text = " | ".join(buildup_at(game, n)["subline"] for n in range(2, 10))
+    assert "alice leads by 12" in text
+    assert "3 players are still perfect" in text
+    assert "bob's 6-answer streak" in text
+
+
+def test_buildup_never_repeats_a_fact_or_a_wording_twice_in_a_row(game):
+    import re
+    game._enter_intro()
+    standing(game, "alice", 40)
+    standing(game, "bob", 28)
+    game.perfect = {"alice", "bob"}
+    subs, lines = [], []
+    for n in range(2, 10):
+        subs.append(re.sub(r"\d+", "#", buildup_at(game, n)["subline"]))
+        lines.append(re.sub(r"\d+", "#", game.host_line).split(".")[0])   # the opener alone
+    assert all(a != b for a, b in zip(subs, subs[1:])), subs
+    assert all(a != b for a, b in zip(lines, lines[1:])), lines
+
+
+def test_perfect_players_drop_out_on_a_miss_and_bots_never_count(game):
+    game._enter_intro()
+    classic(game)
+    answer_at(game, "alice", 1)
+    answer_at(game, "bob", 1)
+    answer_at(game, BOT, 1)
+    game._enter_revealing()
+    assert game.perfect == {"alice", "bob"}
+    classic(game)
+    answer_at(game, "alice", 1)
+    answer_at(game, "bob", 0)
+    game._enter_revealing()
+    assert game.perfect == {"alice"}
+
+
+def test_an_event_keeps_the_headline_when_the_tier_steps_up_with_it(game):
+    game._enter_intro()
+    game._pop_question = served(["easy"] * 4 + ["medium"] * 6)(game)
+    for n in range(1, 5):
+        buildup_at(game, n)
+    b = buildup_at(game, 5)                                 # the first medium question is the lightning one
+    assert b["headline"] == "QUESTION 5 · LIGHTNING ROUND" and "Medium questions" in b["subline"]
+
+
+def test_lonely_answer_buildup_still_looks_like_crowd_mind(game):
+    game.special_slots = {4: "minority"}
+    game._enter_intro()
+    b = buildup_at(game, 4)
+    assert game.current_question.kind == "minority" and b["kind"] == "majority"
+    assert "lonely" not in (b["headline"] + b["subline"] + game.host_line).lower()
