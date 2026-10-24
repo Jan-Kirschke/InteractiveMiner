@@ -1,6 +1,8 @@
 """
 The Lifelong Quiz - Game Logic
-State machine, question fetching, scoring, theme voting, addictive mechanics.
+A show is an endless cycle of matches:
+LOBBY (vote, !ready) -> INTRO -> 10 x (ASKING -> LOCKING -> REVEALING) -> PODIUM.
+Match points reset every match; weekly and lifetime points keep growing.
 """
 
 import time
@@ -14,28 +16,26 @@ except ImportError:
     requests = None
 
 from quiz.config import (
-    QUESTION_DISPLAY_TIME, REVEAL_DISPLAY_TIME, LEADERBOARD_DISPLAY_TIME,
-    THEME_VOTE_TIME, ROUNDS_BEFORE_VOTE,
+    MATCH_LENGTH, LOBBY_TIME, INTRO_TIME, QUESTION_DISPLAY_TIME,
+    LATE_ANSWER_GRACE, REVEAL_DISPLAY_TIME, PODIUM_TIME,
+    LIGHTNING_QUESTION, BONUS_QUESTIONS, FINAL_QUESTION_MULT, DIFFICULTY_RAMP,
     BASE_POINTS, SPEED_BONUS_TIER1_THRESHOLD, SPEED_BONUS_TIER2_THRESHOLD,
     SPEED_BONUS_TIER1_MULT, SPEED_BONUS_TIER2_MULT,
     STREAK_BONUS_PER, MAX_STREAK_MULT,
     OTDB_BASE_URL, OTDB_TOKEN_URL, OTDB_BATCH_SIZE,
     OTDB_MIN_CACHE, OTDB_REQUEST_COOLDOWN, OTDB_SEEN_EXPIRY,
     VOTABLE_CATEGORIES,
-    DOUBLE_POINTS_CHANCE, DOUBLE_POINTS_MULT,
     COMEBACK_BONUS, COMEBACK_STREAK_THRESHOLD,
-    STREAK_MILESTONES, ACHIEVEMENTS,
+    STREAK_MILESTONES,
     CHAT_FEED_MAX, CHAT_FEED_DURATION,
-    COMPETITION_ALERT_THRESHOLD,
-    MIN_PLAYERS, BOT_DIFFICULTY, LATE_ANSWER_GRACE,
+    MIN_PLAYERS, BOT_DIFFICULTY,
     COLOR_CORRECT, COLOR_TEXT_GOLD, COLOR_AMBER, COLOR_RANK_DIAMOND,
-    LIGHTNING_ROUND_CHANCE, JACKPOT_CHANCE, FIRST_BLOOD_CHANCE,
     LIGHTNING_TIME, LIGHTNING_MULT, JACKPOT_BONUS, FIRST_BLOOD_BONUS,
     PARTICIPATION_MILESTONES, PARTICIPATION_BONUS, STREAK_SHIELD_THRESHOLD,
     COMMAND_COOLDOWN,
 )
 from quiz.models import (
-    GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent,
+    GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding,
 )
 from quiz.db import QuizDatabase
 
@@ -160,6 +160,38 @@ BOT_PROFILES = [
 ]
 
 
+
+
+def host_line_for_rate(rate: float, answers: int) -> str:
+    """The AI host's one-liner after a reveal, by how many players got it right."""
+    if answers == 0:
+        return "Nobody answered that one. Type 1 to 4 in chat to play!"
+    pct = round(rate * 100)
+    if pct == 0:
+        return "Ouch! Nobody got that one."
+    if pct < 25:
+        return f"Brutal! Only {pct}% knew it."
+    if pct < 50:
+        return f"Tricky one: {pct}% got it right."
+    if pct < 80:
+        return f"Nice work, chat: {pct}% got it."
+    return f"Too easy? {pct}% knew that."
+
+
+STATE_DURATIONS = {
+    GameState.LOBBY: LOBBY_TIME,
+    GameState.INTRO: INTRO_TIME,
+    GameState.ASKING: QUESTION_DISPLAY_TIME,
+    GameState.LOCKING: LATE_ANSWER_GRACE,
+    GameState.REVEALING: REVEAL_DISPLAY_TIME,
+    GameState.PODIUM: PODIUM_TIME,
+}
+
+COLOR_EVENT_BLUE = (100, 180, 255)
+COLOR_EVENT_RED = (255, 80, 80)
+COLOR_EVENT_PURPLE = (180, 100, 255)
+
+
 class QuizLogic:
     def __init__(self, db: QuizDatabase):
         self.db = db
@@ -168,58 +200,67 @@ class QuizLogic:
         self.state_start_time = 0.0
         self.state_duration = 0.0
 
-        # Grace period: remember previous state so late messages still count
-        self._prev_state = GameState.WAITING
-        self._prev_state_end_time = 0.0
-
         # Questions
         self._question_cache: list[Question] = []
         self._session_token = ""
         self._last_fetch_time = 0.0
         self._fetch_in_progress = False
         self._current_category_id = None
-        self._fallback_idx = 0
         self._seen_questions: dict[str, float] = {}  # question_text -> timestamp
+
+        # Match
+        self.match_no = db.next_match_number()
+        self.match_started_at = 0.0
+        self.match_category = "Mixed bag"
+        self.q_index = 0
+        self.standings: dict[str, MatchStanding] = {}
+        self.pips: list[str] = []          # one per finished question: "done" (most got it) / "miss"
+        self.podium: list[MatchStanding] = []
+        self.match_stats: dict = {}
+        self.match_player_count = 0
+        self.ready_players: list[str] = []
 
         # Current round
         self.current_question: Question | None = None
         self.current_answers: dict[str, tuple[int, float]] = {}
+        self.lock_order: list[tuple[str, float]] = []  # (username, seconds after question start)
         self.question_start_time = 0.0
         self.question_duration = float(QUESTION_DISPLAY_TIME)
-
-        # Results
         self.last_result: RoundResult | None = None
         self.round_count = 0
         self.session_start_time = time.time()
 
-        # Theme voting
+        # Lobby vote
         self.vote_state: ThemeVoteState | None = None
 
-        # Leaderboard cache & position change tracking
-        self._leaderboard: list[Player] = []
-        self._prev_positions: dict[str, int] = {}  # username -> 1-indexed position
-        self.leaderboard_changes: list[dict] = []   # [{username, old_pos, new_pos}]
+        # Weekly ladder movement (shown on the podium)
+        self._prev_weekly_positions: dict[str, int] = {}
+        self.ladder_changes: dict[str, int | None] = {}  # username -> places gained, None = new
 
-        # --- Addictive mechanics ---
-        self.is_double_points = False
-        self.mini_event = ""  # "lightning", "jackpot", "first_blood", or ""
+        # Show moments
+        self.is_double_points = False  # final question
+        self.mini_event = ""            # "lightning", "jackpot", "first_blood", ""
         self.event_feed: list[GameEvent] = []
-        self.sound_queue: list[str] = []  # sound names to play this frame
-        self.competition_alert = ""  # close race message
+        self.sound_queue: list[str] = []
+        self.host_line = ""
+        self.host_line_time = 0.0
         self.new_players_this_round: list[str] = []
         self._known_players: set[str] = set(db._players.keys())
-        self._command_cooldowns: dict[str, float] = {}  # username -> last command time
-        self._participants_this_round: set[str] = set()  # tracks who answered this round
+        self._command_cooldowns: dict[str, float] = {}
 
-        # Filler bots
-        self._scheduled_bots: list[tuple[str, int, float]] = []  # (name, choice, answer_time)
-        self._last_round_real_players: set[str] = set()  # who played last round
-        self._active_bot_names: list[str] = []  # bots currently in play (random subset)
+        # Filler bots (in memory only, never ranked)
+        self._scheduled_bots: list[tuple[str, int, float]] = []
+        self._last_round_real_players: set[str] = set()
+        self._active_bot_names: list[str] = []
         self._bots_active = False
 
-        # Kick off token fetch + pre-fill cache
         self._fetch_session_token()
         self._ensure_cache()
+
+    def _say(self, line: str):
+        self.host_line = line
+        self.host_line_time = time.time()
+
 
     # ------------------------------------------
     # EVENT FEED
@@ -350,26 +391,27 @@ class QuizLogic:
             if now - t < OTDB_SEEN_EXPIRY
         }
 
-    def _pop_question(self) -> Question:
+    def _pop_question(self, difficulty: str = "") -> Question:
+        """Next question, preferring the requested difficulty (match ramp: easy -> hard)."""
         if self._question_cache:
-            q = self._question_cache.pop(0)
+            idx = next((i for i, q in enumerate(self._question_cache)
+                        if q.difficulty == difficulty), 0)
+            q = self._question_cache.pop(idx)
             self._seen_questions[self._hash_question(q)] = time.time()
             return q
-        # Fallback: pick a random unseen question from the pool
         self._purge_seen()
         unseen = [q for q in FALLBACK_QUESTIONS
                   if self._hash_question(q) not in self._seen_questions]
         if not unseen:
-            # All seen recently — allow any and clear seen fallbacks
             unseen = list(FALLBACK_QUESTIONS)
-        q = random.choice(unseen)
+        preferred = [q for q in unseen if q.difficulty == difficulty]
+        q = random.choice(preferred or unseen)
         self._seen_questions[self._hash_question(q)] = time.time()
         options = list(q.options)
         random.shuffle(options)
-        correct_index = options.index(q.correct_answer)
         return Question(
             text=q.text, correct_answer=q.correct_answer,
-            options=options, correct_index=correct_index,
+            options=options, correct_index=options.index(q.correct_answer),
             category=q.category, difficulty=q.difficulty,
         )
 
@@ -381,16 +423,15 @@ class QuizLogic:
         self._ensure_cache()
 
         if self.state == GameState.WAITING:
-            # Fallback questions are always available, so always ready
-            self._transition_to(GameState.ASKING)
+            self._transition_to(GameState.LOBBY)
             return
 
         self.state_timer -= dt
 
-        # Bot answers + timer sounds during ASKING
-        if self.state == GameState.ASKING:
+        if self.state in (GameState.ASKING, GameState.LOCKING):
             self._process_bot_answers()
 
+        if self.state == GameState.ASKING:
             remaining = self.time_remaining
             frac = self.time_fraction
             if remaining <= 5:
@@ -404,737 +445,499 @@ class QuizLogic:
             self._on_state_expired()
 
     def _transition_to(self, state: GameState):
-        self._prev_state = self.state
-        self._prev_state_end_time = time.time()
         self.state = state
         self.state_start_time = time.time()
+        self.state_duration = STATE_DURATIONS[state]
+        self.state_timer = self.state_duration
         self.sound_queue.append("whoosh")
-
-        if state == GameState.ASKING:
-            self.state_duration = QUESTION_DISPLAY_TIME
-            self.state_timer = QUESTION_DISPLAY_TIME
-            self._enter_asking()
-        elif state == GameState.REVEALING:
-            self.state_duration = REVEAL_DISPLAY_TIME
-            self.state_timer = REVEAL_DISPLAY_TIME
-            self._enter_revealing()
-        elif state == GameState.LEADERBOARD:
-            self.state_duration = LEADERBOARD_DISPLAY_TIME
-            self.state_timer = LEADERBOARD_DISPLAY_TIME
-            self._enter_leaderboard()
-        elif state == GameState.THEME_VOTE:
-            self.state_duration = THEME_VOTE_TIME
-            self.state_timer = THEME_VOTE_TIME
-            self._enter_theme_vote()
+        getattr(self, f"_enter_{state.name.lower()}")()
 
     def _on_state_expired(self):
-        if self.state == GameState.ASKING:
+        s = self.state
+        if s == GameState.LOBBY:
+            self._resolve_vote()
+            self._transition_to(GameState.INTRO)
+        elif s == GameState.INTRO:
+            self._transition_to(GameState.ASKING)
+        elif s == GameState.ASKING:
+            self._transition_to(GameState.LOCKING)
+        elif s == GameState.LOCKING:
             self._transition_to(GameState.REVEALING)
-        elif self.state == GameState.REVEALING:
-            self._transition_to(GameState.LEADERBOARD)
-        elif self.state == GameState.LEADERBOARD:
-            if self.round_count > 0 and self.round_count % ROUNDS_BEFORE_VOTE == 0:
-                self._transition_to(GameState.THEME_VOTE)
+        elif s == GameState.REVEALING:
+            if self.q_index >= MATCH_LENGTH:
+                self._transition_to(GameState.PODIUM)
             else:
                 self._transition_to(GameState.ASKING)
-        elif self.state == GameState.THEME_VOTE:
-            self._resolve_vote()
-            self._transition_to(GameState.ASKING)
+        elif s == GameState.PODIUM:
+            self._transition_to(GameState.LOBBY)
 
     # ------------------------------------------
     # STATE ENTRY ACTIONS
     # ------------------------------------------
-    def _enter_asking(self):
-        # Track participation streaks from previous round
-        self._update_participation_streaks()
+    def _enter_lobby(self):
+        self.match_no = self.db.next_match_number()
+        self.ready_players = []
+        self.current_question = None
+        self.last_result = None
+        self.mini_event = ""
+        self.is_double_points = False
+        available = list(VOTABLE_CATEGORIES.items())
+        if self._current_category_id:
+            available = [(c, n) for c, n in available if c != self._current_category_id]
+        chosen = random.sample(available, 3) + [(None, "Mixed bag")]
+        self.vote_state = ThemeVoteState(options={i: opt for i, opt in enumerate(chosen, 1)})
+        self._say(f"Match {self.match_no} starts in {LOBBY_TIME} seconds. "
+                  "Vote for the category: type 1 to 4!")
 
-        # Snapshot real players from previous round (before clearing answers)
-        self._last_round_real_players = {
-            u for u in self.current_answers if not u.startswith(BOT_PREFIX)
+    def _enter_intro(self):
+        self.q_index = 0
+        self.standings = {}
+        self.pips = []
+        self.podium = []
+        self.match_started_at = time.time()
+        self._prev_weekly_positions = {
+            p.username: i for i, p in enumerate(self.db.get_weekly_top(n=1_000_000), 1)
         }
+        self.sound_queue.append("new_question")
+        self._say(f"Match {self.match_no}: {self.match_category}. "
+                  f"{MATCH_LENGTH} questions, fastest right answers score most. Good luck!")
 
+    def _enter_asking(self):
+        self._update_participation_streaks()
+        self._last_round_real_players = {u for u in self.current_answers if not is_bot(u)}
+
+        self.q_index += 1
         self._ensure_cache()
-        self.current_question = self._pop_question()
+        self.current_question = self._pop_question(DIFFICULTY_RAMP.get(self.q_index, "medium"))
         self.current_answers = {}
-        self._participants_this_round = set()
+        self.lock_order = []
         self.question_start_time = time.time()
-        cat_name = VOTABLE_CATEGORIES.get(self._current_category_id, "Any")
-        print(f"[Game] Question: category={self.current_question.category} (requested={cat_name}, cache={len(self._question_cache)})")
         self.new_players_this_round = []
         self.sound_queue.append("new_question")
 
-        # Double points roll
-        self.is_double_points = random.random() < DOUBLE_POINTS_CHANCE
-        if self.is_double_points:
-            self._push_event(
-                "DOUBLE POINTS ROUND!", COLOR_TEXT_GOLD, "2X",
-            )
-            self.sound_queue.append("double_points")
-
-        # Mini event roll (only one per round, priority order)
+        # Fixed event slots give every match the same shape.
+        self.is_double_points = self.q_index == MATCH_LENGTH
         self.mini_event = ""
-        if not self.is_double_points:
-            roll = random.random()
-            if roll < LIGHTNING_ROUND_CHANCE:
-                self.mini_event = "lightning"
-                self._push_event(
-                    "LIGHTNING ROUND! 15s, 1.5x points!",
-                    (100, 180, 255), "ZAP",
-                )
-                self.sound_queue.append("double_points")
-            elif roll < LIGHTNING_ROUND_CHANCE + FIRST_BLOOD_CHANCE:
-                self.mini_event = "first_blood"
-                self._push_event(
-                    f"FIRST BLOOD! +{FIRST_BLOOD_BONUS} pts for fastest!",
-                    (255, 80, 80), "1ST",
-                )
-                self.sound_queue.append("double_points")
-            elif roll < LIGHTNING_ROUND_CHANCE + FIRST_BLOOD_CHANCE + JACKPOT_CHANCE:
-                self.mini_event = "jackpot"
-                self._push_event(
-                    f"JACKPOT ROUND! Random winner gets +{JACKPOT_BONUS} pts!",
-                    (180, 100, 255), "JP",
-                )
-                self.sound_queue.append("double_points")
+        if self.q_index == LIGHTNING_QUESTION:
+            self.mini_event = "lightning"
+        elif self.q_index in BONUS_QUESTIONS:
+            self.mini_event = random.choice(["first_blood", "jackpot"])
 
-        # Override question time for lightning round
-        if self.mini_event == "lightning":
+        if self.is_double_points:
+            self._push_event("FINAL QUESTION: DOUBLE POINTS!", COLOR_TEXT_GOLD, "2X")
+            self.sound_queue.append("double_points")
+            self._say("Final question, and it pays double. Everything can still change!")
+        elif self.mini_event == "lightning":
             self.state_duration = LIGHTNING_TIME
             self.state_timer = LIGHTNING_TIME
-        self.question_duration = self.state_duration
+            self._push_event(f"LIGHTNING ROUND! {LIGHTNING_TIME}s, 1.5x points", COLOR_EVENT_BLUE, "ZAP")
+            self.sound_queue.append("double_points")
+            self._say(f"Lightning round! Only {LIGHTNING_TIME} seconds, but 1.5 times the points.")
+        elif self.mini_event == "first_blood":
+            self._push_event(f"FIRST BLOOD: fastest right answer +{FIRST_BLOOD_BONUS}", COLOR_EVENT_RED, "1ST")
+            self.sound_queue.append("double_points")
+            self._say(f"First blood! The fastest right answer wins {FIRST_BLOOD_BONUS} extra points.")
+        elif self.mini_event == "jackpot":
+            self._push_event(f"JACKPOT: one right answer wins +{JACKPOT_BONUS}", COLOR_EVENT_PURPLE, "JP")
+            self.sound_queue.append("double_points")
+            self._say(f"Jackpot round! One lucky right answer wins {JACKPOT_BONUS} points.")
+        else:
+            diff = self.current_question.difficulty
+            self._say(f"Question {self.q_index} of {MATCH_LENGTH}. "
+                      f"{self.current_question.category}, {diff}.")
 
-        # Schedule filler bots
+        self.question_duration = self.state_duration
         self._schedule_bots()
+
+    def _enter_locking(self):
+        self.sound_queue.append("tick_urgent")
+        self._say("Time's up! Locking in the last answers...")
 
     def _enter_revealing(self):
         self.round_count += 1
         self.last_result = self._resolve_question()
+        res = self.last_result
+        self.pips.append("done" if res.total_answers and res.correct_rate >= 0.5 else "miss")
+        self.sound_queue.append("correct" if res.correct_players else "wrong")
+        self._say(host_line_for_rate(res.correct_rate, res.total_answers))
 
-        # Sound based on results
-        if self.last_result.correct_players:
-            self.sound_queue.append("correct")
-        else:
-            self.sound_queue.append("wrong")
-
-    def _enter_leaderboard(self):
-        self._leaderboard = self.db.get_top_players()
-        self._detect_position_changes()
+    def _enter_podium(self):
+        real = [s for s in self.standings.values() if not is_bot(s.username)]
+        real.sort(key=lambda s: (-s.points, s.fastest or 999))
+        self.podium = [s for s in real if s.points > 0][:3]
+        self.match_player_count = len(real)
+        fastest = min((s for s in real if s.fastest > 0), key=lambda s: s.fastest, default=None)
+        streak = max(real, key=lambda s: s.best_streak, default=None)
+        self.match_stats = {
+            "fastest": (fastest.username, fastest.fastest) if fastest else None,
+            "best_streak": (streak.username, streak.best_streak) if streak and streak.best_streak else None,
+        }
+        winner = self.podium[0] if self.podium else None
+        self.db.record_match(
+            self.match_started_at, self.match_category, len(real),
+            winner.username if winner else "", winner.points if winner else 0,
+        )
+        self._detect_ladder_changes()
         self.sound_queue.append("fanfare")
-        self._check_competition()
+        if winner:
+            self._push_event(f"{winner.username} wins match {self.match_no}!", COLOR_TEXT_GOLD, "WIN")
+            self._say(f"{winner.username} wins match {self.match_no} with {winner.points} points! "
+                      "Next match starts soon.")
+        else:
+            self._say("No winner this time. Next match starts soon: type 1 to 4 to play!")
 
-    def _detect_position_changes(self):
-        """Compare new leaderboard to previous positions, track top-5 climbers."""
-        self.leaderboard_changes = []
-        new_positions = {}
-        for i, player in enumerate(self._leaderboard):
-            new_positions[player.username] = i + 1  # 1-indexed
-
-        for username, new_pos in new_positions.items():
-            if new_pos > 5:
-                continue  # only track top 5
-            old_pos = self._prev_positions.get(username)
-            if old_pos is None:
-                # New entry into top 5
-                if len(self._prev_positions) > 0:  # skip first round
-                    self.leaderboard_changes.append({
-                        "username": username,
-                        "old_pos": 0,
-                        "new_pos": new_pos,
-                    })
-            elif new_pos < old_pos:
-                # Climbed up
-                self.leaderboard_changes.append({
-                    "username": username,
-                    "old_pos": old_pos,
-                    "new_pos": new_pos,
-                })
-
-        if self.leaderboard_changes:
+    def _detect_ladder_changes(self):
+        """Places gained on the weekly ladder during this match (None = new on the ladder)."""
+        self.ladder_changes = {}
+        for i, p in enumerate(self.db.get_weekly_top(), 1):
+            old = self._prev_weekly_positions.get(p.username)
+            self.ladder_changes[p.username] = None if old is None else old - i
+        if any(v is None or v > 0 for v in self.ladder_changes.values()):
             self.sound_queue.append("rank_up")
-            for change in self.leaderboard_changes:
-                name = change["username"]
-                if change["old_pos"] == 0:
-                    self._push_event(
-                        f"{name} enters the TOP {change['new_pos']}!",
-                        COLOR_TEXT_GOLD, "UP",
-                    )
-                else:
-                    self._push_event(
-                        f"{name} climbs to #{change['new_pos']}!",
-                        COLOR_TEXT_GOLD, "UP",
-                    )
-
-        # Save current positions for next comparison
-        self._prev_positions = new_positions
-
-    def _enter_theme_vote(self):
-        available = list(VOTABLE_CATEGORIES.items())
-        if self._current_category_id:
-            available = [
-                (cid, name) for cid, name in available
-                if cid != self._current_category_id
-            ]
-        chosen = random.sample(available, min(4, len(available)))
-        options = {i: (cid, name) for i, (cid, name) in enumerate(chosen, 1)}
-        self.vote_state = ThemeVoteState(options=options)
 
     # ------------------------------------------
     # PARTICIPATION STREAKS
     # ------------------------------------------
     def _update_participation_streaks(self):
-        """Update participation streaks at the start of a new round (for previous round)."""
+        """Count consecutive rounds played (for the previous round)."""
         if not self.current_answers:
             return
-        all_players = set(self.db._players.keys())
-        participated = {
-            u for u in self.current_answers if not u.startswith(BOT_PREFIX)
-        }
+        participated = {u for u in self.current_answers if not is_bot(u)}
         for username in participated:
             player = self.db._players.get(username)
             if not player:
                 continue
             player.participation_streak += 1
-            # Award streak shield when threshold reached
             if player.streak >= STREAK_SHIELD_THRESHOLD and not player.streak_shield:
                 player.streak_shield = True
-            # Participation milestones
             if player.participation_streak in PARTICIPATION_MILESTONES:
-                player.score += PARTICIPATION_BONUS
+                player.add_points(PARTICIPATION_BONUS)
                 self._push_event(
-                    f"{username} played {player.participation_streak} rounds! +{PARTICIPATION_BONUS} pts",
+                    f"{username} played {player.participation_streak} rounds in a row! +{PARTICIPATION_BONUS}",
                     COLOR_AMBER, "PLAY",
                 )
                 self.sound_queue.append("streak")
             self.db.mark_dirty(username)
-
-        # Reset participation streak for players who didn't participate
-        for username in all_players - participated:
-            player = self.db._players.get(username)
-            if player and player.participation_streak > 0 and not username.startswith(BOT_PREFIX):
+        for username, player in self.db._players.items():
+            if username not in participated and player.participation_streak and not is_bot(username):
                 player.participation_streak = 0
                 self.db.mark_dirty(username)
 
     # ------------------------------------------
     # QUESTION RESOLUTION & SCORING
     # ------------------------------------------
-    def _resolve_question(self) -> RoundResult:
-        if not self.current_question:
-            return RoundResult(
-                question=Question("?", "?", [], 0, "", ""),
-                correct_players=[], wrong_players=[], total_answers=0,
-            )
+    def _standing(self, username: str) -> MatchStanding:
+        st = self.standings.get(username)
+        if st is None:
+            st = self.standings[username] = MatchStanding(username)
+        return st
 
-        correct_idx = self.current_question.correct_index
-        correct_players = []
-        wrong_players = []
+    def _award_bonus(self, username: str, points: int):
+        self.db.get_or_create_player(username).add_points(points)
+        self._standing(username).points += points
+        self.db.mark_dirty(username)
+
+    def _resolve_question(self) -> RoundResult:
+        q = self.current_question
+        if not q:
+            return RoundResult(Question("?", "?", [], 0, "", ""), [], [], 0)
+
+        correct_players, wrong_players = [], []
+        option_counts = [0] * len(q.options)
 
         for username, (choice, timestamp) in self.current_answers.items():
+            if 0 <= choice < len(option_counts):
+                option_counts[choice] += 1
             player = self.db.get_or_create_player(username)
-            old_streak = player.streak
+            st = self._standing(username)
             old_rank = player.rank
+            answer_time = max(0.0, timestamp - self.question_start_time)
 
-            if choice == correct_idx:
+            if choice == q.correct_index:
                 pts = self._calculate_points(timestamp, player.streak)
-
-                # Lightning round multiplier
                 if self.mini_event == "lightning":
                     pts = int(pts * LIGHTNING_MULT)
-
-                # Double points
                 if self.is_double_points:
-                    pts = int(pts * DOUBLE_POINTS_MULT)
-
-                # Comeback bonus
-                was_wrong = player.wrong_streak
-                if was_wrong >= COMEBACK_STREAK_THRESHOLD:
+                    pts = int(pts * FINAL_QUESTION_MULT)
+                if player.wrong_streak >= COMEBACK_STREAK_THRESHOLD:
                     pts += COMEBACK_BONUS
-                    self._push_event(
-                        f"{username} COMEBACK! +{COMEBACK_BONUS} bonus",
-                        COLOR_CORRECT, "BACK",
-                    )
+                    self._push_event(f"{username} COMEBACK! +{COMEBACK_BONUS}", COLOR_CORRECT, "BACK")
                     self.sound_queue.append("streak")
-
                 player.record_correct(pts)
-                answer_time = timestamp - self.question_start_time
-
-                # Achievement checks
-                self._check_achievements(player, answer_time, old_streak, old_rank)
-
+                st.points += pts
+                st.correct += 1
+                st.streak += 1
+                st.best_streak = max(st.best_streak, st.streak)
+                if not st.fastest or answer_time < st.fastest:
+                    st.fastest = answer_time
+                if not is_bot(username):
+                    self._check_achievements(player, answer_time, old_rank)
                 correct_players.append((username, pts, answer_time))
             else:
                 player.record_wrong()
-                # Streak shield notification
-                if getattr(player, '_shield_used', False):
-                    self._push_event(
-                        f"{username} SHIELD! Streak saved (x{player.streak})",
-                        (100, 180, 255), "SHD",
-                    )
+                st.streak = 0
+                if getattr(player, "_shield_used", False):
+                    self._push_event(f"{username} SHIELD! Streak saved (x{player.streak})",
+                                     COLOR_EVENT_BLUE, "SHD")
                     self.sound_queue.append("streak")
                 wrong_players.append((username, choice))
-
             self.db.mark_dirty(username)
 
-        # Find fastest
-        fastest_player = ""
-        fastest_time = 0.0
-        if correct_players:
-            fastest = min(correct_players, key=lambda x: x[2])
-            fastest_player = fastest[0]
-            fastest_time = fastest[2]
+        correct_players.sort(key=lambda c: c[2])
+        fastest_player, fastest_time = (correct_players[0][0], correct_players[0][2]) if correct_players else ("", 0.0)
 
-        # Mini event: First Blood bonus
         if self.mini_event == "first_blood" and correct_players:
-            fb_name = fastest_player
-            fb_player = self.db.get_or_create_player(fb_name)
-            fb_player.score += FIRST_BLOOD_BONUS
-            self.db.mark_dirty(fb_name)
-            self._push_event(
-                f"{fb_name} FIRST BLOOD! +{FIRST_BLOOD_BONUS} bonus ({fastest_time:.1f}s)",
-                (255, 80, 80), "1ST",
-            )
+            self._award_bonus(fastest_player, FIRST_BLOOD_BONUS)
+            self._push_event(f"{fastest_player} FIRST BLOOD! +{FIRST_BLOOD_BONUS} ({fastest_time:.1f}s)",
+                             COLOR_EVENT_RED, "1ST")
             self.sound_queue.append("rank_up")
-
-        # Mini event: Jackpot - random correct player wins bonus
         if self.mini_event == "jackpot" and correct_players:
-            jp_name, _, _ = random.choice(correct_players)
-            jp_player = self.db.get_or_create_player(jp_name)
-            jp_player.score += JACKPOT_BONUS
-            self.db.mark_dirty(jp_name)
-            self._push_event(
-                f"{jp_name} wins the JACKPOT! +{JACKPOT_BONUS} pts!",
-                (180, 100, 255), "JP",
-            )
+            jp_name = random.choice(correct_players)[0]
+            self._award_bonus(jp_name, JACKPOT_BONUS)
+            self._push_event(f"{jp_name} wins the JACKPOT! +{JACKPOT_BONUS}", COLOR_EVENT_PURPLE, "JP")
             self.sound_queue.append("rank_up")
 
         return RoundResult(
-            question=self.current_question,
-            correct_players=correct_players,
-            wrong_players=wrong_players,
+            question=q, correct_players=correct_players, wrong_players=wrong_players,
             total_answers=len(self.current_answers),
-            fastest_player=fastest_player,
-            fastest_time=fastest_time,
+            fastest_player=fastest_player, fastest_time=fastest_time,
+            option_counts=option_counts,
         )
 
     def _calculate_points(self, answer_timestamp: float, current_streak: int) -> int:
         elapsed = answer_timestamp - self.question_start_time
         time_fraction = max(0, min(1, elapsed / self.question_duration))
-
         if time_fraction <= SPEED_BONUS_TIER1_THRESHOLD:
             speed_mult = SPEED_BONUS_TIER1_MULT
         elif time_fraction <= SPEED_BONUS_TIER2_THRESHOLD:
             speed_mult = SPEED_BONUS_TIER2_MULT
         else:
             speed_mult = 1.0
-
         streak_mult = min(MAX_STREAK_MULT, 1.0 + current_streak * STREAK_BONUS_PER)
+        return max(1, int(BASE_POINTS * speed_mult * streak_mult))
 
-        total = int(BASE_POINTS * speed_mult * streak_mult)
-        return max(1, total)
-
-    # ------------------------------------------
-    # ACHIEVEMENT CHECKS
-    # ------------------------------------------
-    def _check_achievements(self, player: Player, answer_time: float,
-                            old_streak: int, old_rank: str):
-        # First correct ever
+    def _check_achievements(self, player: Player, answer_time: float, old_rank: str):
         if player.correct_answers == 1:
-            self._push_event(
-                f"{player.username} got their first answer right!",
-                COLOR_TEXT_GOLD, "ACH",
-            )
-
-        # Streak milestones
+            self._push_event(f"{player.username} got their first answer right!", COLOR_TEXT_GOLD, "ACH")
         if player.streak in STREAK_MILESTONES:
-            names = {
-                3: "On Fire", 5: "Unstoppable", 10: "Legendary Streak",
-                15: "Quiz Machine", 25: "GODLIKE", 50: "Transcendent",
-                100: "The Chosen One",
-            }
-            name = names.get(player.streak, f"{player.streak} Streak!")
-            self._push_event(
-                f"{player.username}: {name} (x{player.streak})",
-                COLOR_TEXT_GOLD, "FIRE",
-            )
+            names = {3: "On Fire", 5: "Unstoppable", 10: "Legendary Streak", 15: "Quiz Machine",
+                     25: "GODLIKE", 50: "Transcendent", 100: "The Chosen One"}
+            self._push_event(f"{player.username}: {names.get(player.streak, 'Streak')} (x{player.streak})",
+                             COLOR_TEXT_GOLD, "FIRE")
             self.sound_queue.append("streak")
-
-        # Speed demon (under 2 seconds)
         if answer_time < 2.0:
-            self._push_event(
-                f"{player.username} SPEED DEMON ({answer_time:.1f}s)",
-                COLOR_RANK_DIAMOND, "FAST",
-            )
-
-        # Rank up
+            self._push_event(f"{player.username} SPEED DEMON ({answer_time:.1f}s)", COLOR_RANK_DIAMOND, "FAST")
         if player.rank != old_rank:
-            self._push_event(
-                f"{player.username} ranked up to {player.rank}!",
-                COLOR_TEXT_GOLD, "UP",
-            )
+            self._push_event(f"{player.username} ranked up to {player.rank}!", COLOR_TEXT_GOLD, "UP")
             self.sound_queue.append("rank_up")
-
-        # Centurion (100 games)
-        if player.games_played == 100:
-            self._push_event(
-                f"{player.username} played 100 rounds! CENTURION",
-                COLOR_AMBER, "100",
-            )
-
-    # ------------------------------------------
-    # COMPETITION ALERTS
-    # ------------------------------------------
-    def _check_competition(self):
-        self.competition_alert = ""
-        if len(self._leaderboard) < 2:
-            return
-        top = self._leaderboard[0]
-        second = self._leaderboard[1]
-        gap = top.score - second.score
-        if 0 < gap <= COMPETITION_ALERT_THRESHOLD:
-            self.competition_alert = (
-                f"{second.username} is only {gap} pts behind {top.username}!"
-            )
 
     # ------------------------------------------
     # ADMIN ACTIONS
     # ------------------------------------------
     def clear_bots(self):
-        """Remove all bot players from DB and cancel scheduled bot answers."""
         self._scheduled_bots = []
         self._bots_active = False
         self.db.remove_players(BOT_PROFILES)
-        # Also remove from current round answers
         for bot_name in BOT_PROFILES:
             self.current_answers.pop(bot_name, None)
+            self.standings.pop(bot_name, None)
         self._push_event("Bots cleared!", COLOR_CORRECT, "ADM")
-        print("[Game] Admin: all bots cleared")
 
     def reset_all_scores(self):
-        """Reset scores for all players."""
         count = self.db.reset_all_players()
         self._push_event(f"All {count} players reset!", COLOR_AMBER, "ADM")
-        print(f"[Game] Admin: reset all {count} player scores")
 
     def reset_bot_scores(self):
-        """Reset bot scores to 0 but keep them playing."""
-        count = 0
         for bot_name in BOT_PROFILES:
             player = self.db._players.get(bot_name)
             if player:
-                player.score = 0
-                player.streak = 0
-                player.best_streak = 0
-                player.games_played = 0
-                player.correct_answers = 0
-                player.wrong_answers = 0
-                player.wrong_streak = 0
-                self.db.mark_dirty(bot_name)
-                count += 1
-        self._push_event(f"{count} bot scores reset!", COLOR_AMBER, "ADM")
-        print(f"[Game] Admin: reset {count} bot scores")
+                player.reset()
+        self._push_event("Bot scores reset!", COLOR_AMBER, "ADM")
 
     # ------------------------------------------
-    # FILLER BOTS
+    # FILLER BOTS (in memory only, never saved or ranked)
     # ------------------------------------------
-    def _count_real_players(self) -> int:
-        """Count active real players: those who played last round."""
-        return len(self._last_round_real_players)
-
     def _count_real_in_round(self) -> int:
-        """Count real players who have answered in the current round."""
-        return sum(
-            1 for u in self.current_answers if not u.startswith(BOT_PREFIX)
-        )
+        return sum(1 for u in self.current_answers if not is_bot(u))
 
     def _count_bots_in_round(self) -> int:
-        """Count bots who have answered in the current round."""
-        return sum(
-            1 for u in self.current_answers if u.startswith(BOT_PREFIX)
-        )
+        return sum(1 for u in self.current_answers if is_bot(u))
+
+    def _retire_bots(self, reason: str):
+        if self._bots_active:
+            self._bots_active = False
+            self._active_bot_names = []
+            self.db.remove_players(BOT_PROFILES)
+            self._push_event(reason, COLOR_CORRECT, "BYE")
 
     def _schedule_bots(self):
-        """Schedule filler bot answers for this round."""
         self._scheduled_bots = []
-
-        # Use last round's real player count as our estimate
-        real_count = self._count_real_players()
-
-        # Fill to exactly MIN_PLAYERS total
-        bots_needed = max(0, MIN_PLAYERS - real_count)
-
+        bots_needed = max(0, MIN_PLAYERS - len(self._last_round_real_players))
         if bots_needed == 0:
-            if self._bots_active:
-                self._bots_active = False
-                self._active_bot_names = []
-                self.db.remove_players(BOT_PROFILES)
-                self._push_event(
-                    "Enough players! Bots retired.", COLOR_CORRECT, "BYE",
-                )
-                print(f"[Game] Bots retired ({real_count} real players)")
+            self._retire_bots("Enough players! Bots retired.")
             return
-
-        # Randomly select which bots to use this round
-        available_bots = list(BOT_PROFILES)
-        random.shuffle(available_bots)
-        active_bots = available_bots[:bots_needed]
-
-        # Remove bots that are no longer needed
-        retired_bots = [b for b in BOT_PROFILES if b not in active_bots]
-        if retired_bots and self._bots_active:
-            self.db.remove_players(retired_bots)
-
+        active_bots = random.sample(BOT_PROFILES, bots_needed)
+        retired = [b for b in BOT_PROFILES if b not in active_bots]
+        if retired and self._bots_active:
+            self.db.remove_players(retired)
         self._active_bot_names = active_bots
         self._bots_active = True
-
         if not self.current_question:
             return
-
         correct_idx = self.current_question.correct_index
-        num_options = len(self.current_question.options)
+        n = len(self.current_question.options)
         diff = BOT_DIFFICULTY["easy"]
-        q_time = self.state_duration  # respects lightning round
-
         for bot_name in active_bots:
             if random.random() < diff["accuracy"]:
                 choice = correct_idx
             else:
-                wrong_choices = [i for i in range(num_options) if i != correct_idx]
-                choice = random.choice(wrong_choices)
-
-            speed_frac = random.uniform(diff["speed_min"], diff["speed_max"])
-            answer_time = self.question_start_time + speed_frac * q_time
-            self._scheduled_bots.append((bot_name, choice, answer_time))
-
-        print(f"[Game] Bots: scheduled {bots_needed} bots "
-              f"(real_count={real_count}, bots={[b.replace(BOT_PREFIX,'') for b in active_bots]})")
+                choice = random.choice([i for i in range(n) if i != correct_idx])
+            at = self.question_start_time + random.uniform(diff["speed_min"], diff["speed_max"]) * self.state_duration
+            self._scheduled_bots.append((bot_name, choice, at))
 
     def _remove_excess_bots(self):
-        """Remove bots mid-round when real players join. Called after a real player answers."""
         real_in_round = self._count_real_in_round()
-
-        # If real players alone fill the lobby, remove ALL bots
+        bots_in_round = [u for u in self.current_answers if is_bot(u)]
+        excess = real_in_round + len(bots_in_round) - MIN_PLAYERS
         if real_in_round >= MIN_PLAYERS:
-            bots_to_remove = [u for u in self.current_answers if u.startswith(BOT_PREFIX)]
-            for bot_name in bots_to_remove:
-                del self.current_answers[bot_name]
+            excess = len(bots_in_round)
             self._scheduled_bots = []
-            if bots_to_remove:
-                print(f"[Game] Removed {len(bots_to_remove)} bot(s) "
-                      f"(real players: {real_in_round})")
-            if self._bots_active:
-                self._bots_active = False
-                self._active_bot_names = []
-                self.db.remove_players(BOT_PROFILES)
-                self._push_event(
-                    "Enough players! Bots retired.", COLOR_CORRECT, "BYE",
-                )
-            return
-
-        # Otherwise, trim bots so total = MIN_PLAYERS
-        bots_in_round = [u for u in self.current_answers if u.startswith(BOT_PREFIX)]
-        total = real_in_round + len(bots_in_round)
-        excess = total - MIN_PLAYERS
-
+            self._retire_bots("Enough players! Bots retired.")
         if excess > 0:
-            # Randomly pick which bots to remove
             random.shuffle(bots_in_round)
-            to_remove = bots_in_round[:excess]
-            for bot_name in to_remove:
+            for bot_name in bots_in_round[:excess]:
                 del self.current_answers[bot_name]
-            # Also cancel any scheduled bots that are now excess
-            scheduled_names = {b[0] for b in self._scheduled_bots}
-            active_bot_answers = {u for u in self.current_answers if u.startswith(BOT_PREFIX)}
-            self._scheduled_bots = [
-                (name, choice, t) for name, choice, t in self._scheduled_bots
-                if name in active_bot_answers or (real_in_round + len(active_bot_answers) < MIN_PLAYERS)
-            ]
-            print(f"[Game] Trimmed {len(to_remove)} bot(s) "
-                  f"(real: {real_in_round}, bots remaining: {len(bots_in_round) - len(to_remove)})")
+                self.lock_order = [x for x in self.lock_order if x[0] != bot_name]
 
     def _process_bot_answers(self):
-        """Process scheduled bot answers, dynamically adjusting for real player count."""
         now = time.time()
         remaining = []
-
         real_in_round = self._count_real_in_round()
         bots_in_round = self._count_bots_in_round()
-
         for bot_name, choice, answer_time in self._scheduled_bots:
-            if now >= answer_time:
-                # Dynamic cap: skip if we already have enough total players
-                if real_in_round + bots_in_round >= MIN_PLAYERS:
-                    print(f"[Game] {bot_name} skipped (lobby full: "
-                          f"{real_in_round} real + {bots_in_round} bots)")
-                    continue
-
-                if bot_name not in self.current_answers:
-                    self.current_answers[bot_name] = (choice, now)
-                    self.db.get_or_create_player(bot_name)
-                    self.sound_queue.append("answer_lock")
-                    bots_in_round += 1
-                    print(f"[Game] {bot_name} locked in answer {choice + 1}")
-            else:
+            if now < answer_time:
                 remaining.append((bot_name, choice, answer_time))
+                continue
+            if real_in_round + bots_in_round >= MIN_PLAYERS:
+                continue
+            if bot_name not in self.current_answers:
+                self.current_answers[bot_name] = (choice, now)
+                self.lock_order.append((bot_name, now - self.question_start_time))
+                self.db.get_or_create_player(bot_name)
+                self.sound_queue.append("answer_lock")
+                bots_in_round += 1
         self._scheduled_bots = remaining
 
     # ------------------------------------------
     # VOTE RESOLUTION
     # ------------------------------------------
     def _resolve_vote(self):
-        if not self.vote_state or not self.vote_state.votes:
-            cid = random.choice(list(VOTABLE_CATEGORIES.keys()))
-            self._set_category(cid)
+        if not self.vote_state:
             return
-
         counts = self.vote_state.vote_counts()
-        max_votes = max(counts.values())
-        winners = [opt for opt, cnt in counts.items() if cnt == max_votes]
-        winner = random.choice(winners)
+        top = max(counts.values()) if counts else 0
+        if top == 0:
+            winner = random.choice(list(self.vote_state.options))
+        else:
+            winner = random.choice([o for o, c in counts.items() if c == top])
         cid, name = self.vote_state.options[winner]
         self._set_category(cid)
-        self._push_event(
-            f"Next category: {name}!", COLOR_TEXT_GOLD, "VOTE",
-        )
-        print(f"[Vote] Winner: {name} ({max_votes} votes)")
+        self.match_category = name
+        self._push_event(f"Category: {name}!", COLOR_TEXT_GOLD, "VOTE")
 
     def _set_category(self, category_id):
         """Change category and flush stale questions from the cache."""
         if category_id != self._current_category_id:
-            old_count = len(self._question_cache)
             self._question_cache.clear()
-            if old_count > 0:
-                cat_name = VOTABLE_CATEGORIES.get(category_id, category_id)
-                print(f"[OTDB] Category changed to {cat_name}, flushed {old_count} cached questions")
         self._current_category_id = category_id
 
     # ------------------------------------------
-    # CHAT COMMAND PROCESSING
+    # CHAT COMMANDS
     # ------------------------------------------
     def _check_command_cooldown(self, username: str) -> bool:
-        """Return True if the player can use a command (not on cooldown)."""
         now = time.time()
-        last = self._command_cooldowns.get(username, 0)
-        if now - last < COMMAND_COOLDOWN:
+        if now - self._command_cooldowns.get(username, 0) < COMMAND_COOLDOWN:
             return False
         self._command_cooldowns[username] = now
         return True
 
     def process_message(self, username: str, message: str):
-        msg = message.strip().lower()
+        msg = message.strip().lower()  # chat already stripped punctuation: "!rank" arrives as "rank"
 
         if msg in ("reset", "clear"):
-            if not self._check_command_cooldown(username):
-                return
-            self.db.reset_player(username)
-            self._push_event(
-                f"{username} reset their score", (150, 140, 130), "RST",
-            )
+            if self._check_command_cooldown(username):
+                self.db.reset_player(username)
+                self._push_event(f"{username} reset their score", (150, 140, 130), "RST")
             return
 
-        if msg in ("score", "points"):
-            if not self._check_command_cooldown(username):
-                return
-            player = self.db.get_or_create_player(username)
-            self._push_event(
-                f"{username}: {player.score:,} pts | {player.rank} | x{player.streak} streak",
-                COLOR_TEXT_GOLD, "PTS",
-            )
+        if msg in ("score", "points", "rank", "me"):
+            if self._check_command_cooldown(username):
+                p = self.db.get_or_create_player(username)
+                pos = self.db.weekly_rank(username)
+                where = f"#{pos} this week" if pos else "not on this week's ladder yet"
+                self._push_event(
+                    f"{username}: {where}, {p.current_weekly():,} pts, level {p.level}, {p.day_streak}-day streak",
+                    COLOR_TEXT_GOLD, "PTS",
+                )
             return
 
-        # Admin commands (themomatthias only)
-        if username.lower() == "themomatthias":
+        if msg in ("ready", "join", "play"):
+            if self.state == GameState.LOBBY and username not in self.ready_players:
+                self.ready_players.append(username)
+                self.sound_queue.append("vote")
+            return
+
+        if username.lower() in ("themomatthias", "@themomatthias"):
             if msg in ("clear_bots", "clearbots"):
                 self.clear_bots()
                 return
-            elif msg in ("reset_bots", "resetbots"):
+            if msg in ("reset_bots", "resetbots"):
                 self.reset_bot_scores()
                 return
-            elif msg in ("reset_all", "resetall"):
+            if msg in ("reset_all", "resetall"):
                 self.reset_all_scores()
                 return
 
-        # Only a bare digit counts ("2!" arrives here as "2"); "2nd place" or "1000" do not.
-        answer = msg if msg in ("1", "2", "3", "4") else ""
+        # Only a bare digit counts ("2nd place" or "1000" do not).
+        if msg not in ("1", "2", "3", "4"):
+            return
+        choice = int(msg) - 1
 
-        if answer:
-            choice = int(answer) - 1
+        if self.state in (GameState.ASKING, GameState.LOCKING):
+            self._record_answer(username, choice)
+        elif self.state == GameState.LOBBY and self.vote_state:
+            vote = choice + 1
+            if vote in self.vote_state.options:
+                if username not in self.vote_state.votes:
+                    self.sound_queue.append("vote")
+                self.vote_state.votes[username] = vote
+                if username not in self.ready_players and not is_bot(username):
+                    self.ready_players.append(username)
 
-            # Determine effective state: use grace period for late messages
-            effective_state = self.state
-            in_grace = False
-            if self.state not in (GameState.ASKING, GameState.THEME_VOTE):
-                elapsed = time.time() - self._prev_state_end_time
-                if elapsed < LATE_ANSWER_GRACE and self._prev_state in (GameState.ASKING, GameState.THEME_VOTE):
-                    effective_state = self._prev_state
-                    in_grace = True
+    def _record_answer(self, username: str, choice: int):
+        now = time.time()
+        old = self.current_answers.get(username)
+        if old is None:
+            self.current_answers[username] = (choice, now)
+            self.lock_order.append((username, now - self.question_start_time))
+            self.sound_queue.append("answer_lock")
+        elif old[0] != choice and self.state == GameState.ASKING:
+            self.current_answers[username] = (choice, now)  # changing costs speed bonus
+            self.sound_queue.append("answer_lock")
+        else:
+            return
 
-            if effective_state == GameState.ASKING:
-                player = self.db.get_or_create_player(username)
-                old_answer = self.current_answers.get(username)
-
-                if in_grace and self.current_question:
-                    if old_answer is None:
-                        # Late first answer — score immediately
-                        self.current_answers[username] = (choice, time.time())
-                        correct_idx = self.current_question.correct_index
-                        if choice == correct_idx:
-                            pts = BASE_POINTS  # no speed bonus for late
-                            player.record_correct(pts)
-                            print(f"[Game] {username} late answer {msg} - CORRECT (+{pts} pts, grace period)")
-                        else:
-                            player.record_wrong()
-                            print(f"[Game] {username} late answer {msg} - wrong (grace period)")
-                        self.db.mark_dirty(username)
-                        self.sound_queue.append("answer_lock")
-                    else:
-                        # Can't change answer after time expired
-                        print(f"[Game] {username} tried to change answer during grace period (denied)")
-                elif old_answer is None:
-                    # First answer
-                    self.current_answers[username] = (choice, time.time())
-                    self.sound_queue.append("answer_lock")
-                    print(f"[Game] {username} locked in answer {msg}")
-                else:
-                    # Changed answer — update choice and timestamp
-                    old_choice = old_answer[0]
-                    if old_choice != choice:
-                        self.current_answers[username] = (choice, time.time())
-                        self.sound_queue.append("answer_lock")
-                        print(f"[Game] {username} changed answer from {old_choice + 1} to {msg}")
-                    else:
-                        print(f"[Game] {username} already picked {msg}")
-
-                # Dynamically adjust bots when a real player answers
-                if not username.startswith(BOT_PREFIX):
-                    self._remove_excess_bots()
-
-                # Welcome new players (skip bots)
-                if username not in self._known_players:
-                    self._known_players.add(username)
-                    if not username.startswith(BOT_PREFIX):
-                        self.new_players_this_round.append(username)
-                        self._push_event(
-                            f"Welcome {username}! First time here",
-                            COLOR_CORRECT, "NEW",
-                        )
-
-            elif effective_state == GameState.THEME_VOTE:
-                if self.vote_state:
-                    vote_num = int(answer)
-                    if vote_num in self.vote_state.options:
-                        old_vote = self.vote_state.votes.get(username)
-                        self.vote_state.votes[username] = vote_num
-                        cat_name = self.vote_state.options[vote_num][1]
-                        late_tag = " (late, grace period)" if in_grace else ""
-                        if old_vote is None:
-                            self.sound_queue.append("vote")
-                            print(f"[Game] {username} voted #{vote_num} ({cat_name}){late_tag}")
-                        else:
-                            print(f"[Game] {username} changed vote to #{vote_num} ({cat_name}){late_tag}")
-                    else:
-                        print(f"[Game] {username} voted {vote_num} but options are {list(self.vote_state.options.keys())}")
-
-            else:
-                print(f"[Game] {username} sent '{msg}' during {self.state.name} (ignored)")
+        if is_bot(username):
+            return
+        self._remove_excess_bots()
+        player = self.db.get_or_create_player(username)
+        if player.mark_played(now) and player.day_streak > 1:
+            self._push_event(f"{username}: {player.day_streak}-day streak!", COLOR_AMBER, "DAY")
+        self.db.mark_dirty(username)
+        if username not in self._known_players:
+            self._known_players.add(username)
+            self.new_players_this_round.append(username)
+            self._push_event(f"Welcome {username}! First time here", COLOR_CORRECT, "NEW")
 
     # ------------------------------------------
     # ACCESSORS
@@ -1150,27 +953,37 @@ class QuizLogic:
         return max(0, min(1, self.state_timer / self.state_duration))
 
     @property
-    def active_player_count(self) -> int:
-        """Real players in this round, or last round's if this one has just started."""
-        return max(self._count_real_in_round(), len(self._last_round_real_players))
+    def phase_age(self) -> float:
+        return time.time() - self.state_start_time
 
     @property
     def answer_count(self) -> int:
         return len(self.current_answers)
 
     @property
+    def active_player_count(self) -> int:
+        """Real players in this round, or last round's if this one has just started."""
+        return max(self._count_real_in_round(), len(self._last_round_real_players))
+
+    def match_ranking(self, n: int = 5) -> list[MatchStanding]:
+        ranked = sorted(self.standings.values(), key=lambda s: (-s.points, s.fastest or 999))
+        return ranked[:n]
+
+    @property
     def leaderboard(self) -> list[Player]:
-        return self._leaderboard
+        """This week's ladder."""
+        return self.db.get_weekly_top()
 
     @property
     def current_category_name(self) -> str:
-        # Show the actual question's category (from OTDB), not the configured one
         if self.current_question and self.current_question.category:
             return self.current_question.category
-        if self._current_category_id and self._current_category_id in VOTABLE_CATEGORIES:
-            return VOTABLE_CATEGORIES[self._current_category_id]
-        return "General"
+        return self.match_category
 
     @property
     def uptime(self) -> float:
         return time.time() - self.session_start_time
+
+
+def is_bot(username: str) -> bool:
+    return username.startswith(BOT_PREFIX)

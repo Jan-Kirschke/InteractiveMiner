@@ -88,3 +88,66 @@ def test_stored_bot_rows_are_purged_on_load(tmp_path):
     db = QuizDatabase(path)
     assert set(db._players) == {"human"}
     db.close()
+
+
+def expire(game):
+    game.state_timer = 0
+    game.update(0)
+
+
+def test_full_match_cycle_records_winner_and_ladders(game):
+    game.state = GameState.WAITING
+    game.update(0)
+    assert game.state == GameState.LOBBY
+    game.process_message("alice", "2")          # category vote in the lobby
+    game.process_message("bob", "ready")
+    assert game.ready_players == ["alice", "bob"]
+    expire(game)
+    assert game.state == GameState.INTRO
+    match_no = game.match_no
+
+    for q in range(1, 11):
+        expire(game)
+        assert game.state == GameState.ASKING and game.q_index == q
+        correct = game.current_question.correct_index
+        game.process_message("alice", str(correct + 1))
+        game.process_message("bob", str((correct + 1) % 4 + 1))   # always wrong
+        expire(game)
+        assert game.state == GameState.LOCKING
+        game.process_message("carol", str(correct + 1))            # late answer still counts
+        expire(game)
+        assert game.state == GameState.REVEALING
+        assert game.last_result.option_counts[correct] == 2
+
+    expire(game)
+    assert game.state == GameState.PODIUM
+    assert [s.username for s in game.podium] == ["alice", "carol"]  # bob scored 0: no podium
+    assert len(game.pips) == 10
+    assert game.db.next_match_number() == match_no + 1
+    assert game.leaderboard[0].username == "alice"
+    assert game.ladder_changes["alice"] is None                     # new on the ladder
+    expire(game)
+    assert game.state == GameState.LOBBY and game.match_no == match_no + 1
+
+
+def test_final_question_pays_double_and_lightning_is_shorter(game):
+    game.q_index = 4
+    game._transition_to(GameState.ASKING)                            # question 5
+    assert game.mini_event == "lightning" and game.question_duration == 12
+    game.q_index = 9
+    game._transition_to(GameState.ASKING)                            # question 10
+    assert game.is_double_points
+    game.process_message("alice", str(game.current_question.correct_index + 1))
+    game.current_answers["alice"] = (game.current_question.correct_index, game.question_start_time + 1)
+    res = game._resolve_question()
+    assert res.correct_players[0][1] == 40                          # 10 x 2 speed x 2 final
+
+
+def test_day_streak_counts_consecutive_utc_days():
+    from quiz.models import Player
+    p = Player("a")
+    day = 86400 * 20000
+    assert p.mark_played(day) and p.day_streak == 1
+    assert not p.mark_played(day + 60)
+    assert p.mark_played(day + 86400) and p.day_streak == 2
+    assert p.mark_played(day + 3 * 86400) and p.day_streak == 1

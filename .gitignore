@@ -23,3 +23,4 @@ assets/images/desktop.ini
 .env
 secrets/
 data/quiz_offline.db
+data/backups/

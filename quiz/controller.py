@@ -173,33 +173,10 @@ class MainGameController:
             self._music_started = True
 
     def _render(self):
-        state = self.logic.state
-
-        data = {
-            "state_name": state.name,
-            "round_count": self.logic.round_count,
-            "category": self.logic.current_category_name,
-            "player_count": self.logic.active_player_count,
+        self.ui.draw(self.logic, {
             "connected": self.chat.is_connected,
             "broadcasting": self.broadcaster.is_active,
-            "chat_status": self.chat.status_text,
-            "chat_msg_count": self.chat.message_count,
-            "time_fraction": self.logic.time_fraction,
-            "time_remaining": self.logic.time_remaining,
-            "uptime": self.logic.uptime,
-            "question": self.logic.current_question,
-            "answer_count": self.logic.answer_count,
-            "result": self.logic.last_result,
-            "leaderboard": self.logic.leaderboard,
-            "leaderboard_changes": self.logic.leaderboard_changes,
-            "vote_state": self.logic.vote_state,
-            "is_double_points": self.logic.is_double_points,
-            "mini_event": self.logic.mini_event,
-            "events": self.logic.get_recent_events(),
-            "competition_alert": self.logic.competition_alert,
-        }
-
-        self.ui.draw(state, data)
+        })
 
     def _broadcast_frame(self):
         self._frame_count += 1
@@ -221,7 +198,7 @@ class MainGameController:
         current = self.logic.state
         if current != self._prev_logic_state:
             self._prev_logic_state = current
-            if current in (GameState.REVEALING, GameState.LEADERBOARD):
+            if current in (GameState.REVEALING, GameState.PODIUM):
                 self.db.save_all()
 
     def _periodic_save(self):

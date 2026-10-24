@@ -5,6 +5,8 @@ Enums, dataclasses, and core data structures.
 
 from enum import Enum, auto
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+import math
 import time
 
 from quiz.config import RANK_THRESHOLDS
@@ -12,10 +14,22 @@ from quiz.config import RANK_THRESHOLDS
 
 class GameState(Enum):
     WAITING = auto()
+    LOBBY = auto()
+    INTRO = auto()
     ASKING = auto()
+    LOCKING = auto()
     REVEALING = auto()
-    LEADERBOARD = auto()
-    THEME_VOTE = auto()
+    PODIUM = auto()
+
+
+def utc_day(ts: float | None = None) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(ts if ts is not None else time.time()))
+
+
+def utc_week(ts: float | None = None) -> str:
+    """ISO week, e.g. "2026-W43". Weekly ladders reset Monday 00:00 UTC."""
+    y, w, _ = datetime.fromtimestamp(ts if ts is not None else time.time(), timezone.utc).isocalendar()
+    return f"{y}-W{w:02d}"
 
 
 @dataclass
@@ -32,11 +46,42 @@ class Player:
     participation_streak: int = 0
     streak_shield: bool = False
     last_seen: float = field(default_factory=time.time)
+    weekly_score: int = 0
+    week: str = ""
+    day_streak: int = 0
+    last_day: str = ""
+
+    @property
+    def level(self) -> int:
+        """Lifetime level from lifetime points (score). Never goes down."""
+        return int(math.sqrt(max(0, self.score) / 10)) + 1
+
+    def current_weekly(self, week: str | None = None) -> int:
+        return self.weekly_score if self.week == (week or utc_week()) else 0
+
+    def add_points(self, points: int):
+        """Lifetime and weekly points (match points are kept by the match)."""
+        wk = utc_week()
+        if self.week != wk:
+            self.week = wk
+            self.weekly_score = 0
+        self.score += points
+        self.weekly_score += points
+
+    def mark_played(self, now: float | None = None) -> bool:
+        """Update the day streak. Returns True on the first play of a new UTC day."""
+        today = utc_day(now)
+        if self.last_day == today:
+            return False
+        yesterday = utc_day((now if now is not None else time.time()) - 86400)
+        self.day_streak = self.day_streak + 1 if self.last_day == yesterday else 1
+        self.last_day = today
+        return True
 
     def record_correct(self, points: int):
         was_wrong_streak = self.wrong_streak
         self.wrong_streak = 0
-        self.score += points
+        self.add_points(points)
         self.streak += 1
         self.correct_answers += 1
         self.games_played += 1
@@ -80,6 +125,8 @@ class Player:
         self.wrong_streak = 0
         self.participation_streak = 0
         self.streak_shield = False
+        self.weekly_score = 0
+        self.day_streak = 0
 
 
 @dataclass
@@ -100,6 +147,21 @@ class RoundResult:
     total_answers: int
     fastest_player: str = ""
     fastest_time: float = 0.0
+    option_counts: list = field(default_factory=lambda: [0, 0, 0, 0])
+
+    @property
+    def correct_rate(self) -> float:
+        return len(self.correct_players) / self.total_answers if self.total_answers else 0.0
+
+
+@dataclass
+class MatchStanding:
+    username: str
+    points: int = 0
+    correct: int = 0
+    best_streak: int = 0
+    streak: int = 0
+    fastest: float = 0.0  # fastest correct answer time in this match (0 = none)
 
 
 @dataclass

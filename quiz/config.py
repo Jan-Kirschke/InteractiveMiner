@@ -65,12 +65,19 @@ COLOR_RANK_LEGEND = (255, 69, 0)
 # ==========================================
 # TIMING (seconds)
 # ==========================================
-QUESTION_DISPLAY_TIME = 30
+# A show is an endless cycle of matches: LOBBY -> INTRO -> 10 x (ASKING -> LOCKING -> REVEALING) -> PODIUM
+MATCH_LENGTH = 10
+LOBBY_TIME = 30            # category vote, !ready check-ins
+INTRO_TIME = 4             # "MATCH 15" title sting
+QUESTION_DISPLAY_TIME = 20
+LATE_ANSWER_GRACE = 4      # LOCKING: "time's up" while late chat messages still arrive
 REVEAL_DISPLAY_TIME = 8
-LEADERBOARD_DISPLAY_TIME = 10
-THEME_VOTE_TIME = 30
-ROUNDS_BEFORE_VOTE = 5
-LATE_ANSWER_GRACE = 5  # seconds to accept answers/votes after a phase ends (chat delay)
+PODIUM_TIME = 14
+LIGHTNING_QUESTION = 5     # fixed event slots inside a match
+BONUS_QUESTIONS = (3, 7)   # first blood or jackpot
+FINAL_QUESTION_MULT = 2.0  # the last question pays double
+DIFFICULTY_RAMP = {1: "easy", 2: "easy", 3: "easy", 4: "medium", 5: "medium",
+                   6: "medium", 7: "medium", 8: "hard", 9: "hard", 10: "hard"}
 
 # ==========================================
 # SCORING
@@ -188,7 +195,8 @@ DB_SAVE_INTERVAL = 10  # seconds
 # ==========================================
 # ASSETS
 # ==========================================
-FONT_PATH = str(_ROOT / "shared" / "fonts" / "minecraft.ttf")
+FONT_DIR = _ROOT / "shared" / "fonts"
+FONT_PATH = str(FONT_DIR / "minecraft.ttf")  # Infinite Miner only
 
 # ==========================================
 # LEADERBOARD
@@ -232,7 +240,7 @@ ACHIEVEMENTS = {
 LIGHTNING_ROUND_CHANCE = 0.08   # 8% chance: shorter time, 1.5x points
 JACKPOT_CHANCE = 0.10           # 10% chance: random correct player wins jackpot
 FIRST_BLOOD_CHANCE = 0.15       # 15% chance: fastest correct player gets bonus
-LIGHTNING_TIME = 15             # seconds (instead of 30)
+LIGHTNING_TIME = 12             # seconds (instead of 20)
 LIGHTNING_MULT = 1.5
 JACKPOT_BONUS = 25              # flat bonus for jackpot winner
 FIRST_BLOOD_BONUS = 15          # flat bonus for first correct answerer

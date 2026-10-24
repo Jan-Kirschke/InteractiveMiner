@@ -1,111 +1,197 @@
 """
-The Lifelong Quiz - UI Manager
-Smooth animations, easing, dark poker room aesthetic, particles, event feed.
+The Lifelong Quiz - "Prime Time" broadcast UI
+A TV game-show look: deep stage blue, moving spotlights, tall condensed headlines,
+colour + number + shape coded answers, and show moments (match intro, suspense lock,
+animated answer split, podium rise with confetti, a typewriter AI-host caption).
+
+Layout (1920x1080): header (brand, match pips, live pill) / main stage left /
+social rail right (460 px) / footer (host caption + commands).
 """
 
-import pygame
 import math
-import time
 import random
+import time
 
-from quiz.config import (
-    SCREEN_WIDTH, SCREEN_HEIGHT, FPS,
-    COLOR_BG_DARK, COLOR_BG_FELT, COLOR_GOLD, COLOR_AMBER,
-    COLOR_CARD_BG, COLOR_CARD_BORDER, COLOR_CARD_HIGHLIGHT,
-    COLOR_CORRECT, COLOR_WRONG,
-    COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY, COLOR_TEXT_GOLD, COLOR_TEXT_DIM,
-    COLOR_TIMER_BAR, COLOR_TIMER_BAR_LOW, COLOR_HUD_BG,
-    COLOR_CONNECTED, COLOR_DISCONNECTED,
-    RANK_COLORS, FONT_PATH, MAX_PARTICLES,
-    CHAT_FEED_DURATION,
-)
-from quiz.models import GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent
+import pygame
+
+from quiz.config import SCREEN_WIDTH, SCREEN_HEIGHT, FONT_DIR, MATCH_LENGTH
+from quiz.models import GameState
+from quiz.logic import is_bot
+
+# ==========================================
+# PALETTE
+# ==========================================
+BG_DEEP = (5, 6, 26)
+BG_STAGE = (26, 31, 107)
+INK = (255, 255, 255)
+DIM = (176, 181, 222)
+FAINT = (110, 116, 170)
+TRACK = (52, 58, 120)
+ACCENT = (255, 210, 63)
+GOOD = (46, 229, 157)
+BAD = (255, 90, 95)
+DARK_INK = (17, 17, 34)
+OPTION_COLORS = [(255, 77, 109), (58, 134, 255), (255, 159, 28), (20, 201, 168)]
+EVENT_STYLE = {
+    "final": ("FINAL QUESTION  x2", ACCENT),
+    "lightning": ("LIGHTNING  1.5x", (110, 190, 255)),
+    "first_blood": ("FIRST BLOOD BONUS", (255, 110, 110)),
+    "jackpot": ("JACKPOT ROUND", (190, 120, 255)),
+}
+DIFF_COLORS = {"easy": GOOD, "medium": (255, 159, 28), "hard": BAD}
+
+# ==========================================
+# LAYOUT
+# ==========================================
+PAD = 44
+HEADER_Y, HEADER_H = 36, 88
+RAIL_W = 460
+GAP = 40
+MAIN_X = PAD
+MAIN_W = SCREEN_WIDTH - 2 * PAD - RAIL_W - GAP
+RAIL_X = SCREEN_WIDTH - PAD - RAIL_W
+BODY_Y = HEADER_Y + HEADER_H + 28
+FOOTER_Y = SCREEN_HEIGHT - 36 - 64
+BODY_BOTTOM = FOOTER_Y - 28
 
 
 # ==========================================
-# EASING FUNCTIONS
+# EASING
 # ==========================================
+def clamp01(t):
+    return max(0.0, min(1.0, t))
+
+
 def ease_out_cubic(t):
+    t = clamp01(t)
     return 1 - (1 - t) ** 3
 
+
 def ease_out_back(t):
-    c = 1.7
-    return 1 + (c + 1) * ((t - 1) ** 3) + c * ((t - 1) ** 2)
+    t = clamp01(t)
+    c = 1.70158
+    return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2
 
-def ease_out_elastic(t):
-    if t == 0 or t == 1:
-        return t
-    return (2 ** (-10 * t)) * math.sin((t * 10 - 0.75) * (2 * math.pi / 3)) + 1
 
-def ease_in_out_quad(t):
-    if t < 0.5:
-        return 2 * t * t
-    return 1 - (-2 * t + 2) ** 2 / 2
+def ease_in_out(t):
+    t = clamp01(t)
+    return 3 * t * t - 2 * t * t * t
 
-def _alpha(value):
-    """Clamp a 0-255 alpha value (guards against easing overshoot)."""
-    return max(0, min(255, int(value)))
+
+def progress(age, delay, dur):
+    return clamp01((age - delay) / dur)
+
 
 def lerp(a, b, t):
-    return a + (b - a) * max(0, min(1, t))
+    return a + (b - a) * t
 
-def lerp_color(c1, c2, t):
-    t = max(0, min(1, t))
+
+def mix(c1, c2, t):
+    t = clamp01(t)
     return tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
 
 
 # ==========================================
-# PARTICLE CLASSES
+# FONTS (international names fall back to Noto Sans, then system fonts)
 # ==========================================
-class Particle:
-    __slots__ = ("x", "y", "vx", "vy", "color", "life", "max_life", "size")
-
-    def __init__(self, x, y, color):
-        self.x = x
-        self.y = y
-        self.vx = random.uniform(-2, 2)
-        self.vy = random.uniform(-4, -1)
-        self.color = color
-        self.max_life = random.uniform(0.8, 2.0)
-        self.life = self.max_life
-        self.size = random.randint(2, 5)
+SYSTEM_FALLBACKS = [
+    "notosanscjksc", "notosanscjk", "notosanscjkjp", "microsoftyahei", "msgothic",
+    "malgungothic", "notosansarabic", "segoeui", "arial", "dejavusans",
+]
 
 
-class SmokeParticle:
-    __slots__ = ("x", "y", "vx", "vy", "alpha", "size", "life")
-
+class Fonts:
     def __init__(self):
+        self._cache = {}
+        self._paths = {
+            "display": FONT_DIR / "Anton-Regular.ttf",
+            "black": FONT_DIR / "Barlow-ExtraBold.ttf",
+            "bold": FONT_DIR / "Barlow-Bold.ttf",
+            "semi": FONT_DIR / "Barlow-SemiBold.ttf",
+            "noto": FONT_DIR / "NotoSans-Variable.ttf",
+        }
+        self._system = [p for p in (pygame.font.match_font(n) for n in SYSTEM_FALLBACKS) if p]
+
+    def get(self, kind, size):
+        key = (kind, size)
+        f = self._cache.get(key)
+        if f is None:
+            try:
+                f = pygame.font.Font(str(self._paths[kind]), size)
+            except (FileNotFoundError, OSError, KeyError):
+                f = pygame.font.SysFont("arial", size, bold=True)
+            self._cache[key] = f
+        return f
+
+    def chain(self, kind, size):
+        """Fonts to try in order for user-supplied text (names, event lines)."""
+        key = ("chain", kind, size)
+        c = self._cache.get(key)
+        if c is None:
+            c = [self.get(kind, size), self.get("noto", size)]
+            for path in self._system:
+                try:
+                    c.append(pygame.font.Font(path, size))
+                except (FileNotFoundError, OSError):
+                    pass
+            self._cache[key] = c
+        return c
+
+
+_NOTDEF = {}
+_GLYPH = {}
+
+
+def _missing(font, ch):
+    """True if the font would draw its "missing glyph" box for ch (metrics() is unreliable)."""
+    key = (id(font), ch)
+    hit = _GLYPH.get(key)
+    if hit is None:
+        nd = _NOTDEF.get(id(font))
+        if nd is None:
+            s = font.render("󰀀", False, (255, 255, 255))
+            nd = _NOTDEF[id(font)] = (s.get_size(), pygame.image.tobytes(s, "RGBA"))
+        try:
+            s = font.render(ch, False, (255, 255, 255))
+            hit = (s.get_size(), pygame.image.tobytes(s, "RGBA")) == nd or s.get_width() == 0
+        except (pygame.error, UnicodeError):
+            hit = True
+        _GLYPH[key] = hit
+    return hit
+
+
+def _covers(font, text):
+    return all(ch.isspace() or not _missing(font, ch) for ch in set(text))
+
+
+# ==========================================
+# PARTICLES
+# ==========================================
+class Confetti:
+    __slots__ = ("x", "y", "vx", "vy", "color", "w", "h", "spin", "phase", "life")
+
+    def __init__(self, x, y, power=1.0):
+        a = random.uniform(-math.pi * 0.95, -math.pi * 0.05)
+        sp = random.uniform(6, 16) * power
+        self.x, self.y = x, y
+        self.vx, self.vy = math.cos(a) * sp, math.sin(a) * sp
+        self.color = random.choice(OPTION_COLORS + [ACCENT, INK])
+        self.w, self.h = random.randint(8, 14), random.randint(12, 22)
+        self.spin = random.uniform(5, 12)
+        self.phase = random.uniform(0, 6.28)
+        self.life = random.uniform(2.2, 3.6)
+
+
+class Dust:
+    __slots__ = ("x", "y", "vy", "r", "a", "tw")
+
+    def __init__(self, anywhere=True):
         self.x = random.uniform(0, SCREEN_WIDTH)
-        self.y = random.uniform(0, SCREEN_HEIGHT)
-        self.vx = random.uniform(-0.3, 0.3)
-        self.vy = random.uniform(-0.15, -0.03)
-        self.alpha = random.randint(4, 12)
-        self.size = random.randint(50, 120)
-        self.life = random.uniform(8, 20)
-
-
-class PixelSparkle:
-    """Minecraft-style square sparkle particle with twinkle effect."""
-    __slots__ = ("x", "y", "vx", "vy", "color", "life", "max_life",
-                 "size", "twinkle_speed", "twinkle_offset")
-
-    def __init__(self, x, y, color=None):
-        self.x = x + random.uniform(-60, 60)
-        self.y = y + random.uniform(-15, 15)
-        self.vx = random.uniform(-1.5, 1.5)
-        self.vy = random.uniform(-2.5, -0.3)
-        # Gold/white/amber pixel colors for enchantment glow
-        if color is None:
-            color = random.choice([
-                (255, 215, 0), (255, 255, 180), (212, 175, 55),
-                (255, 240, 100), (200, 180, 80), (255, 255, 255),
-            ])
-        self.color = color
-        self.max_life = random.uniform(0.6, 1.8)
-        self.life = self.max_life
-        self.size = random.choice([2, 3, 4])  # pixel sizes
-        self.twinkle_speed = random.uniform(6, 14)
-        self.twinkle_offset = random.uniform(0, 6.28)
+        self.y = random.uniform(0, SCREEN_HEIGHT) if anywhere else SCREEN_HEIGHT + 10
+        self.vy = random.uniform(8, 22)
+        self.r = random.choice([1, 2, 2, 3])
+        self.a = random.randint(40, 120)
+        self.tw = random.uniform(0, 6.28)
 
 
 # ==========================================
@@ -114,1197 +200,763 @@ class PixelSparkle:
 class UIManager:
     def __init__(self, screen: pygame.Surface):
         self.screen = screen
-        self._load_fonts()
-        self._create_background()
-        self._create_vignette()
-
-        # Particles
-        self.particles: list[Particle] = []
-        self.sparkles: list[PixelSparkle] = []
-        self.smoke: list[SmokeParticle] = [SmokeParticle() for _ in range(25)]
-
-        # Animation state
-        self._state_enter_time = 0.0
+        self.fonts = Fonts()
+        self._text_cache = {}
+        self._surf_cache = {}
+        self._bg = self._make_background()
+        self._spot = self._make_spotlight(820)
+        self._shine = self._make_shine()
+        self.confetti: list[Confetti] = []
+        self.dust = [Dust() for _ in range(45)]
         self._last_state = None
-        self._leaderboard_anim_start = 0.0
-
-        # Smooth counters
-        self._displayed_answer_count = 0.0
-        self._displayed_timer_frac = 1.0
-
-        # Card glow cache
-        self._glow_caches = {}
-
-    def _load_fonts(self):
-        try:
-            self.font_tiny = pygame.font.Font(FONT_PATH, 18)
-            self.font_small = pygame.font.Font(FONT_PATH, 22)
-            self.font_medium = pygame.font.Font(FONT_PATH, 30)
-            self.font_large = pygame.font.Font(FONT_PATH, 44)
-            self.font_title = pygame.font.Font(FONT_PATH, 64)
-            self.font_huge = pygame.font.Font(FONT_PATH, 80)
-        except (FileNotFoundError, OSError):
-            print("[UI] minecraft.ttf not found, using system font")
-            self.font_tiny = pygame.font.SysFont("Arial", 18)
-            self.font_small = pygame.font.SysFont("Arial", 22)
-            self.font_medium = pygame.font.SysFont("Arial", 30)
-            self.font_large = pygame.font.SysFont("Arial", 44)
-            self.font_title = pygame.font.SysFont("Arial", 64)
-            self.font_huge = pygame.font.SysFont("Arial", 80)
-
-    def _create_background(self):
-        """Pre-render radial gradient background."""
-        self._bg_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-        cx, cy = SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
-        max_dist = math.sqrt(cx * cx + cy * cy)
-
-        # Render at half resolution then scale up for smoothness
-        half_w, half_h = SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
-        small = pygame.Surface((half_w, half_h))
-        for y in range(0, half_h, 2):
-            for x in range(0, half_w, 2):
-                dx = (x * 2 - cx)
-                dy = (y * 2 - cy)
-                dist = math.sqrt(dx * dx + dy * dy) / max_dist
-                t = min(1.0, dist * 1.2)
-                r = int(COLOR_BG_FELT[0] * (1 - t) + COLOR_BG_DARK[0] * t)
-                g = int(COLOR_BG_FELT[1] * (1 - t) + COLOR_BG_DARK[1] * t)
-                b = int(COLOR_BG_FELT[2] * (1 - t) + COLOR_BG_DARK[2] * t)
-                pygame.draw.rect(small, (r, g, b), (x, y, 2, 2))
-        self._bg_surface = pygame.transform.smoothscale(small, (SCREEN_WIDTH, SCREEN_HEIGHT))
-
-    def _create_vignette(self):
-        """Pre-render vignette surface."""
-        self._vignette_surf = pygame.Surface(
-            (SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA,
-        )
-        for i in range(150):
-            alpha = int(100 * (1 - i / 150))
-            pygame.draw.rect(self._vignette_surf, (0, 0, 0, alpha), (0, i, SCREEN_WIDTH, 1))
-            pygame.draw.rect(
-                self._vignette_surf, (0, 0, 0, alpha),
-                (0, SCREEN_HEIGHT - 1 - i, SCREEN_WIDTH, 1),
-            )
-        for i in range(200):
-            alpha = int(80 * (1 - i / 200))
-            pygame.draw.rect(self._vignette_surf, (0, 0, 0, alpha), (i, 0, 1, SCREEN_HEIGHT))
-            pygame.draw.rect(
-                self._vignette_surf, (0, 0, 0, alpha),
-                (SCREEN_WIDTH - 1 - i, 0, 1, SCREEN_HEIGHT),
-            )
+        self._state_enter = time.time()
+        self._vote_bars = {}
+        self._burst_done = set()
+        self._t = time.time()
 
     # ------------------------------------------
-    # MAIN DRAW DISPATCH
+    # PRE-RENDERED SURFACES
     # ------------------------------------------
-    def draw(self, state: GameState, data: dict):
-        if state != self._last_state:
-            self._state_enter_time = time.time()
-            self._last_state = state
-            if state == GameState.LEADERBOARD:
-                self._leaderboard_anim_start = time.time()
+    def _make_background(self):
+        w, h = SCREEN_WIDTH // 8, SCREEN_HEIGHT // 8
+        small = pygame.Surface((w, h))
+        cx, cy = w * 0.5, h * 0.62
+        for y in range(h):
+            for x in range(w):
+                d = math.hypot((x - cx) / w, (y - cy) / h) * 1.6
+                small.set_at((x, y), mix(BG_STAGE, BG_DEEP, d))
+        bg = pygame.transform.smoothscale(small, (SCREEN_WIDTH, SCREEN_HEIGHT))
+        stripes = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        slant = SCREEN_HEIGHT * 0.47
+        for x0 in range(-SCREEN_HEIGHT, SCREEN_WIDTH, 200):
+            pygame.draw.polygon(stripes, (255, 255, 255, 6), [
+                (x0, SCREEN_HEIGHT), (x0 + 80, SCREEN_HEIGHT), (x0 + 80 + slant, 0), (x0 + slant, 0)])
+        bg.blit(stripes, (0, 0))
+        return bg
+
+    def _make_spotlight(self, size):
+        s = pygame.Surface((size, size))
+        c = size // 2
+        for r in range(c, 0, -6):
+            v = int(38 * (1 - r / c) ** 1.6)
+            pygame.draw.circle(s, (v, v, min(255, int(v * 1.3))), (c, c), r)
+        return s
+
+    def _make_shine(self):
+        s = pygame.Surface((260, SCREEN_HEIGHT), pygame.SRCALPHA)
+        for x in range(260):
+            a = int(46 * math.sin(math.pi * x / 260))
+            pygame.draw.line(s, (255, 255, 255, a), (x, 0), (x, SCREEN_HEIGHT))
+        return s
+
+    def _alpha_rect(self, w, h, color, radius):
+        key = ("ar", w, h, color, radius)
+        s = self._surf_cache.get(key)
+        if s is None:
+            s = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
+            pygame.draw.rect(s, color, (0, 0, w, h), border_radius=radius)
+            if len(self._surf_cache) > 800:
+                self._surf_cache.clear()
+            self._surf_cache[key] = s
+        return s
+
+    # ------------------------------------------
+    # TEXT
+    # ------------------------------------------
+    def _render(self, kind, size, text, color):
+        key = (kind, size, text, color)
+        s = self._text_cache.get(key)
+        if s is None:
+            s = self.fonts.get(kind, size).render(text, True, color)
+            if len(self._text_cache) > 3000:
+                self._text_cache.clear()
+            self._text_cache[key] = s
+        return s
+
+    def _render_name(self, text, size, color, kind="bold"):
+        """User-supplied text: pick the first font that has every glyph (Latin, Cyrillic, CJK...)."""
+        key = ("name", kind, size, text, color)
+        s = self._text_cache.get(key)
+        if s is None:
+            chain = self.fonts.chain(kind, size)
+            font = next((f for f in chain if _covers(f, text)), None)
+            if font is None:  # emoji or unknown script: drop what no font can draw
+                font = chain[1]
+                text = "".join(ch for ch in text if _covers(font, ch)) or "?"
+            s = font.render(text, True, color)
+            if len(self._text_cache) > 3000:
+                self._text_cache.clear()
+            self._text_cache[key] = s
+        return s
+
+    def _fit_name(self, text, size, color, max_w, kind="bold"):
+        s = self._render_name(text, size, color, kind)
+        cut = text
+        while s.get_width() > max_w and len(cut) > 4:
+            cut = cut[:-2]
+            s = self._render_name(cut.rstrip() + "...", size, color, kind)
+        return s
+
+    def _blit(self, surf, pos, anchor="topleft", alpha=255, scale=1.0):
+        if scale != 1.0:
+            w, h = surf.get_size()
+            surf = pygame.transform.smoothscale(surf, (max(1, int(w * scale)), max(1, int(h * scale))))
+        surf.set_alpha(int(max(0, min(255, alpha))))
+        r = surf.get_rect(**{anchor: (int(pos[0]), int(pos[1]))})
+        self.screen.blit(surf, r)
+        surf.set_alpha(255)
+        return r
+
+    def _text(self, kind, size, text, color, pos, anchor="topleft", alpha=255, scale=1.0):
+        return self._blit(self._render(kind, size, text, color), pos, anchor, alpha, scale)
+
+    def _wrap(self, text, kind, size, max_w):
+        font = self.fonts.get(kind, size)
+        lines, cur = [], ""
+        for w in text.split():
+            test = f"{cur} {w}".strip()
+            if font.size(test)[0] <= max_w:
+                cur = test
             else:
-                self.sparkles.clear()
-
-        dt = 1.0 / FPS
-
-        # Background
-        self.screen.blit(self._bg_surface, (0, 0))
-        self._draw_smoke(dt)
-        self.screen.blit(self._vignette_surf, (0, 0))
-
-        # Smooth counters
-        target_count = data.get("answer_count", 0)
-        self._displayed_answer_count = lerp(
-            self._displayed_answer_count, target_count, 8 * dt,
-        )
-        target_frac = data.get("time_fraction", 1.0)
-        self._displayed_timer_frac = lerp(
-            self._displayed_timer_frac, target_frac, 12 * dt,
-        )
-
-        # Phase animation
-        phase_age = time.time() - self._state_enter_time
-        fade = ease_out_cubic(min(1.0, phase_age / 0.6))
-
-        if state == GameState.WAITING:
-            self._draw_waiting(fade)
-        elif state == GameState.ASKING:
-            self._draw_asking(data, fade, phase_age)
-        elif state == GameState.REVEALING:
-            self._draw_revealing(data, fade, phase_age)
-        elif state == GameState.LEADERBOARD:
-            self._draw_leaderboard(data, fade)
-        elif state == GameState.THEME_VOTE:
-            self._draw_theme_vote(data, fade)
-
-        # Event feed (right side)
-        events = data.get("events", [])
-        if events:
-            self._draw_event_feed(events)
-
-        # Double points banner
-        if data.get("is_double_points") and state == GameState.ASKING:
-            self._draw_double_points_banner(phase_age)
-
-        # Mini event banner
-        mini_event = data.get("mini_event", "")
-        if mini_event and state == GameState.ASKING:
-            self._draw_mini_event_banner(mini_event, phase_age)
-
-        # Competition alert
-        alert = data.get("competition_alert", "")
-        if alert and state == GameState.LEADERBOARD:
-            self._draw_competition_alert(alert, phase_age)
-
-        # HUD
-        self._draw_hud(data)
-
-        # Particles
-        self._update_and_draw_particles(dt)
-        self._update_and_draw_sparkles(dt)
-
-        pygame.display.flip()
-
-    # ------------------------------------------
-    # SMOKE
-    # ------------------------------------------
-    def _draw_smoke(self, dt):
-        for i, s in enumerate(self.smoke):
-            s.x += s.vx
-            s.y += s.vy
-            s.life -= dt
-            if s.life <= 0 or s.y < -s.size:
-                self.smoke[i] = SmokeParticle()
-                continue
-            surf = pygame.Surface((s.size * 2, s.size * 2), pygame.SRCALPHA)
-            pygame.draw.circle(
-                surf, (60, 55, 45, s.alpha),
-                (s.size, s.size), s.size,
-            )
-            self.screen.blit(surf, (int(s.x - s.size), int(s.y - s.size)))
-
-    # ------------------------------------------
-    # CARD PRIMITIVES
-    # ------------------------------------------
-    def _draw_card(self, rect, color=COLOR_CARD_BG, border_color=COLOR_CARD_BORDER,
-                   border_width=2, radius=12, shadow=True, glow_color=None,
-                   alpha=255):
-        x, y, w, h = rect
-
-        if alpha < 255:
-            card_surf = pygame.Surface((w + 16, h + 16), pygame.SRCALPHA)
-            off = 8
-        else:
-            card_surf = None
-            off = 0
-
-        target = card_surf if card_surf else self.screen
-        ox = off if card_surf else x
-        oy = off if card_surf else y
-
-        # Shadow
-        if shadow:
-            shadow_surf = pygame.Surface((w + 8, h + 8), pygame.SRCALPHA)
-            pygame.draw.rect(
-                shadow_surf, (0, 0, 0, min(alpha, 50)),
-                (4, 4, w, h), border_radius=radius,
-            )
-            if card_surf:
-                card_surf.blit(shadow_surf, (off - 2, off - 2))
-            else:
-                self.screen.blit(shadow_surf, (x - 2, y - 2))
-
-        # Glow
-        if glow_color:
-            glow_surf = pygame.Surface((w + 20, h + 20), pygame.SRCALPHA)
-            pulse = 0.5 + 0.5 * math.sin(time.time() * 3.5)
-            ga = int(60 * pulse)
-            pygame.draw.rect(
-                glow_surf, (*glow_color[:3], ga),
-                (0, 0, w + 20, h + 20), border_radius=radius + 6,
-            )
-            if card_surf:
-                card_surf.blit(glow_surf, (off - 10, off - 10))
-            else:
-                self.screen.blit(glow_surf, (x - 10, y - 10))
-
-        # Body
-        body_color = (*color[:3], alpha) if card_surf else color
-        pygame.draw.rect(target, body_color, (ox, oy, w, h), border_radius=radius)
-        if border_width > 0:
-            border_c = (*border_color[:3], alpha) if card_surf else border_color
-            pygame.draw.rect(
-                target, border_c, (ox, oy, w, h),
-                width=border_width, border_radius=radius,
-            )
-
-        if card_surf:
-            self.screen.blit(card_surf, (x - off, y - off))
-
-    def _draw_number_badge(self, num, x, y, color=COLOR_GOLD, size=36):
-        # Outer ring
-        pygame.draw.circle(self.screen, color, (x, y), size // 2)
-        pygame.draw.circle(self.screen, (255, 255, 255), (x, y), size // 2, 2)
-        # Inner number
-        txt = self.font_medium.render(str(num), True, COLOR_BG_DARK)
-        self.screen.blit(txt, (x - txt.get_width() // 2, y - txt.get_height() // 2))
-
-    # ------------------------------------------
-    # TEXT HELPERS
-    # ------------------------------------------
-    def _text_centered(self, text, font, color, y, alpha=255):
-        surf = font.render(text, True, color)
-        if alpha < 255:
-            surf.set_alpha(alpha)
-        x = (SCREEN_WIDTH - surf.get_width()) // 2
-        self.screen.blit(surf, (x, y))
-
-    def _text_shadowed(self, text, font, color, pos, shadow_offset=2):
-        shadow = font.render(text, True, (0, 0, 0))
-        self.screen.blit(shadow, (pos[0] + shadow_offset, pos[1] + shadow_offset))
-        self.screen.blit(font.render(text, True, color), pos)
-
-    def _wrap_text(self, text, font, max_width):
-        words = text.split()
-        lines = []
-        current = ""
-        for word in words:
-            test = f"{current} {word}".strip()
-            if font.size(test)[0] <= max_width:
-                current = test
-            else:
-                if current:
-                    lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
         return lines or [""]
 
-    # ------------------------------------------
-    # TIMER BAR
-    # ------------------------------------------
-    def _draw_timer_bar(self, fraction, rect, low_threshold=0.25):
-        x, y, w, h = rect
-        # Background
-        pygame.draw.rect(self.screen, (20, 18, 15), (x, y, w, h), border_radius=h // 2)
-
-        fill_w = max(0, int(w * fraction))
-        if fill_w > 0:
-            if fraction > low_threshold:
-                color = lerp_color(COLOR_TIMER_BAR, COLOR_TIMER_BAR_LOW,
-                                   1 - (fraction - low_threshold) / (1 - low_threshold))
-                # Actually keep it smooth amber -> red
-                color = COLOR_TIMER_BAR if fraction > 0.5 else lerp_color(
-                    COLOR_TIMER_BAR_LOW, COLOR_TIMER_BAR, (fraction - low_threshold) / (0.5 - low_threshold),
-                )
-            else:
-                pulse = 0.7 + 0.3 * math.sin(time.time() * 8)
-                color = tuple(int(c * pulse) for c in COLOR_TIMER_BAR_LOW)
-
-            pygame.draw.rect(
-                self.screen, color, (x, y, fill_w, h), border_radius=h // 2,
-            )
-            # Bright tip
-            if fill_w > 4:
-                tip_color = tuple(min(255, c + 60) for c in color)
-                pygame.draw.rect(
-                    self.screen, tip_color,
-                    (x + fill_w - 4, y + 2, 4, h - 4), border_radius=2,
-                )
+    def _fit_wrap(self, text, kind, sizes, max_w, max_lines):
+        lines = [text]
+        for size in sizes:
+            lines = self._wrap(text, kind, size, max_w)
+            if len(lines) <= max_lines:
+                return lines, size
+        return lines[:max_lines], sizes[-1]
 
     # ------------------------------------------
-    # WAITING STATE
+    # PRIMITIVES
     # ------------------------------------------
-    def _draw_waiting(self, fade):
-        alpha = _alpha(255 * fade)
-        cy = SCREEN_HEIGHT // 2
-
-        # Title with gentle bounce
-        bounce = math.sin(time.time() * 1.5) * 5
-        self._text_centered(
-            "THE LIFELONG QUIZ", self.font_title, COLOR_GOLD,
-            int(cy - 120 + bounce), alpha,
-        )
-
-        # Pulsing subtitle
-        pulse = 0.4 + 0.6 * abs(math.sin(time.time() * 2))
-        self._text_centered(
-            "Loading questions...", self.font_medium, COLOR_TEXT_SECONDARY,
-            cy - 20, int(alpha * pulse),
-        )
-
-        # Instructions
-        self._text_centered(
-            'Type 1-4 to answer   |   Type "reset" to clear score',
-            self.font_small, COLOR_TEXT_DIM, cy + 40, alpha,
-        )
-
-    # ------------------------------------------
-    # ASKING STATE
-    # ------------------------------------------
-    def _draw_asking(self, data, fade, phase_age):
-        question: Question = data.get("question")
-        time_frac = self._displayed_timer_frac
-        time_rem = data.get("time_remaining", 0)
-        answer_count = int(round(self._displayed_answer_count))
-        category = data.get("category", "")
-
-        if not question:
+    def _panel(self, x, y, w, h, radius=20, fill=(255, 255, 255, 17), border=(255, 255, 255, 38)):
+        if w <= 0 or h <= 0:
             return
+        self.screen.blit(self._alpha_rect(w, h, fill, radius), (x, y))
+        if border:
+            key = ("pb", w, h, border, radius)
+            s = self._surf_cache.get(key)
+            if s is None:
+                s = pygame.Surface((w, h), pygame.SRCALPHA)
+                pygame.draw.rect(s, border, (0, 0, w, h), width=2, border_radius=radius)
+                self._surf_cache[key] = s
+            self.screen.blit(s, (x, y))
 
-        cx = SCREEN_WIDTH // 2
-        card_w = 1400
-        card_x = cx - card_w // 2
+    def _panel_title(self, x, y, w, label, value=None):
+        self._text("black", 22, label, DIM, (x + 24, y + 22))
+        if value is not None:
+            self._text("display", 38, str(value), INK, (x + w - 24, y + 12), anchor="topright")
 
-        # Category badge with slide-in
-        slide = ease_out_cubic(min(1.0, phase_age / 0.4))
-        cat_y = int(lerp(-30, 68, slide))
-        diff_colors = {"easy": COLOR_CORRECT, "medium": COLOR_AMBER, "hard": COLOR_WRONG}
-        diff_color = diff_colors.get(question.difficulty, COLOR_TEXT_SECONDARY)
-        cat_text = f"[ {category}  -  {question.difficulty.upper()} ]"
-        self._text_centered(cat_text, self.font_small, diff_color, cat_y)
-
-        # Question card (fade + slide)
-        q_card_y = 110
-        q_lines = self._wrap_text(question.text, self.font_large, card_w - 80)
-        q_card_h = max(140, 50 + len(q_lines) * 52)
-
-        card_slide = ease_out_back(min(1.0, phase_age / 0.5))
-        actual_y = int(lerp(q_card_y - 40, q_card_y, card_slide))
-
-        self._draw_card(
-            (card_x, actual_y, card_w, q_card_h),
-            border_color=COLOR_GOLD, alpha=_alpha(255 * fade),
-        )
-
-        for i, line in enumerate(q_lines):
-            self._text_centered(
-                line, self.font_large, COLOR_TEXT_PRIMARY,
-                actual_y + 25 + i * 52, _alpha(255 * fade),
-            )
-
-        # Answer cards (staggered entrance)
-        ans_y_start = actual_y + q_card_h + 35
-        ans_w = (card_w - 20) // 2
-        ans_h = 130
-        gap = 20
-
-        for i, option_text in enumerate(question.options):
-            col = i % 2
-            row = i // 2
-            ax = card_x + col * (ans_w + gap)
-            ay = ans_y_start + row * (ans_h + gap)
-
-            # Stagger animation per card
-            delay = 0.3 + i * 0.08
-            card_progress = ease_out_back(min(1.0, max(0, (phase_age - delay) / 0.4)))
-
-            if card_progress <= 0:
-                continue
-
-            actual_ax = ax + int((1 - card_progress) * (100 if col == 0 else -100))
-            card_alpha = _alpha(255 * card_progress)
-
-            self._draw_card(
-                (actual_ax, ay, ans_w, ans_h),
-                color=COLOR_CARD_BG, border_color=COLOR_CARD_BORDER,
-                alpha=card_alpha,
-            )
-
-            self._draw_number_badge(i + 1, actual_ax + 35, ay + ans_h // 2)
-
-            opt_lines = self._wrap_text(option_text, self.font_medium, ans_w - 100)
-            for j, line in enumerate(opt_lines):
-                txt = self.font_medium.render(line, True, COLOR_TEXT_PRIMARY)
-                txt.set_alpha(card_alpha)
-                self.screen.blit(
-                    txt,
-                    (actual_ax + 70,
-                     ay + ans_h // 2 - len(opt_lines) * 16 + j * 32),
-                )
-
-        # Timer bar (smooth)
-        timer_y = ans_y_start + 2 * (ans_h + gap) + 25
-        self._draw_timer_bar(time_frac, (card_x, timer_y, card_w, 24))
-
-        time_color = COLOR_TIMER_BAR if time_frac > 0.25 else COLOR_TIMER_BAR_LOW
-        self._text_centered(
-            f"{int(time_rem)}s", self.font_small, time_color, timer_y + 32,
-        )
-
-        # Answer count (smooth animated number)
-        self._text_centered(
-            f"{answer_count} answers", self.font_small,
-            COLOR_TEXT_SECONDARY, timer_y + 58,
-        )
-
-        # Rotating command hints
-        hints = [
-            'Type 1-4 to answer',
-            'Type "score" to check your points',
-            'Type "clear" to reset your score',
-        ]
-        hint_cycle = 4.0  # seconds per hint
-        hint_idx = int(time.time() / hint_cycle) % len(hints)
-        # Fade in/out within each cycle
-        cycle_pos = (time.time() % hint_cycle) / hint_cycle
-        if cycle_pos < 0.15:
-            hint_alpha = ease_out_cubic(cycle_pos / 0.15)
-        elif cycle_pos > 0.85:
-            hint_alpha = 1.0 - ease_out_cubic((cycle_pos - 0.85) / 0.15)
+    def _shape(self, idx, cx, cy, r, color):
+        if idx == 0:
+            pygame.draw.polygon(self.screen, color, [(cx, cy - r), (cx + r, cy + r * 0.8), (cx - r, cy + r * 0.8)])
+        elif idx == 1:
+            pygame.draw.polygon(self.screen, color, [(cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy)])
+        elif idx == 2:
+            pygame.draw.circle(self.screen, color, (cx, cy), int(r * 0.85))
         else:
-            hint_alpha = 1.0
-        self._text_centered(
-            hints[hint_idx], self.font_small,
-            COLOR_TEXT_DIM, timer_y + 84, _alpha(180 * hint_alpha),
-        )
+            q = int(r * 0.78)
+            pygame.draw.rect(self.screen, color, (cx - q, cy - q, 2 * q, 2 * q), border_radius=3)
 
-    # ------------------------------------------
-    # REVEALING STATE
-    # ------------------------------------------
-    def _draw_revealing(self, data, fade, phase_age):
-        result: RoundResult = data.get("result")
-        if not result or not result.question:
+    def _ring(self, cx, cy, radius, width, frac, color):
+        pygame.draw.circle(self.screen, TRACK, (cx, cy), radius, width)
+        if frac <= 0:
             return
+        start = -math.pi / 2
+        end = start + 2 * math.pi * frac
+        steps = max(4, int(90 * frac))
+        outer, inner = [], []
+        for i in range(steps + 1):
+            a = start + (end - start) * i / steps
+            outer.append((cx + math.cos(a) * radius, cy + math.sin(a) * radius))
+            inner.append((cx + math.cos(a) * (radius - width), cy + math.sin(a) * (radius - width)))
+        pygame.draw.polygon(self.screen, color, outer + inner[::-1])
+        for (ox, oy), (ix, iy) in ((outer[0], inner[0]), (outer[-1], inner[-1])):
+            pygame.draw.circle(self.screen, color, (int((ox + ix) / 2), int((oy + iy) / 2)), width // 2)
 
-        question = result.question
-        cx = SCREEN_WIDTH // 2
-        card_w = 1400
-        card_x = cx - card_w // 2
+    def _avatar(self, name, cx, cy, r, ring_color):
+        pygame.draw.circle(self.screen, (30, 36, 110), (cx, cy), r)
+        pygame.draw.circle(self.screen, ring_color, (cx, cy), r, 5)
+        initial = (name.lstrip("@") or "?")[0].upper()
+        self._blit(self._render_name(initial, int(r * 1.0), INK, kind="black"), (cx, cy), "center")
 
-        # Question (dimmed)
-        q_card_y = 80
-        q_lines = self._wrap_text(question.text, self.font_large, card_w - 80)
-        q_card_h = max(120, 35 + len(q_lines) * 52)
-        self._draw_card(
-            (card_x, q_card_y, card_w, q_card_h),
-            color=(25, 22, 20), border_color=(60, 55, 45),
-        )
-        for i, line in enumerate(q_lines):
-            self._text_centered(
-                line, self.font_large, COLOR_TEXT_SECONDARY,
-                q_card_y + 18 + i * 52,
-            )
+    def _crown(self, cx, cy, s, color):
+        pts = [(cx - s, cy + s * 0.5), (cx - s, cy - s * 0.4), (cx - s * 0.5, cy + s * 0.05),
+               (cx, cy - s * 0.7), (cx + s * 0.5, cy + s * 0.05), (cx + s, cy - s * 0.4), (cx + s, cy + s * 0.5)]
+        pygame.draw.polygon(self.screen, color, pts)
 
-        # Answer cards with correct/wrong
-        ans_y_start = q_card_y + q_card_h + 25
-        ans_w = (card_w - 20) // 2
-        ans_h = 120
-        gap = 20
-
-        for i, option_text in enumerate(question.options):
-            col = i % 2
-            row = i // 2
-            ax = card_x + col * (ans_w + gap)
-            ay = ans_y_start + row * (ans_h + gap)
-
-            is_correct = (i == question.correct_index)
-
-            # Reveal animation: cards flip after delay
-            reveal_delay = 0.2 + i * 0.1
-            reveal_progress = ease_out_cubic(
-                min(1.0, max(0, (phase_age - reveal_delay) / 0.3)),
-            )
-
-            if is_correct:
-                border_c = lerp_color(COLOR_CARD_BORDER, COLOR_CORRECT, reveal_progress)
-                body_c = lerp_color(COLOR_CARD_BG, (30, 60, 30), reveal_progress)
-                glow = COLOR_CORRECT if reveal_progress > 0.5 else None
-
-                self._draw_card(
-                    (ax, ay, ans_w, ans_h),
-                    color=body_c, border_color=border_c,
-                    border_width=3, glow_color=glow,
-                )
-                text_color = lerp_color(COLOR_TEXT_PRIMARY, COLOR_CORRECT, reveal_progress)
-
-                # Gold particles
-                if reveal_progress > 0.8 and random.random() < 0.4:
-                    self._spawn_particles(
-                        ax + ans_w // 2, ay + ans_h // 2,
-                        COLOR_TEXT_GOLD, 2,
-                    )
-            else:
-                dim_alpha = int(lerp(255, 100, reveal_progress))
-                self._draw_card(
-                    (ax, ay, ans_w, ans_h),
-                    color=COLOR_CARD_BG,
-                    border_color=lerp_color(COLOR_CARD_BORDER, COLOR_WRONG, reveal_progress),
-                    border_width=2, alpha=dim_alpha,
-                )
-                text_color = lerp_color(COLOR_TEXT_PRIMARY, (100, 80, 70), reveal_progress)
-
-            badge_color = COLOR_CORRECT if is_correct else lerp_color(
-                COLOR_GOLD, (100, 60, 60), reveal_progress,
-            )
-            self._draw_number_badge(i + 1, ax + 35, ay + ans_h // 2, badge_color)
-
-            opt_lines = self._wrap_text(option_text, self.font_medium, ans_w - 100)
-            for j, line in enumerate(opt_lines):
-                txt = self.font_medium.render(line, True, text_color)
-                self.screen.blit(
-                    txt,
-                    (ax + 70, ay + ans_h // 2 - len(opt_lines) * 16 + j * 32),
-                )
-
-        # Result banner (slide up)
-        banner_y_target = ans_y_start + 2 * (ans_h + gap) + 15
-        banner_slide = ease_out_cubic(min(1.0, max(0, (phase_age - 0.6) / 0.4)))
-        banner_y = int(lerp(banner_y_target + 50, banner_y_target, banner_slide))
-        banner_alpha = _alpha(255 * banner_slide)
-
-        self._draw_card(
-            (card_x, banner_y, card_w, 100),
-            color=(25, 35, 25), border_color=COLOR_GOLD,
-            border_width=1, alpha=banner_alpha,
-        )
-
-        correct_count = len(result.correct_players)
-        total = result.total_answers
-
-        if correct_count > 0:
-            self._text_centered(
-                f"{correct_count} of {total} players got it right!",
-                self.font_large, COLOR_CORRECT, banner_y + 8, banner_alpha,
-            )
-            self._text_centered(
-                f"Fastest: {result.fastest_player} ({result.fastest_time:.1f}s)",
-                self.font_medium, COLOR_TEXT_GOLD, banner_y + 56, banner_alpha,
-            )
-        else:
-            self._text_centered(
-                "Nobody got it right!", self.font_large,
-                COLOR_WRONG, banner_y + 8, banner_alpha,
-            )
-            self._text_centered(
-                f"The answer was: {question.correct_answer}",
-                self.font_medium, COLOR_TEXT_SECONDARY,
-                banner_y + 56, banner_alpha,
-            )
-
-        # Mini leaderboard (slide from left)
-        top = data.get("leaderboard", [])[:5]
-        if top:
-            lb_slide = ease_out_cubic(min(1.0, max(0, (phase_age - 0.8) / 0.4)))
-            lb_x = int(lerp(-320, 40, lb_slide))
-            lb_y = 180
-            lb_w = 300
-            lb_h = 40 + len(top) * 42
-
-            self._draw_card(
-                (lb_x, lb_y, lb_w, lb_h),
-                color=(20, 18, 15), border_color=COLOR_AMBER,
-                border_width=1, alpha=_alpha(255 * lb_slide),
-            )
-            header = self.font_small.render("TOP 5", True, COLOR_GOLD)
-            header.set_alpha(_alpha(255 * lb_slide))
-            self.screen.blit(header, (lb_x + lb_w // 2 - header.get_width() // 2, lb_y + 8))
-
-            for i, p in enumerate(top):
-                py = lb_y + 40 + i * 42
-                rank_color = RANK_COLORS.get(p.rank, COLOR_TEXT_SECONDARY)
-                name = self.font_small.render(f"{i + 1}. {p.username[:14]}", True, COLOR_TEXT_PRIMARY)
-                score = self.font_small.render(f"{p.score:,}", True, rank_color)
-                name.set_alpha(_alpha(255 * lb_slide))
-                score.set_alpha(_alpha(255 * lb_slide))
-                self.screen.blit(name, (lb_x + 15, py))
-                self.screen.blit(score, (lb_x + lb_w - score.get_width() - 15, py))
+    def burst(self, x, y, n=90, power=1.0):
+        for _ in range(n):
+            if len(self.confetti) < 320:
+                self.confetti.append(Confetti(x, y, power))
 
     # ------------------------------------------
-    # LEADERBOARD STATE
+    # FRAME
     # ------------------------------------------
-    def _draw_leaderboard(self, data, fade):
-        top_players: list[Player] = data.get("leaderboard", [])
-        round_count = data.get("round_count", 0)
-        player_count = data.get("player_count", 0)
-        changes = data.get("leaderboard_changes", [])
-        elapsed = time.time() - self._leaderboard_anim_start
-
-        # Build lookup: username -> change dict
-        change_map = {c["username"]: c for c in changes}
-
-        cx = SCREEN_WIDTH // 2
-
-        # Title
-        title_slide = ease_out_back(min(1.0, elapsed / 0.6))
-        title_y = int(lerp(-50, 55, title_slide))
-        self._text_centered("THE LIFELONG QUIZ", self.font_title, COLOR_GOLD, title_y)
-        self._text_centered(
-            "STANDINGS", self.font_large, COLOR_AMBER,
-            title_y + 75, _alpha(255 * min(1, elapsed / 0.8)),
-        )
-
-        # Table
-        table_w = 1200
-        table_x = cx - table_w // 2
-        row_h = 62
-        header_y = 195
-
-        # Header
-        header_fade = min(1.0, max(0, (elapsed - 0.3) / 0.3))
-        self._draw_card(
-            (table_x, header_y, table_w, 45),
-            color=(25, 22, 18), border_color=COLOR_GOLD,
-            border_width=1, radius=8, alpha=_alpha(255 * header_fade),
-        )
-        for hx, label in [
-            (table_x + 30, "#"), (table_x + 80, "PLAYER"),
-            (table_x + 550, "SCORE"), (table_x + 750, "STREAK"),
-            (table_x + 950, "RANK"),
-        ]:
-            txt = self.font_small.render(label, True, COLOR_GOLD)
-            txt.set_alpha(_alpha(255 * header_fade))
-            self.screen.blit(txt, (hx, header_y + 10))
-
-        # Player rows
-        for i, player in enumerate(top_players):
-            delay = 0.5 + i * 0.1
-            row_progress = ease_out_back(min(1.0, max(0, (elapsed - delay) / 0.35)))
-
-            if row_progress <= 0:
-                continue
-
-            ry = header_y + 55 + i * row_h
-            offset_x = int((1 - row_progress) * 300)
-            row_alpha = _alpha(255 * row_progress)
-
-            change = change_map.get(player.username)
-            has_change = change is not None and row_progress > 0.8
-
-            row_surf = pygame.Surface((table_w, row_h - 4), pygame.SRCALPHA)
-
-            if has_change:
-                # Highlighted row background with golden glow
-                pulse = 0.6 + 0.4 * math.sin(time.time() * 4)
-                glow_alpha = int(row_alpha * pulse)
-                row_color = (70, 60, 20, glow_alpha)
-            elif i == 0:
-                row_color = (50, 42, 20, row_alpha)
-            else:
-                row_color = (35, 32, 28, row_alpha) if i % 2 == 0 else (28, 25, 22, row_alpha)
-
-            pygame.draw.rect(row_surf, row_color, (0, 0, table_w, row_h - 4), border_radius=8)
-
-            # Glowing border for changed rows
-            if has_change:
-                border_pulse = 0.5 + 0.5 * math.sin(time.time() * 5)
-                border_alpha = int(200 * border_pulse)
-                pygame.draw.rect(
-                    row_surf, (255, 215, 0, border_alpha),
-                    (0, 0, table_w, row_h - 4),
-                    width=2, border_radius=8,
-                )
-
-            # Rank number
-            rank_text = "1" if i == 0 else str(i + 1)
-            rt = self.font_medium.render(rank_text, True, COLOR_GOLD if i < 3 else COLOR_TEXT_PRIMARY)
-            row_surf.blit(rt, (30, (row_h - 4) // 2 - rt.get_height() // 2))
-
-            # Crown for #1
-            if i == 0:
-                crown = self.font_medium.render("♛", True, COLOR_TEXT_GOLD)
-                row_surf.blit(crown, (8, (row_h - 4) // 2 - crown.get_height() // 2 - 2))
-
-            # Username (dim bots)
-            is_bot = player.username.startswith("[Bot]")
-            name_color = COLOR_TEXT_DIM if is_bot else (COLOR_TEXT_GOLD if i == 0 else COLOR_TEXT_PRIMARY)
-            nt = self.font_medium.render(player.username[:18], True, name_color)
-            row_surf.blit(nt, (80, (row_h - 4) // 2 - nt.get_height() // 2))
-
-            # Score
-            st = self.font_medium.render(f"{player.score:,} pts", True, COLOR_GOLD)
-            row_surf.blit(st, (550, (row_h - 4) // 2 - st.get_height() // 2))
-
-            # Streak with fire indicator
-            streak_text = f"x{player.streak}"
-            if player.streak >= 10:
-                streak_text = f"x{player.streak}"
-            streak_color = (
-                (255, 80, 20) if player.streak >= 10
-                else COLOR_CORRECT if player.streak >= 5
-                else COLOR_TEXT_SECONDARY
-            )
-            skt = self.font_medium.render(streak_text, True, streak_color)
-            row_surf.blit(skt, (750, (row_h - 4) // 2 - skt.get_height() // 2))
-
-            # Rank badge
-            rank_color = RANK_COLORS.get(player.rank, COLOR_TEXT_SECONDARY)
-            rkt = self.font_medium.render(player.rank, True, rank_color)
-            row_surf.blit(rkt, (950, (row_h - 4) // 2 - rkt.get_height() // 2))
-
-            self.screen.blit(row_surf, (table_x + offset_x, ry))
-
-            # Position change popup + sparkles
-            if has_change:
-                popup_delay = delay + 0.4
-                popup_progress = ease_out_elastic(
-                    min(1.0, max(0, (elapsed - popup_delay) / 0.6)),
-                )
-                if popup_progress > 0:
-                    actual_row_x = table_x + offset_x
-                    self._draw_position_popup(
-                        change, actual_row_x + table_w + 10, ry,
-                        row_h - 4, popup_progress,
-                    )
-                    # Spawn sparkle particles along the row
-                    if random.random() < 0.35:
-                        sx = actual_row_x + random.uniform(0, table_w)
-                        sy = ry + (row_h - 4) / 2
-                        if len(self.sparkles) < MAX_PARTICLES:
-                            self.sparkles.append(PixelSparkle(sx, sy))
-
-        # Footer
-        footer_y = header_y + 55 + len(top_players) * row_h + 25
-        footer_fade = min(1.0, max(0, (elapsed - 1.5) / 0.4))
-
-        uptime_secs = data.get("uptime", 0)
-        hours = int(uptime_secs // 3600)
-        minutes = int((uptime_secs % 3600) // 60)
-
-        self._text_centered(
-            f"Rounds: {round_count}    |    Players: {player_count}    |    Uptime: {hours}h {minutes:02d}m",
-            self.font_small, COLOR_TEXT_SECONDARY, footer_y,
-            _alpha(255 * footer_fade),
-        )
-        self._text_centered(
-            'Type 1-4 to answer  |  Type "reset" to clear your score',
-            self.font_small, COLOR_TEXT_DIM, footer_y + 35,
-            _alpha(255 * footer_fade),
-        )
-
-    # ------------------------------------------
-    # POSITION CHANGE POPUP
-    # ------------------------------------------
-    def _draw_position_popup(self, change, x, y, h, progress):
-        """Draw a popup badge showing position climb with bounce animation."""
-        old_pos = change["old_pos"]
-        new_pos = change["new_pos"]
-
-        if old_pos == 0:
-            label = f"NEW #{new_pos}!"
-        else:
-            delta = old_pos - new_pos
-            label = f"+{delta}" if delta > 0 else f"#{new_pos}"
-
-        # Badge dimensions
-        badge_w = 120
-        badge_h = h
-
-        # Bounce scale from elastic easing
-        scale = min(1.0, progress)
-        scaled_w = int(badge_w * scale)
-        scaled_h = int(badge_h * scale)
-        if scaled_w < 10 or scaled_h < 10:
-            return
-
-        badge_surf = pygame.Surface((scaled_w, scaled_h), pygame.SRCALPHA)
-        popup_alpha = _alpha(255 * min(1.0, progress * 2))
-
-        # Background with golden glow
-        pygame.draw.rect(
-            badge_surf, (60, 50, 10, popup_alpha),
-            (0, 0, scaled_w, scaled_h), border_radius=8,
-        )
-        pulse = 0.6 + 0.4 * math.sin(time.time() * 5)
-        border_alpha = int(popup_alpha * pulse)
-        pygame.draw.rect(
-            badge_surf, (255, 215, 0, border_alpha),
-            (0, 0, scaled_w, scaled_h), width=2, border_radius=8,
-        )
-
-        # Arrow + text
-        arrow = self.font_medium.render(label, True, COLOR_TEXT_GOLD)
-        ax = scaled_w // 2 - arrow.get_width() // 2
-        ay = scaled_h // 2 - arrow.get_height() // 2
-        arrow.set_alpha(popup_alpha)
-        badge_surf.blit(arrow, (ax, ay))
-
-        # Center badge vertically on the row
-        bx = min(x, SCREEN_WIDTH - scaled_w - 10)
-        by = y + (h - scaled_h) // 2
-        self.screen.blit(badge_surf, (bx, by))
-
-    # ------------------------------------------
-    # THEME VOTE STATE
-    # ------------------------------------------
-    def _draw_theme_vote(self, data, fade):
-        vote_state: ThemeVoteState = data.get("vote_state")
-        time_frac = self._displayed_timer_frac
-        time_rem = data.get("time_remaining", 0)
-
-        if not vote_state:
-            return
-
-        cx = SCREEN_WIDTH // 2
-        card_w = 1400
-        card_x = cx - card_w // 2
-        phase_age = time.time() - self._state_enter_time
-
-        # Title
-        title_slide = ease_out_back(min(1.0, phase_age / 0.5))
-        self._text_centered(
-            "VOTE FOR THE NEXT CATEGORY!",
-            self.font_title, COLOR_GOLD,
-            int(lerp(-50, 70, title_slide)),
-        )
-        self._text_centered(
-            "Type 1-4 in chat to vote", self.font_medium,
-            COLOR_TEXT_SECONDARY, 150, _alpha(255 * fade),
-        )
-
-        # Category cards
-        ans_w = (card_w - 20) // 2
-        ans_h = 180
-        gap = 20
-        y_start = 210
-
-        counts = vote_state.vote_counts()
-        total = max(1, vote_state.total_votes())
-        leading = vote_state.leading_option()
-
-        for opt_num, (cat_id, cat_name) in vote_state.options.items():
-            i = opt_num - 1
-            col = i % 2
-            row = i // 2
-            ax = card_x + col * (ans_w + gap)
-            ay = y_start + row * (ans_h + gap)
-
-            # Stagger
-            delay = 0.2 + i * 0.1
-            prog = ease_out_back(min(1.0, max(0, (phase_age - delay) / 0.4)))
-            if prog <= 0:
-                continue
-
-            actual_ax = ax + int((1 - prog) * (120 if col == 0 else -120))
-            alpha = _alpha(255 * prog)
-
-            is_leading = (opt_num == leading and total > 1)
-            glow = COLOR_GOLD if is_leading else None
-            border_c = COLOR_GOLD if is_leading else COLOR_CARD_BORDER
-
-            self._draw_card(
-                (actual_ax, ay, ans_w, ans_h),
-                color=COLOR_CARD_BG, border_color=border_c,
-                border_width=3 if is_leading else 2,
-                glow_color=glow, alpha=alpha,
-            )
-
-            self._draw_number_badge(opt_num, actual_ax + 40, ay + 50)
-
-            name_color = COLOR_TEXT_GOLD if is_leading else COLOR_TEXT_PRIMARY
-            txt = self.font_large.render(cat_name, True, name_color)
-            txt.set_alpha(alpha)
-            self.screen.blit(txt, (actual_ax + 80, ay + 28))
-
-            # Vote bar
-            vote_count = counts.get(opt_num, 0)
-            bar_x = actual_ax + 30
-            bar_y = ay + ans_h - 55
-            bar_w = ans_w - 140
-            bar_h = 20
-
-            pygame.draw.rect(
-                self.screen, (20, 18, 15),
-                (bar_x, bar_y, bar_w, bar_h), border_radius=bar_h // 2,
-            )
-            if vote_count > 0:
-                fill_frac = vote_count / total
-                fill_w = max(bar_h, int(bar_w * fill_frac))
-                bar_color = COLOR_GOLD if is_leading else COLOR_AMBER
-                pygame.draw.rect(
-                    self.screen, bar_color,
-                    (bar_x, bar_y, fill_w, bar_h), border_radius=bar_h // 2,
-                )
-
-            vt = self.font_small.render(f"{vote_count} votes", True, COLOR_TEXT_SECONDARY)
-            vt.set_alpha(alpha)
-            self.screen.blit(vt, (bar_x + bar_w + 10, bar_y - 2))
-
-        # Timer
-        timer_y = y_start + 2 * (ans_h + gap) + 15
-        self._draw_timer_bar(time_frac, (card_x, timer_y, card_w, 24))
-
-        time_color = COLOR_TIMER_BAR if time_frac > 0.25 else COLOR_TIMER_BAR_LOW
-        self._text_centered(f"{int(time_rem)}s", self.font_small, time_color, timer_y + 32)
-        self._text_centered(
-            f"{vote_state.total_votes()} votes cast",
-            self.font_small, COLOR_TEXT_SECONDARY, timer_y + 58,
-        )
-
-    # ------------------------------------------
-    # EVENT FEED (right side)
-    # ------------------------------------------
-    def _draw_event_feed(self, events: list[GameEvent]):
+    def draw(self, logic, status: dict):
         now = time.time()
-        x = SCREEN_WIDTH - 420
-        base_y = 80
+        dt = min(0.1, now - self._t)
+        self._t = now
+        state = logic.state
+        if state != self._last_state:
+            self._last_state = state
+            self._state_enter = now
+            self._burst_done = set()
+            if state == GameState.LOBBY:
+                self._vote_bars = {}
+        age = now - self._state_enter
 
-        for i, event in enumerate(events):
-            age = now - event.timestamp
-            # Fade in then fade out
-            if age < 0.3:
-                alpha = ease_out_cubic(age / 0.3)
-            elif age > CHAT_FEED_DURATION - 1.0:
-                alpha = max(0, (CHAT_FEED_DURATION - age))
-            else:
-                alpha = 1.0
-
-            if alpha <= 0:
-                continue
-
-            y = base_y + i * 38
-            # Slide in from right
-            slide = ease_out_cubic(min(1.0, age / 0.3))
-            ax = int(lerp(x + 100, x, slide))
-
-            # Background card
-            card_surf = pygame.Surface((400, 32), pygame.SRCALPHA)
-            pygame.draw.rect(
-                card_surf, (15, 12, 10, int(180 * alpha)),
-                (0, 0, 400, 32), border_radius=6,
-            )
-            self.screen.blit(card_surf, (ax, y))
-
-            # Icon badge
-            if event.icon:
-                badge = self.font_tiny.render(event.icon, True, event.color)
-                badge.set_alpha(_alpha(255 * alpha))
-                self.screen.blit(badge, (ax + 8, y + 7))
-
-            # Text
-            txt = self.font_tiny.render(event.text[:45], True, event.color)
-            txt.set_alpha(_alpha(255 * alpha))
-            self.screen.blit(txt, (ax + 55, y + 7))
-
-    # ------------------------------------------
-    # DOUBLE POINTS BANNER
-    # ------------------------------------------
-    def _draw_double_points_banner(self, phase_age):
-        pulse = 0.7 + 0.3 * math.sin(time.time() * 4)
-        alpha = int(220 * pulse)
-
-        banner_surf = pygame.Surface((400, 50), pygame.SRCALPHA)
-        pygame.draw.rect(
-            banner_surf, (80, 60, 0, alpha),
-            (0, 0, 400, 50), border_radius=10,
-        )
-        pygame.draw.rect(
-            banner_surf, (255, 215, 0, alpha),
-            (0, 0, 400, 50), width=2, border_radius=10,
-        )
-        self.screen.blit(banner_surf, (SCREEN_WIDTH // 2 - 200, 35))
-
-        txt = self.font_medium.render("DOUBLE POINTS!", True, COLOR_TEXT_GOLD)
-        txt.set_alpha(alpha)
-        self.screen.blit(
-            txt,
-            (SCREEN_WIDTH // 2 - txt.get_width() // 2, 43),
-        )
-
-    # ------------------------------------------
-    # MINI EVENT BANNER
-    # ------------------------------------------
-    def _draw_mini_event_banner(self, event_type, phase_age):
-        configs = {
-            "lightning": {
-                "text": "LIGHTNING ROUND!",
-                "bg": (0, 40, 80),
-                "border": (100, 180, 255),
-                "text_color": (100, 180, 255),
-            },
-            "first_blood": {
-                "text": "FIRST BLOOD BONUS!",
-                "bg": (80, 10, 10),
-                "border": (255, 80, 80),
-                "text_color": (255, 80, 80),
-            },
-            "jackpot": {
-                "text": "JACKPOT ROUND!",
-                "bg": (50, 10, 80),
-                "border": (180, 100, 255),
-                "text_color": (180, 100, 255),
-            },
-        }
-        cfg = configs.get(event_type)
-        if not cfg:
-            return
-
-        pulse = 0.7 + 0.3 * math.sin(time.time() * 4)
-        alpha = int(220 * pulse)
-
-        banner_surf = pygame.Surface((400, 50), pygame.SRCALPHA)
-        pygame.draw.rect(
-            banner_surf, (*cfg["bg"], alpha),
-            (0, 0, 400, 50), border_radius=10,
-        )
-        pygame.draw.rect(
-            banner_surf, (*cfg["border"], alpha),
-            (0, 0, 400, 50), width=2, border_radius=10,
-        )
-        self.screen.blit(banner_surf, (SCREEN_WIDTH // 2 - 200, 35))
-
-        txt = self.font_medium.render(cfg["text"], True, cfg["text_color"])
-        txt.set_alpha(alpha)
-        self.screen.blit(
-            txt,
-            (SCREEN_WIDTH // 2 - txt.get_width() // 2, 43),
-        )
-
-    # ------------------------------------------
-    # COMPETITION ALERT
-    # ------------------------------------------
-    def _draw_competition_alert(self, alert_text, phase_age):
-        if not alert_text:
-            return
-
-        delay = 2.0
-        if phase_age < delay:
-            return
-
-        prog = ease_out_cubic(min(1.0, (phase_age - delay) / 0.5))
-        alpha = _alpha(255 * prog)
-
-        top_players = []  # shown in leaderboard section
-        footer_y = 870
-
-        # Pulsing alert
-        pulse = 0.8 + 0.2 * math.sin(time.time() * 3)
-        final_alpha = int(alpha * pulse)
-
-        self._text_centered(
-            f"CLOSE RACE: {alert_text}",
-            self.font_medium, COLOR_AMBER, footer_y - 30, final_alpha,
-        )
-
-    # ------------------------------------------
-    # HUD
-    # ------------------------------------------
-    def _draw_hud(self, data):
-        bar_h = 48
-        hud_surf = pygame.Surface((SCREEN_WIDTH, bar_h), pygame.SRCALPHA)
-        pygame.draw.rect(hud_surf, (*COLOR_HUD_BG, 210), (0, 0, SCREEN_WIDTH, bar_h))
-        self.screen.blit(hud_surf, (0, 0))
-        pygame.draw.line(
-            self.screen, (40, 35, 30), (0, bar_h), (SCREEN_WIDTH, bar_h), 1,
-        )
-
-        y = 12
-        dot_r = 6
-        dot_gap = 10       # gap between dot and its label
-        group_gap = 24      # gap between indicator groups
-
-        # Round (left side)
-        self._text_shadowed(
-            f"Round #{data.get('round_count', 0)}",
-            self.font_small, COLOR_TEXT_PRIMARY, (20, y),
-        )
-
-        # Category (center)
-        cat = data.get("category", "")
-        ct = self.font_small.render(f"Category: {cat}", True, COLOR_AMBER)
-        self.screen.blit(ct, (SCREEN_WIDTH // 2 - ct.get_width() // 2, y))
-
-        # Right side: dynamically laid out from right edge to left
-        # Order (right to left): CHAT | STREAM | Players
-        rx = SCREEN_WIDTH - 20  # right margin
-
-        # 1. CHAT status (rightmost)
-        connected = data.get("connected", False)
-        chat_status = data.get("chat_status", "")
-        chat_msgs = data.get("chat_msg_count", 0)
-        chat_color = COLOR_CONNECTED if connected else COLOR_DISCONNECTED
-        if connected:
-            chat_label = f"CHAT ({chat_msgs} msgs)"
+        self._draw_stage(now, dt)
+        if state == GameState.INTRO:
+            self._draw_intro(logic, age)
         else:
-            chat_label = chat_status if chat_status else "NO CHAT"
-        if len(chat_label) > 30:
-            chat_label = chat_label[:28] + ".."
-        chat_surf = self.font_small.render(chat_label, True, chat_color)
-        rx -= chat_surf.get_width()
-        self.screen.blit(chat_surf, (rx, y))
-        rx -= dot_gap + dot_r
-        pygame.draw.circle(self.screen, chat_color, (rx, y + 10), dot_r)
-        rx -= dot_r + group_gap
+            self._draw_header(logic, status, now)
+            if state == GameState.LOBBY:
+                self._draw_lobby(logic, age, dt)
+            elif state in (GameState.ASKING, GameState.LOCKING):
+                self._draw_question(logic, age, now)
+                self._draw_rail_live(logic, now)
+                self._draw_toast(logic, now)
+            elif state == GameState.REVEALING:
+                self._draw_reveal(logic, age)
+            elif state == GameState.PODIUM:
+                self._draw_podium(logic, age)
+            else:
+                self._text("display", 90, "THE LIFELONG QUIZ", ACCENT, (SCREEN_WIDTH // 2, 470), "center")
+            self._draw_footer(logic, now)
+        self._draw_confetti(dt)
+        pygame.display.flip()
 
-        # 2. STREAM status
-        broadcasting = data.get("broadcasting", False)
-        stream_color = COLOR_CONNECTED if broadcasting else COLOR_DISCONNECTED
-        stream_label = "STREAM" if broadcasting else "NO STREAM"
-        stream_surf = self.font_small.render(stream_label, True, stream_color)
-        rx -= stream_surf.get_width()
-        self.screen.blit(stream_surf, (rx, y))
-        rx -= dot_gap + dot_r
-        pygame.draw.circle(self.screen, stream_color, (rx, y + 10), dot_r)
-        rx -= dot_r + group_gap
-
-        # 3. Player count
-        pc = data.get("player_count", 0)
-        players_surf = self.font_small.render(f"{pc} playing", True, COLOR_TEXT_SECONDARY)
-        rx -= players_surf.get_width()
-        self._text_shadowed(
-            f"{pc} playing", self.font_small, COLOR_TEXT_SECONDARY, (rx, y),
-        )
+    def _draw_stage(self, now, dt):
+        self.screen.blit(self._bg, (0, 0))
+        for i, (bx, by, sp) in enumerate(((0.28, 0.12, 0.13), (0.72, 0.18, 0.11))):
+            x = SCREEN_WIDTH * bx + math.sin(now * sp + i * 2.1) * 260
+            y = SCREEN_HEIGHT * by + math.cos(now * sp * 0.8 + i) * 80
+            self.screen.blit(self._spot, (x - 410, y - 410), special_flags=pygame.BLEND_RGB_ADD)
+        for d in self.dust:
+            d.y -= d.vy * dt
+            if d.y < -10:
+                d.__init__(anywhere=False)
+            a = int(d.a * (0.6 + 0.4 * math.sin(now * 2 + d.tw)))
+            self.screen.blit(self._alpha_rect(d.r * 2, d.r * 2, (255, 255, 255, a // 8 * 8), d.r), (d.x, d.y))
 
     # ------------------------------------------
-    # PARTICLES
+    # HEADER / FOOTER
     # ------------------------------------------
-    def _spawn_particles(self, x, y, color, count):
-        for _ in range(count):
-            if len(self.particles) < MAX_PARTICLES:
-                self.particles.append(Particle(x, y, color))
+    def _draw_header(self, logic, status, now):
+        cy = HEADER_Y + HEADER_H // 2
+        r = self._text("display", 40, "THE LIFELONG QUIZ", ACCENT, (MAIN_X, cy), "midleft")
+        x = r.right + 36
+        in_match = logic.state not in (GameState.LOBBY, GameState.WAITING)
+        label = f"MATCH {logic.match_no}" + ("" if in_match else "  -  LOBBY")
+        r = self._text("black", 24, label, INK, (x, cy), "midleft")
+        if in_match:
+            x = r.right + 18
+            for i in range(MATCH_LENGTH):
+                live_pip = i == logic.q_index - 1 and logic.state in (GameState.ASKING, GameState.LOCKING)
+                if i < len(logic.pips):
+                    col = GOOD if logic.pips[i] == "done" else BAD
+                elif live_pip:
+                    col = ACCENT
+                else:
+                    col = TRACK
+                pygame.draw.rect(self.screen, col, (x, cy - 7, 34, 14), border_radius=7)
+                if live_pip:
+                    pulse = 0.5 + 0.5 * math.sin(now * 6)
+                    pygame.draw.rect(self.screen, mix(TRACK, ACCENT, pulse), (x - 4, cy - 11, 42, 22), width=2, border_radius=11)
+                elif i == MATCH_LENGTH - 1:
+                    pygame.draw.rect(self.screen, ACCENT, (x - 4, cy - 11, 42, 22), width=1, border_radius=11)
+                x += 42
+            if logic.state != GameState.PODIUM and logic.q_index:
+                self._text("black", 24, f"Q {logic.q_index}/{MATCH_LENGTH}", INK, (x + 8, cy), "midleft")
 
-    def spawn_celebration(self, x, y):
-        for _ in range(40):
-            if len(self.particles) < MAX_PARTICLES:
-                p = Particle(x, y, COLOR_TEXT_GOLD)
-                p.vx = random.uniform(-6, 6)
-                p.vy = random.uniform(-10, -3)
-                p.size = random.randint(3, 7)
-                self.particles.append(p)
+        # Live pill: players now, pulsing red dot while broadcasting, warning if chat is down
+        txt = self._render("black", 24, f"{logic.active_player_count} playing", INK)
+        extra = None if status.get("connected") else self._render("bold", 18, "chat offline", BAD)
+        w = 70 + txt.get_width() + (extra.get_width() + 18 if extra else 0)
+        px = SCREEN_WIDTH - PAD - w
+        self._panel(px, cy - 26, w, 52, radius=26)
+        live = status.get("broadcasting")
+        pr = 7 + (2 * math.sin(now * 4) if live else 0)
+        pygame.draw.circle(self.screen, BAD if live else FAINT, (px + 30, cy), int(pr))
+        self._blit(txt, (px + 50, cy), "midleft")
+        if extra:
+            self._blit(extra, (px + 50 + txt.get_width() + 18, cy), "midleft")
 
-    def _update_and_draw_particles(self, dt):
-        alive = []
-        for p in self.particles:
-            p.life -= dt
-            if p.life <= 0:
+    def _draw_footer(self, logic, now):
+        cy = FOOTER_Y + 32
+        cmds = [("1-4", "answer"), ("!rank", "your place"), ("!ready", "join next match")]
+        x = SCREEN_WIDTH - PAD
+        for key, label in reversed(cmds):
+            lab = self._render("bold", 22, label, DIM)
+            x -= lab.get_width()
+            self._blit(lab, (x, cy), "midleft")
+            k = self._render("black", 22, key, INK)
+            x -= k.get_width() + 30
+            self._panel(x - 2, cy - 18, k.get_width() + 22, 36, radius=8)
+            self._blit(k, (x + 9, cy), "midleft")
+            x -= 34
+        right_edge = x - 30
+
+        # AI host caption: typewriter with "voice" bars while it is speaking
+        line = logic.host_line
+        if not line:
+            return
+        shown = int((now - logic.host_line_time) * 55)
+        pygame.draw.circle(self.screen, ACCENT, (MAIN_X + 26, cy), 26)
+        self._text("display", 22, "AI", DARK_INK, (MAIN_X + 26, cy), "center")
+        if shown < len(line):
+            for i in range(3):
+                hgt = 6 + 10 * abs(math.sin(now * 12 + i))
+                pygame.draw.rect(self.screen, ACCENT, (MAIN_X + 60 + i * 8, cy - hgt / 2, 4, hgt), border_radius=2)
+        text = line[:max(0, shown)]
+        if text:
+            tx = MAIN_X + 96
+            surf = self._render("semi", 26, text, INK)
+            while surf.get_width() > right_edge - tx and len(text) > 10:
+                text = "..." + text[max(4, len(text) // 10):]
+                surf = self._render("semi", 26, text, INK)
+            self._blit(surf, (tx, cy), "midleft")
+
+    def _draw_toast(self, logic, now):
+        events = [e for e in logic.get_recent_events() if now - e.timestamp < 3.5]
+        if not events:
+            return
+        e = events[-1]
+        a = now - e.timestamp
+        slide = ease_out_back(a / 0.35)
+        fade = 1 - progress(a, 3.0, 0.5)
+        txt = self._render_name(e.text, 24, DARK_INK, kind="black")
+        w = txt.get_width() + 48
+        x = MAIN_X + MAIN_W // 2 - w // 2
+        y = int(lerp(BODY_BOTTOM + 10, BODY_BOTTOM - 40, slide))
+        self.screen.blit(self._alpha_rect(w, 44, (*e.color[:3], int(235 * fade) // 16 * 16), 22), (x, y))
+        self._blit(txt, (x + w // 2, y + 22), "center", alpha=255 * fade)
+
+    # ------------------------------------------
+    # INTRO STING
+    # ------------------------------------------
+    def _draw_intro(self, logic, age):
+        cx, cy = SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
+        sweep = progress(age, 0.1, 1.1)
+        self.screen.blit(self._shine, (lerp(-300, SCREEN_WIDTH + 40, ease_in_out(sweep)), 0))
+        self._text("display", 150, f"MATCH {logic.match_no}", INK, (cx, cy - 150), "center",
+                   alpha=255 * ease_out_cubic(age / 0.3), scale=lerp(2.4, 1.0, ease_out_back(age / 0.6)))
+        cat = ease_out_cubic(progress(age, 0.45, 0.4))
+        self._blit(self._render_name(logic.match_category.upper(), 44, ACCENT, kind="black"),
+                   (cx, cy - 30 + (1 - cat) * 30), "center", alpha=255 * cat)
+        self._text("bold", 30, f"{MATCH_LENGTH} QUESTIONS  -  TYPE 1-4 IN CHAT TO PLAY", DIM,
+                   (cx, cy + 22), "center", alpha=255 * progress(age, 0.7, 0.4))
+        for i, n in enumerate(("3", "2", "1")):
+            t0 = 1.0 + i
+            if t0 <= age < t0 + 1.0:
+                p = age - t0
+                self._text("display", 220, n, ACCENT, (cx, cy + 230), "center",
+                           alpha=255 * (1 - progress(p, 0.6, 0.4)), scale=lerp(1.7, 1.0, ease_out_back(p / 0.35)))
+
+    # ------------------------------------------
+    # LOBBY
+    # ------------------------------------------
+    def _draw_lobby(self, logic, age, dt):
+        rem = logic.time_remaining
+        secs = int(math.ceil(rem))
+        pop = 1.0 + 0.08 * ease_out_cubic(rem - math.floor(rem)) if secs <= 10 else 1.0
+        y = BODY_Y
+        self._text("black", 30, "NEXT MATCH STARTS IN", DIM, (MAIN_X, y + 8))
+        self._text("display", 170, f"0:{secs:02d}", ACCENT if secs > 5 else BAD, (MAIN_X, y + 40), scale=pop)
+        self._text("black", 34, "VOTE THE CATEGORY: TYPE 1-4", INK, (MAIN_X + 470, y + 110))
+        self._text("bold", 24, f"Match {logic.match_no}  -  {MATCH_LENGTH} questions  -  podium for the top 3",
+                   DIM, (MAIN_X + 470, y + 160))
+
+        vs = logic.vote_state
+        if vs:
+            counts = vs.vote_counts()
+            total = max(1, vs.total_votes())
+            lead = vs.leading_option()
+            cw, ch, g = (MAIN_W - 24) // 2, 170, 24
+            top = y + 260
+            for opt, (_, name) in vs.options.items():
+                i = opt - 1
+                x = MAIN_X + (i % 2) * (cw + g)
+                p = ease_out_back(progress(age, 0.15 + i * 0.08, 0.45))
+                if p <= 0:
+                    continue
+                yy = top + (i // 2) * (ch + g) + int((1 - p) * 40)
+                is_lead = opt == lead and vs.total_votes() > 0
+                self._panel(x, yy, cw, ch, radius=20, border=(*ACCENT, 255) if is_lead else (255, 255, 255, 38))
+                col = OPTION_COLORS[i]
+                pygame.draw.circle(self.screen, col, (x + 62, yy + 62), 36)
+                self._text("display", 42, str(opt), INK, (x + 62, yy + 62), "center")
+                self._text("black", 40, name, INK, (x + 116, yy + 62), "midleft")
+                target = counts.get(opt, 0) / total
+                cur = self._vote_bars.get(opt, 0.0)
+                cur += (target - cur) * min(1.0, dt * 6)
+                self._vote_bars[opt] = cur
+                bx, by, bw = x + 28, yy + 122, cw - 170
+                pygame.draw.rect(self.screen, TRACK, (bx, by, bw, 18), border_radius=9)
+                if cur > 0.005:
+                    pygame.draw.rect(self.screen, ACCENT if is_lead else col, (bx, by, max(18, int(bw * cur)), 18), border_radius=9)
+                n = counts.get(opt, 0)
+                self._text("bold", 22, f"{n} vote{'s' if n != 1 else ''}", DIM, (bx + bw + 16, by + 9), "midleft")
+
+        # Rail: newcomer card, ready list, this week's ladder
+        x, y = RAIL_X, BODY_Y
+        self.screen.blit(self._alpha_rect(RAIL_W, 190, (*ACCENT, 255), 20), (x, y))
+        self._text("black", 22, "NEW HERE?", DARK_INK, (x + 24, y + 20))
+        for i, line in enumerate(("Type a number 1-4 in chat when", "the question shows. That's it!",
+                                  "Your name appears the moment", "you answer.")):
+            self._text("bold", 25, line, DARK_INK, (x + 24, y + 58 + i * 30))
+        y += 210
+        ready = logic.ready_players
+        h = 210
+        self._panel(x, y, RAIL_W, h)
+        self._panel_title(x, y, RAIL_W, "READY FOR THIS MATCH", len(ready))
+        cx, cy = x + 24, y + 70
+        for name in ready[-12:]:
+            chip = self._fit_name(name, 22, INK, 180)
+            w = chip.get_width() + 24
+            if cx + w > x + RAIL_W - 20:
+                cx, cy = x + 24, cy + 42
+                if cy > y + h - 40:
+                    break
+            self._panel(cx, cy, w, 34, radius=17, fill=(255, 255, 255, 28), border=None)
+            self._blit(chip, (cx + 12, cy + 17), "midleft")
+            cx += w + 8
+        if not ready:
+            self._text("bold", 22, "Type !ready or vote to check in", FAINT, (x + 24, y + 80))
+        y += h + 20
+        self._draw_ladder(logic, x, y, BODY_BOTTOM - y, rows=6, age=age, title="THIS WEEK")
+
+    # ------------------------------------------
+    # QUESTION (ASKING / LOCKING)
+    # ------------------------------------------
+    def _question_block(self, logic, q, age, small=False):
+        y = BODY_Y
+        x = MAIN_X
+        cat = self._render_name(q.category.upper(), 22, INK, kind="black")
+        w = cat.get_width() + 36
+        self._panel(x, y, w, 44, radius=22)
+        self._blit(cat, (x + 18, y + 22), "midleft")
+        x += w + 14
+        dcol = DIFF_COLORS.get(q.difficulty, DIM)
+        d = self._render("black", 22, q.difficulty.upper(), dcol)
+        w = d.get_width() + 36
+        self._panel(x, y, w, 44, radius=22, border=(*dcol, 255))
+        self._blit(d, (x + 18, y + 22), "midleft")
+        x += w + 14
+        ev = "final" if logic.is_double_points else logic.mini_event
+        if ev in EVENT_STYLE:
+            label, col = EVENT_STYLE[ev]
+            pulse = 0.75 + 0.25 * math.sin(time.time() * 5)
+            e = self._render("black", 22, label, DARK_INK)
+            w = e.get_width() + 36
+            self.screen.blit(self._alpha_rect(w, 44, (*col, int(255 * pulse) // 16 * 16), 22), (x, y))
+            self._blit(e, (x + 18, y + 22), "midleft")
+
+        text_w = MAIN_W - (0 if small else 210)
+        sizes = (50, 44, 38) if small else (66, 58, 50, 44)
+        lines, size = self._fit_wrap(q.text.upper(), "display", sizes, text_w, 3)
+        ty = y + 70
+        lh = int(size * 1.12)
+        for i, line in enumerate(lines):
+            p = 1.0 if small else ease_out_cubic(progress(age, 0.05 + i * 0.08, 0.4))
+            self._blit(self._render_name(line, size, DIM if small else INK, kind="display"),
+                       (MAIN_X, ty + i * lh + (1 - p) * 26), alpha=255 * p)
+        return ty + len(lines) * lh
+
+    def _option_rects(self, top, max_h=190):
+        g = 24
+        w = (MAIN_W - g) // 2
+        h = min(max_h, (BODY_BOTTOM - top - g) // 2)
+        return [(MAIN_X + (i % 2) * (w + g), top + (i // 2) * (h + g), w, h) for i in range(4)]
+
+    def _draw_option(self, i, text, rect, alpha=255, scale=1.0, dim=0.0, outline=None, lift=0):
+        x, y, w, h = rect
+        if scale != 1.0:
+            cx, cy = x + w / 2, y + h / 2
+            w, h = int(w * scale), int(h * scale)
+            x, y = int(cx - w / 2), int(cy - h / 2)
+        y -= lift
+        a = int(alpha) // 8 * 8
+        col = mix(OPTION_COLORS[i], (40, 44, 90), dim)
+        self.screen.blit(self._alpha_rect(w, h, (0, 0, 0, int(90 * a / 255)), 22), (x, y + 10))
+        if outline:
+            self.screen.blit(self._alpha_rect(w + 24, h + 24, (*outline, 70), 32), (x - 12, y - 12))
+        self.screen.blit(self._alpha_rect(w, h, (*col, a), 22), (x, y))
+        if outline:
+            pygame.draw.rect(self.screen, outline, (x - 4, y - 4, w + 8, h + 8), width=6, border_radius=26)
+        r = int(min(39, h * 0.22))
+        kx, ky = x + 34 + r, y + h // 2
+        knob = mix(INK, (150, 150, 170), dim)
+        pygame.draw.circle(self.screen, knob, (kx, ky), r)
+        self._text("display", int(r * 1.15), str(i + 1), DARK_INK, (kx, ky), "center", alpha=a)
+        self._shape(i, kx + r + 34, ky, 15, knob)
+        tx = kx + r + 66
+        lines, size = self._fit_wrap(text, "black", (46, 40, 34, 30), x + w - tx - 110, 2)
+        lh = int(size * 1.1)
+        for j, line in enumerate(lines):
+            self._blit(self._render_name(line, size, mix(INK, (190, 190, 210), dim), kind="black"),
+                       (tx, ky - len(lines) * lh / 2 + j * lh + lh / 2), "midleft", alpha=a)
+        return (x, y, w, h)
+
+    def _draw_question(self, logic, age, now):
+        q = logic.current_question
+        if not q:
+            return
+        locking = logic.state == GameState.LOCKING
+        q_age = now - logic.question_start_time
+        bottom = self._question_block(logic, q, q_age)
+
+        tcx, tcy = MAIN_X + MAIN_W - 82, BODY_Y + 70 + 82
+        if not locking:
+            rem = logic.time_remaining
+            urgent = rem <= 5
+            pulse = 1.0 + (0.06 * math.sin(now * 10) if urgent else 0)
+            self._ring(tcx, tcy, int(80 * pulse), 14, logic.time_fraction, BAD if urgent else ACCENT)
+            self._text("display", 70, str(int(math.ceil(rem))), INK, (tcx, tcy), "center")
+            if urgent:  # red glow on the screen edges for the last 5 seconds
+                glow = self._alpha_rect(SCREEN_WIDTH, 18, (*BAD, int(60 + 50 * math.sin(now * 10)) // 8 * 8), 0)
+                self.screen.blit(glow, (0, 0))
+                self.screen.blit(glow, (0, SCREEN_HEIGHT - 18))
+        else:  # suspense: stamp slams in while late chat answers still count
+            p = ease_out_back(age / 0.35)
+            stamp = self._render("display", 46, "TIME'S UP", INK)
+            sw, sh = stamp.get_width() + 40, stamp.get_height() + 16
+            base = pygame.Surface((sw, sh), pygame.SRCALPHA)
+            pygame.draw.rect(base, BAD, (0, 0, sw, sh), border_radius=14)
+            base.blit(stamp, (20, 8))
+            rot = pygame.transform.rotozoom(base, 8, max(0.05, lerp(2.0, 1.0, p)))
+            self.screen.blit(rot, rot.get_rect(center=(tcx - 20, tcy)))
+
+        top = max(bottom + 30, BODY_Y + 330)
+        for i, (opt, rect) in enumerate(zip(q.options, self._option_rects(top))):
+            p = ease_out_back(progress(q_age, 0.25 + i * 0.07, 0.45))
+            if p <= 0:
                 continue
-            p.vy += 4 * dt  # gravity
-            p.x += p.vx
-            p.y += p.vy
-            frac = p.life / p.max_life
-            alpha = _alpha(255 * frac)
-            size = max(1, int(p.size * (0.5 + 0.5 * frac)))
+            self._draw_option(i, opt, rect, alpha=255 * clamp01(p * 1.4), scale=lerp(0.85, 1.0, p),
+                              dim=0.35 if locking else 0.0)
 
-            surf = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
-            pygame.draw.circle(
-                surf, (*p.color[:3], alpha), (size, size), size,
+    def _draw_rail_live(self, logic, now):
+        x, y = RAIL_X, BODY_Y
+        h = 470
+        self._panel(x, y, RAIL_W, h)
+        self._panel_title(x, y, RAIL_W, "LOCKED IN", logic.answer_count)
+        rows = list(reversed(logic.lock_order))[:9]
+        for i, (name, at) in enumerate(rows):
+            ry = y + 80 + i * 43
+            p = ease_out_cubic((now - (logic.question_start_time + at)) / 0.4)
+            ox = (1 - p) * 60
+            bot = is_bot(name)
+            n = self._fit_name(name.replace("[Bot] ", ""), 26, FAINT if bot else INK, RAIL_W - 170)
+            self._blit(n, (x + 24 + ox, ry), "midleft", alpha=255 * p)
+            if bot:
+                self._text("black", 15, "BOT", FAINT, (x + 34 + n.get_width() + ox, ry), "midleft", alpha=200 * p)
+            self._text("bold", 20, f"{at:.1f}s", DIM, (x + RAIL_W - 24, ry), "midright", alpha=255 * p)
+        if not rows:
+            self._text("bold", 24, "Be the first: type 1-4!", FAINT, (x + 24, y + 80))
+        y += h + 20
+        self._draw_match_table(logic, x, y, BODY_BOTTOM - y)
+
+    def _draw_match_table(self, logic, x, y, h):
+        self._panel(x, y, RAIL_W, h)
+        self._panel_title(x, y, RAIL_W, f"MATCH {logic.match_no} STANDINGS")
+        ranked = logic.match_ranking(n=max(1, (h - 70) // 42))
+        for i, st in enumerate(ranked):
+            ry = y + 80 + i * 42
+            bot = is_bot(st.username)
+            col = FAINT if bot else (ACCENT if i == 0 else INK)
+            self._text("display", 26, str(i + 1), col, (x + 24, ry), "midleft")
+            self._blit(self._fit_name(st.username.replace("[Bot] ", ""), 25, col, RAIL_W - 200), (x + 60, ry), "midleft")
+            self._text("black", 25, f"{st.points:,}", col, (x + RAIL_W - 24, ry), "midright")
+        if not ranked:
+            self._text("bold", 22, "Points appear after the first reveal", FAINT, (x + 24, y + 80))
+
+    # ------------------------------------------
+    # REVEAL
+    # ------------------------------------------
+    def _draw_reveal(self, logic, age):
+        res = logic.last_result
+        if not res or not res.question.options:
+            return
+        q = res.question
+        bottom = self._question_block(logic, q, 10.0, small=True)
+        top = max(bottom + 26, BODY_Y + 230)
+        rects = self._option_rects(top, max_h=160)
+        total = max(1, res.total_answers)
+        reveal = age >= 1.1
+        k = ease_out_cubic(progress(age, 1.1, 0.4))
+        for i, (opt, rect) in enumerate(zip(q.options, rects)):
+            correct = i == q.correct_index
+            x, y, w, h = self._draw_option(
+                i, opt, rect,
+                dim=(0.55 * k if reveal and not correct else 0.0),
+                outline=INK if reveal and correct else None,
+                lift=int(8 * k) if reveal and correct else 0,
             )
-            self.screen.blit(surf, (int(p.x - size), int(p.y - size)))
-            alive.append(p)
-        self.particles = alive
+            # HQ-style answer split: a bar grows along the button while the percentage counts up
+            target = res.option_counts[i] / total if i < len(res.option_counts) else 0
+            shown = target * ease_out_cubic(progress(age, 0.25, 0.9))
+            bw = int(w * shown)
+            if bw > 14:
+                self.screen.blit(self._alpha_rect(bw, 14, (0, 0, 0, 110), 7), (x, y + h - 14))
+            self._text("display", 50, f"{int(round(shown * 100))}%", INK, (x + w - 28, y + h // 2), "midright")
+            if reveal and correct:
+                tag = self._render("black", 18, "CORRECT", DARK_INK)
+                self.screen.blit(self._alpha_rect(tag.get_width() + 24, 30, (*INK, 255), 15), (x + w - tag.get_width() - 44, y + 12))
+                self._blit(tag, (x + w - 32, y + 27), "midright")
+                if "burst" not in self._burst_done and res.correct_players:
+                    self._burst_done.add("burst")
+                    self.burst(x + w // 2, y + h // 2, n=70, power=0.8)
 
-    def _update_and_draw_sparkles(self, dt):
-        """Render minecraft-style pixel sparkle particles (square, twinkling)."""
-        alive = []
-        for s in self.sparkles:
-            s.life -= dt
-            if s.life <= 0:
+        p = ease_out_cubic(progress(age, 1.5, 0.4))
+        sy = rects[2][1] + rects[2][3] + 24 + int((1 - p) * 30)
+        if sy + 66 <= BODY_BOTTOM + 30:
+            self._panel(MAIN_X, sy, MAIN_W, 66, radius=18)
+            knew = int(round(res.correct_rate * 100))
+            self._text("display", 38, f"{knew}% KNEW IT", GOOD if knew >= 50 else ACCENT, (MAIN_X + 26, sy + 33), "midleft", alpha=255 * p)
+            self._blit(self._fit_name(f"The answer: {q.correct_answer}", 28, INK, MAIN_W - 380, kind="semi"),
+                       (MAIN_X + 330, sy + 33), "midleft", alpha=255 * p)
+
+        x, y = RAIL_X, BODY_Y
+        h = 230
+        self._panel(x, y, RAIL_W, h)
+        self._panel_title(x, y, RAIL_W, "FASTEST RIGHT")
+        for i, (name, pts, t) in enumerate(res.correct_players[:3]):
+            ry = y + 84 + i * 46
+            pp = ease_out_back(progress(age, 1.3 + i * 0.15, 0.35))
+            if pp <= 0:
                 continue
-            s.vy += 1.5 * dt  # light gravity
-            s.x += s.vx
-            s.y += s.vy
-            frac = s.life / s.max_life
+            self._blit(self._fit_name(name.replace("[Bot] ", ""), 27, INK, RAIL_W - 210), (x + 24, ry), "midleft", alpha=255 * clamp01(pp))
+            self._text("bold", 20, f"{t:.1f}s", DIM, (x + RAIL_W - 110, ry), "midright")
+            self._text("black", 28, f"+{pts}", GOOD, (x + RAIL_W - 24, ry), "midright", scale=lerp(1.6, 1.0, clamp01(pp)))
+        if not res.correct_players:
+            self._text("bold", 24, "Nobody got this one", FAINT, (x + 24, y + 84))
+        y += h + 20
+        h2 = 250
+        self._panel(x, y, RAIL_W, h2)
+        self._panel_title(x, y, RAIL_W, "THIS ROUND")
+        events = logic.get_recent_events()[-4:]
+        for i, e in enumerate(events):
+            self._blit(self._fit_name(e.text, 22, e.color, RAIL_W - 48, kind="semi"), (x + 24, y + 84 + i * 40), "midleft")
+        if not events:
+            self._text("bold", 22, f"{res.total_answers} answers this round", FAINT, (x + 24, y + 84))
+        y += h2 + 20
+        self._draw_match_table(logic, x, y, BODY_BOTTOM - y)
 
-            # Twinkle: oscillate alpha for enchantment sparkle effect
-            twinkle = 0.3 + 0.7 * abs(math.sin(
-                time.time() * s.twinkle_speed + s.twinkle_offset,
-            ))
-            alpha = _alpha(255 * frac * twinkle)
-            size = s.size
+    # ------------------------------------------
+    # PODIUM
+    # ------------------------------------------
+    def _draw_podium(self, logic, age):
+        self._text("display", 84, f"MATCH {logic.match_no} WINNERS", INK, (MAIN_X, BODY_Y - 6), alpha=255 * ease_out_cubic(age / 0.4))
+        self._blit(self._render_name(f"{MATCH_LENGTH} QUESTIONS  -  {logic.match_player_count} PLAYERS  -  "
+                                     f"{logic.match_category.upper()}", 26, DIM, kind="black"), (MAIN_X, BODY_Y + 92))
+        base_y = BODY_BOTTOM - 110
+        bw, g = 340, 40
+        x0 = MAIN_X + (MAIN_W - 3 * bw - 2 * g) // 2
+        slots = [(1, x0, 210, 0.9), (0, x0 + bw + g, 270, 1.6), (2, x0 + 2 * (bw + g), 160, 0.3)]
+        if not logic.podium:
+            self._text("display", 60, "NO WINNER THIS TIME", DIM, (MAIN_X + MAIN_W // 2, base_y - 170), "center")
+            self._text("bold", 30, "Type 1-4 next match and the podium is yours", INK, (MAIN_X + MAIN_W // 2, base_y - 100), "center")
+        for place, x, height, delay in slots:
+            if place >= len(logic.podium):
+                continue
+            st = logic.podium[place]
+            p = ease_out_back(progress(age, delay, 0.6))
+            hh = int(height * max(0.0, p))
+            top = base_y - hh
+            if hh > 0:
+                col = ACCENT if place == 0 else (70, 78, 170)
+                pygame.draw.rect(self.screen, col, (x, top, bw, hh + 4), border_top_left_radius=22, border_top_right_radius=22)
+                self._text("display", 90, str(place + 1), DARK_INK if place == 0 else INK, (x + bw // 2, top + 16), "midtop")
+            np_ = ease_out_back(progress(age, delay + 0.45, 0.45))
+            if np_ > 0:
+                r = 62 if place == 0 else 52
+                ay = int(top - 100 - r - (1 - np_) * 40)
+                self._avatar(st.username, x + bw // 2, ay, r, ACCENT if place == 0 else DIM)
+                if place == 0:
+                    self._crown(x + bw // 2, ay - r - 24, 32, ACCENT)
+                self._blit(self._fit_name(st.username, 32, INK, bw + 30, kind="black"), (x + bw // 2, ay + r + 26), "center", alpha=255 * clamp01(np_))
+                self._text("bold", 24, f"{st.points:,} pts  -  {st.correct}/{MATCH_LENGTH}", DIM, (x + bw // 2, ay + r + 60), "center", alpha=255 * clamp01(np_))
+            if place == 0 and age >= delay + 0.5 and "podium" not in self._burst_done:
+                self._burst_done.add("podium")
+                self.burst(x + bw // 2, top, n=160, power=1.3)
+                self.burst(MAIN_X + 100, base_y, n=60, power=1.1)
+                self.burst(MAIN_X + MAIN_W - 100, base_y, n=60, power=1.1)
+        pygame.draw.rect(self.screen, TRACK, (MAIN_X + 20, base_y, MAIN_W - 40, 6), border_radius=3)
 
-            # Draw as a pixel square (minecraft style)
-            surf = pygame.Surface((size, size), pygame.SRCALPHA)
-            surf.fill((*s.color[:3], alpha))
-            self.screen.blit(surf, (int(s.x), int(s.y)))
-            alive.append(s)
-        self.sparkles = alive
+        stats = logic.match_stats or {}
+        cards = []
+        if stats.get("fastest"):
+            n, t = stats["fastest"]
+            cards.append(("FASTEST ANSWER", f"{t:.1f}s  {n}"))
+        if stats.get("best_streak"):
+            n, s = stats["best_streak"]
+            cards.append(("BEST STREAK", f"{s} in a row  {n}"))
+        cards.append(("PLAYERS", str(logic.match_player_count)))
+        cw = (MAIN_W - 40) // 3
+        sp = ease_out_cubic(progress(age, 2.2, 0.4))
+        for i, (label, value) in enumerate(cards[:3]):
+            cx = MAIN_X + i * (cw + 20)
+            cy = BODY_BOTTOM - 84 + int((1 - sp) * 30)
+            self._panel(cx, cy, cw, 84, radius=18)
+            self._text("black", 18, label, DIM, (cx + 22, cy + 12), alpha=255 * sp)
+            self._blit(self._fit_name(value, 32, INK, cw - 44, kind="black"), (cx + 22, cy + 56), "midleft", alpha=255 * sp)
+
+        x, y = RAIL_X, BODY_Y
+        h = 560
+        self._draw_ladder(logic, x, y, h, rows=10, age=age, title="THIS WEEK'S LADDER", movement=True)
+        y += h + 20
+        self._panel(x, y, RAIL_W, BODY_BOTTOM - y)
+        self._panel_title(x, y, RAIL_W, "LIFETIME LEVELS")
+        for i, p in enumerate(logic.db.get_top_players(n=max(1, (BODY_BOTTOM - y - 70) // 42))):
+            ry = y + 82 + i * 42
+            self._blit(self._fit_name(p.username, 25, INK, RAIL_W - 230), (x + 24, ry), "midleft")
+            self._text("black", 22, f"LV {p.level}", ACCENT, (x + RAIL_W - 130, ry), "midright")
+            self._text("bold", 22, p.rank, DIM, (x + RAIL_W - 24, ry), "midright")
+
+    def _draw_ladder(self, logic, x, y, h, rows, age, title, movement=False):
+        self._panel(x, y, RAIL_W, h)
+        self._panel_title(x, y, RAIL_W, title)
+        players = logic.leaderboard[:min(rows, max(1, (h - 70) // 44))]
+        for i, p in enumerate(players):
+            ry = y + 82 + i * 44
+            pp = ease_out_cubic(progress(age, 0.3 + i * 0.07, 0.35))
+            ox = (1 - pp) * 50
+            if movement:
+                ch = logic.ladder_changes.get(p.username, 0)
+                mv, mc = ("NEW", GOOD) if ch is None else (f"+{ch}", GOOD) if ch > 0 else (str(ch), BAD) if ch < 0 else ("-", FAINT)
+                self._text("black", 18, mv, mc, (x + 44 + ox, ry), "center", alpha=255 * pp)
+                nx = x + 78
+            else:
+                self._text("display", 26, str(i + 1), ACCENT if i == 0 else DIM, (x + 30 + ox, ry), "center", alpha=255 * pp)
+                nx = x + 60
+            self._blit(self._fit_name(p.username, 25, INK, RAIL_W - 210), (nx + ox, ry), "midleft", alpha=255 * pp)
+            self._text("black", 25, f"{p.weekly_score:,}", INK, (x + RAIL_W - 24 + ox, ry), "midright", alpha=255 * pp)
+        if not players:
+            self._text("bold", 22, "Empty so far: answer to get on it!", FAINT, (x + 24, y + 82))
+
+    # ------------------------------------------
+    # CONFETTI
+    # ------------------------------------------
+    def _draw_confetti(self, dt):
+        alive = []
+        for c in self.confetti:
+            c.life -= dt
+            if c.life <= 0 or c.y > SCREEN_HEIGHT + 30:
+                continue
+            c.vy += 22 * dt
+            c.vx *= 0.985
+            c.x += c.vx * dt * 60
+            c.y += c.vy * dt * 30
+            c.phase += c.spin * dt
+            hh = max(2, int(abs(math.sin(c.phase)) * c.h))
+            pygame.draw.rect(self.screen, c.color, (int(c.x), int(c.y), c.w, hh), border_radius=2)
+            alive.append(c)
+        self.confetti = alive

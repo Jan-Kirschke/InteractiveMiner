@@ -9,7 +9,7 @@ import time
 import os
 
 from quiz.config import DB_PATH
-from quiz.models import Player
+from quiz.models import Player, utc_week
 
 BOT_PREFIX = "[Bot] "
 
@@ -66,6 +66,10 @@ class QuizDatabase:
             ("wrong_streak", "INTEGER DEFAULT 0"),
             ("participation_streak", "INTEGER DEFAULT 0"),
             ("streak_shield", "INTEGER DEFAULT 0"),
+            ("weekly_score", "INTEGER DEFAULT 0"),
+            ("week", "TEXT DEFAULT ''"),
+            ("day_streak", "INTEGER DEFAULT 0"),
+            ("last_day", "TEXT DEFAULT ''"),
         ]:
             try:
                 self._conn.execute(f"ALTER TABLE players ADD COLUMN {col} {typedef}")
@@ -75,6 +79,17 @@ class QuizDatabase:
         self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_players_score
             ON players(score DESC)
+        """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS matches (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at  REAL,
+                ended_at    REAL,
+                category    TEXT,
+                players     INTEGER,
+                winner      TEXT,
+                winner_points INTEGER
+            )
         """)
         self._conn.commit()
 
@@ -101,6 +116,10 @@ class QuizDatabase:
                 participation_streak=row["participation_streak"] if "participation_streak" in row.keys() else 0,
                 streak_shield=bool(row["streak_shield"]) if "streak_shield" in row.keys() else False,
                 last_seen=row["last_seen"],
+                weekly_score=row["weekly_score"] or 0,
+                week=row["week"] or "",
+                day_streak=row["day_streak"] or 0,
+                last_day=row["last_day"] or "",
             )
             self._players[p.username] = p
         print(f"[DB] Loaded {len(self._players)} players from database")
@@ -115,12 +134,41 @@ class QuizDatabase:
         self._dirty.add(username)
 
     def get_top_players(self, n: int = 10) -> list[Player]:
+        """Lifetime ladder (lifetime points = level)."""
         sorted_players = sorted(
             (p for p in self._players.values() if not is_bot(p.username)),
             key=lambda p: p.score,
             reverse=True,
         )
         return sorted_players[:n]
+
+    def get_weekly_top(self, n: int = 10) -> list[Player]:
+        """This week's ladder (resets Monday 00:00 UTC)."""
+        wk = utc_week()
+        players = [p for p in self._players.values()
+                   if not is_bot(p.username) and p.current_weekly(wk) > 0]
+        players.sort(key=lambda p: p.weekly_score, reverse=True)
+        return players[:n]
+
+    def weekly_rank(self, username: str) -> int:
+        """1-based position on this week's ladder, 0 if not on it."""
+        for i, p in enumerate(self.get_weekly_top(n=1_000_000), 1):
+            if p.username == username:
+                return i
+        return 0
+
+    def next_match_number(self) -> int:
+        row = self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM matches").fetchone()
+        return row[0] + 1
+
+    def record_match(self, started_at: float, category: str, players: int,
+                     winner: str, winner_points: int):
+        self._conn.execute(
+            "INSERT INTO matches (started_at, ended_at, category, players, winner, winner_points) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (started_at, time.time(), category, players, winner, winner_points),
+        )
+        self._conn.commit()
 
     def get_player_count(self, exclude_bots: bool = True) -> int:
         if exclude_bots:
@@ -175,7 +223,8 @@ class QuizDatabase:
                         p.rank, p.games_played, p.correct_answers,
                         p.wrong_answers, p.wrong_streak,
                         p.participation_streak, int(p.streak_shield),
-                        p.last_seen,
+                        p.last_seen, p.weekly_score, p.week,
+                        p.day_streak, p.last_day,
                     ))
             if data:
                 self._conn.executemany("""
@@ -183,8 +232,8 @@ class QuizDatabase:
                     (username, score, streak, best_streak, rank,
                      games_played, correct_answers, wrong_answers,
                      wrong_streak, participation_streak, streak_shield,
-                     last_seen)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     last_seen, weekly_score, week, day_streak, last_day)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, data)
                 self._conn.commit()
                 print(f"[DB] Saved {len(data)} players")
