@@ -86,25 +86,6 @@ def lerp(a, b, t):
     return a + (b - a) * t
 
 
-def _qr_surface(text, size):
-    """QR code as a white tile (pure-Python qrcode; None if the package is missing)."""
-    try:
-        import qrcode
-    except ImportError:
-        return None
-    qr = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
-    qr.add_data(text)
-    m = qr.get_matrix()
-    n = len(m)
-    surf = pygame.Surface((n, n))
-    surf.fill((255, 255, 255))
-    for r, row in enumerate(m):
-        for c, on in enumerate(row):
-            if on:
-                surf.set_at((c, r), (17, 17, 34))
-    return pygame.transform.scale(surf, (size, size))
-
-
 def heartbeat(since):
     """0..1 pulse for a lub-dub: 'since' = seconds since the beat started (matches sounds.final_countdown)."""
     lub = math.exp(-since * 10)
@@ -241,9 +222,7 @@ class Floater:
 # UI MANAGER
 # ==========================================
 class UIManager:
-    def __init__(self, screen: pygame.Surface, answer_url: str = ""):
-        self.answer_url = answer_url
-        self._qr = _qr_surface(answer_url, 150) if answer_url else None
+    def __init__(self, screen: pygame.Surface):
         self.screen = screen
         self.fonts = Fonts()
         self._text_cache = {}
@@ -578,8 +557,6 @@ class UIManager:
     def _draw_footer(self, logic, now):
         cy = FOOTER_Y + 32
         cmds = [("1-4", "answer"), ("!rank", "your place"), ("!ready", "join next match")]
-        if self.answer_url:
-            cmds = [(self.answer_url.replace("http://", "").replace("https://", ""), "secret answers")] + cmds[:2]
         x = SCREEN_WIDTH - PAD
         for key, label in reversed(cmds):
             lab = self._render("bold", 22, label, DIM)
@@ -696,18 +673,10 @@ class UIManager:
         # Rail: newcomer card, ready list, this week's ladder
         x, y = RAIL_X, BODY_Y
         self.screen.blit(self._alpha_rect(RAIL_W, 190, (*ACCENT, 255), 20), (x, y))
-        if self._qr:  # private answers: scan, link your name once, tap to answer
-            self.screen.blit(self._qr, (x + RAIL_W - 170, y + 20))
-            self._text("black", 22, "PLAY ON YOUR PHONE", DARK_INK, (x + 24, y + 20))
-            for i, line in enumerate(("Scan or open", "Answers stay secret", "and count instantly.")):
-                self._text("bold", 24, line, DARK_INK, (x + 24, y + 58 + i * 30))
-            self._blit(self._fit_name(self.answer_url.replace("http://", "").replace("https://", ""), 24, DARK_INK,
-                                      RAIL_W - 210, kind="black"), (x + 24, y + 160), "midleft")
-        else:
-            self._text("black", 22, "NEW HERE?", DARK_INK, (x + 24, y + 20))
-            for i, line in enumerate(("Type a number 1-4 in chat when", "the question shows. That's it!",
-                                      "Your name appears the moment", "you answer.")):
-                self._text("bold", 25, line, DARK_INK, (x + 24, y + 58 + i * 30))
+        self._text("black", 22, "NEW HERE?", DARK_INK, (x + 24, y + 20))
+        for i, line in enumerate(("Type a number 1-4 in chat when", "the question shows. That's it!",
+                                  "Your name appears the moment", "you answer.")):
+            self._text("bold", 25, line, DARK_INK, (x + 24, y + 58 + i * 30))
         y += 210
         ready = logic.ready_players
         h = 210

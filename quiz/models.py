@@ -174,7 +174,6 @@ class ChatMessage:
     message: str      # normalized: lowercase, punctuation stripped
     timestamp: float
     raw: str = ""     # original text (crew names, @mentions)
-    source: str = "chat"   # "chat" or "web" (the private answer page)
 
 
 @dataclass
