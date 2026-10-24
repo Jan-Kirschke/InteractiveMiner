@@ -53,7 +53,7 @@ across the screen. On TV it moves left to right, slanted like the stage stripes.
 moves bottom to top, the "swipe up to next" gesture. On the curtain, "QUESTION" sits over a
 huge numeral that rolls like an odometer from the last number to this one. The match pips
 (green and red history) light the new one, and "OF 10 · EASY" rises from a mask. Event
-variants: LIGHTNING ROUND (sky blue, bolt badge, "12 SECONDS · 1.5x POINTS"), FINAL QUESTION
+variants: LIGHTNING ROUND (sky blue, bolt badge, "22 SECONDS · 1.5x POINTS"), FINAL QUESTION
 (gold, x2 badge), BONUS ROUND (purple). The curtain then leaves the same way, uncovering the
 new question.
 

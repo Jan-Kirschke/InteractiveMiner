@@ -135,7 +135,8 @@ def test_full_match_cycle_records_winner_and_ladders(game):
 def test_final_question_pays_double_and_lightning_is_shorter(game):
     game.q_index = 4
     game._transition_to(GameState.ASKING)                            # question 5
-    assert game.mini_event == "lightning" and game.question_duration == 12
+    assert game.mini_event == "lightning" and game.question_duration == logic_mod.LIGHTNING_TIME
+    assert logic_mod.LIGHTNING_TIME < logic_mod.QUESTION_DISPLAY_TIME
     game.q_index = 9
     game._transition_to(GameState.ASKING)                            # question 10
     assert game.is_double_points

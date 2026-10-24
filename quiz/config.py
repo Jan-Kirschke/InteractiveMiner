@@ -79,7 +79,7 @@ def _env_num(name, default):
 MATCH_LENGTH = 10
 LOBBY_TIME = _env_num("QUIZ_LOBBY_SECONDS", 30)          # category vote, !ready check-ins
 INTRO_TIME = 4             # "MATCH 15" title sting
-QUESTION_DISPLAY_TIME = _env_num("QUIZ_QUESTION_SECONDS", 20)
+QUESTION_DISPLAY_TIME = _env_num("QUIZ_QUESTION_SECONDS", 30)
 LATE_ANSWER_GRACE = _env_num("QUIZ_LATE_SECONDS", 4)     # "time's up" while late chat messages still arrive
 REVEAL_AT = 1.1   # seconds into the reveal before the right answer lights up (answer split counts up first)
 REVEAL_DISPLAY_TIME = _env_num("QUIZ_REVEAL_SECONDS", 8)
@@ -255,7 +255,7 @@ ACHIEVEMENTS = {
 LIGHTNING_ROUND_CHANCE = 0.08   # 8% chance: shorter time, 1.5x points
 JACKPOT_CHANCE = 0.10           # 10% chance: random correct player wins jackpot
 FIRST_BLOOD_CHANCE = 0.15       # 15% chance: fastest correct player gets bonus
-LIGHTNING_TIME = 12             # seconds (instead of 20)
+LIGHTNING_TIME = _env_num("QUIZ_LIGHTNING_SECONDS", 22)   # seconds (instead of the normal 30)
 LIGHTNING_MULT = 1.5
 JACKPOT_BONUS = 25              # flat bonus for jackpot winner
 FIRST_BLOOD_BONUS = 15          # flat bonus for first correct answerer
