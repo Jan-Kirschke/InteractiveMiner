@@ -3,6 +3,7 @@ The Lifelong Quiz - Database Layer
 SQLite persistence with in-memory write-back cache.
 """
 
+import queue
 import sqlite3
 import threading
 import time
@@ -23,6 +24,10 @@ class QuizDatabase:
         self._db_path = db_path
         self._lock = threading.Lock()
         self._dirty = set()  # usernames that need flushing
+        self._save_idle = threading.Event()
+        self._save_idle.set()
+        self._save_queue: queue.Queue = queue.Queue()
+        self._writer = None
 
         # Ensure data directory exists
         db_dir = os.path.dirname(db_path)
@@ -46,6 +51,11 @@ class QuizDatabase:
         self._conn.execute("PRAGMA journal_mode=WAL")      # a crash mid-write cannot corrupt the file
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._players: dict[str, Player] = {}
+        self._roster = 0          # bumped when players are added or removed (ladder cache key)
+        self._ladder_key = None
+        self._weekly: list[Player] = []
+        self._weekly_pos: dict[str, int] | None = None
+        self._lifetime: list[Player] | None = None
         self._load_all()
 
     def _create_tables(self):
@@ -136,34 +146,48 @@ class QuizDatabase:
         if username not in self._players:
             self._players[username] = Player(username=username)
             self._dirty.add(username)
+            self._roster += 1
         return self._players[username]
 
     def mark_dirty(self, username: str):
         self._dirty.add(username)
 
+    # Ladders: a full sort costs ~25 ms at 50k players, and the show reads them every frame
+    # (lobby, podium, player cards, !rank). They are rebuilt only when points, the roster or the
+    # ISO week changed. Points change only in Player.add_points/reset, which bump points_epoch.
+    def _ladders(self) -> str:
+        wk = utc_week()
+        key = (wk, Player.points_epoch, self._roster)
+        if key != self._ladder_key:
+            weekly = [p for p in self._players.values()
+                      if not is_bot(p.username) and p.current_weekly(wk) > 0]
+            weekly.sort(key=lambda p: p.weekly_score, reverse=True)
+            self._weekly, self._weekly_pos, self._lifetime = weekly, None, None
+            self._ladder_key = key
+        return wk
+
     def get_top_players(self, n: int = 10) -> list[Player]:
         """Lifetime ladder (lifetime points = level)."""
-        sorted_players = sorted(
-            (p for p in self._players.values() if not is_bot(p.username)),
-            key=lambda p: p.score,
-            reverse=True,
-        )
-        return sorted_players[:n]
+        self._ladders()
+        if self._lifetime is None:
+            self._lifetime = sorted(
+                (p for p in self._players.values() if not is_bot(p.username)),
+                key=lambda p: p.score,
+                reverse=True,
+            )
+        return self._lifetime[:n]
 
     def get_weekly_top(self, n: int = 10) -> list[Player]:
         """This week's ladder (resets Monday 00:00 UTC)."""
-        wk = utc_week()
-        players = [p for p in self._players.values()
-                   if not is_bot(p.username) and p.current_weekly(wk) > 0]
-        players.sort(key=lambda p: p.weekly_score, reverse=True)
-        return players[:n]
+        self._ladders()
+        return self._weekly[:n]
 
     def weekly_rank(self, username: str) -> int:
         """1-based position on this week's ladder, 0 if not on it."""
-        for i, p in enumerate(self.get_weekly_top(n=1_000_000), 1):
-            if p.username == username:
-                return i
-        return 0
+        self._ladders()
+        if self._weekly_pos is None:
+            self._weekly_pos = {p.username: i for i, p in enumerate(self._weekly, 1)}
+        return self._weekly_pos.get(username, 0)
 
     def find_player(self, name: str) -> str | None:
         """Resolve a chat mention ("@Lena_K", "lena_k") to a known username."""
@@ -202,6 +226,7 @@ class QuizDatabase:
                 del self._players[name]
                 removed.append(name)
         self._dirty -= set(usernames)
+        self._roster += 1
         if removed:
             placeholders = ",".join("?" * len(removed))
             self._conn.execute(
@@ -226,45 +251,89 @@ class QuizDatabase:
         print(f"[DB] Reset all {count} players")
         return count
 
-    def save_all(self):
-        if not self._dirty:
-            return
+    # ------------------------------------------
+    # SAVING
+    # The game thread only swaps the dirty set (O(1)); a writer thread with its own connection
+    # builds the rows and commits, so a slow commit (WAL checkpoint, busy disk) never stalls a
+    # frame or the systemd watchdog ping. The swap must stay on the game thread: it is the thread
+    # that marks players dirty, so no mark can land in a set the writer has already read.
+    # A row read while the game changes that player is re-marked dirty and written again next time.
+    def save_in_background(self) -> bool:
+        """Start writing the dirty players; returns at once. False if nothing to do or a save is
+        still running (the dirty set keeps growing and goes with the next call)."""
+        if not self._dirty or not self._save_idle.is_set():
+            return False
         with self._lock:
-            to_save = list(self._dirty)
-            self._dirty.difference_update(to_save)
-        try:
-            data = []
-            for uname in to_save:
-                p = self._players.get(uname)
-                if p and not is_bot(uname):
-                    data.append((
-                        p.username, p.score, p.streak, p.best_streak,
-                        p.rank, p.games_played, p.correct_answers,
-                        p.wrong_answers, p.wrong_streak,
-                        p.participation_streak, int(p.streak_shield),
-                        p.last_seen, p.weekly_score, p.week,
-                        p.day_streak, p.last_day,
-                        p.crew, p.duel_wins, p.duel_losses,
-                    ))
-            if data:
+            to_save, self._dirty = self._dirty, set()
+        self._save_idle.clear()
+        if self._writer is None:
+            self._writer = threading.Thread(target=self._writer_loop, name="db-writer", daemon=True)
+            self._writer.start()
+        self._save_queue.put(to_save)
+        return True
+
+    def wait_saved(self, timeout: float | None = None) -> bool:
+        return self._save_idle.wait(timeout)
+
+    def save_all(self):
+        """Write every dirty player and wait until it is committed."""
+        self.wait_saved()
+        if self.save_in_background():
+            self.wait_saved()
+
+    def _writer_loop(self):
+        conn = sqlite3.connect(self._db_path, timeout=30)  # its own: the game's queries never wait on it
+        conn.execute("PRAGMA synchronous=NORMAL")          # per connection; WAL is a property of the file
+        while True:
+            batch = self._save_queue.get()
+            if batch is None:
+                break
+            try:
+                rows = self._rows(batch)
+                if rows:
+                    self._write_rows(conn, rows)
+                    print(f"[DB] Saved {len(rows)} players")
+            except Exception as e:
                 with self._lock:
-                    self._conn.executemany("""
-                        INSERT OR REPLACE INTO players
-                        (username, score, streak, best_streak, rank,
-                         games_played, correct_answers, wrong_answers,
-                         wrong_streak, participation_streak, streak_shield,
-                         last_seen, weekly_score, week, day_streak, last_day,
-                         crew, duel_wins, duel_losses)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, data)
-                    self._conn.commit()
-                    print(f"[DB] Saved {len(data)} players")
-        except Exception as e:
-            with self._lock:
-                self._dirty.update(to_save)  # keep them for the next save instead of losing them
-            print(f"[DB] Save error: {e}")
+                    self._dirty.update(batch)  # keep them for the next save instead of losing them
+                print(f"[DB] Save error: {e}")
+            finally:
+                self._save_idle.set()
+        conn.close()
+
+    def _rows(self, usernames) -> list[tuple]:
+        data = []
+        for uname in usernames:
+            p = self._players.get(uname)
+            if p and not is_bot(uname):
+                data.append((
+                    p.username, p.score, p.streak, p.best_streak,
+                    p.rank, p.games_played, p.correct_answers,
+                    p.wrong_answers, p.wrong_streak,
+                    p.participation_streak, int(p.streak_shield),
+                    p.last_seen, p.weekly_score, p.week,
+                    p.day_streak, p.last_day,
+                    p.crew, p.duel_wins, p.duel_losses,
+                ))
+        return data
+
+    def _write_rows(self, conn, rows: list[tuple]):
+        conn.executemany("""
+            INSERT OR REPLACE INTO players
+            (username, score, streak, best_streak, rank,
+             games_played, correct_answers, wrong_answers,
+             wrong_streak, participation_streak, streak_shield,
+             last_seen, weekly_score, week, day_streak, last_day,
+             crew, duel_wins, duel_losses)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+        conn.commit()
 
     def close(self):
         self.save_all()
+        if self._writer is not None:
+            self._save_queue.put(None)
+            self._writer.join(timeout=30)
+            self._writer = None
         self._conn.close()
         print("[DB] Database closed")

@@ -53,6 +53,7 @@ class Player:
     crew: str = ""
     duel_wins: int = 0
     duel_losses: int = 0
+    points_epoch = 0  # class-wide, bumped on every points change: quiz/db.py caches the ladders on it
 
     @property
     def level(self) -> int:
@@ -70,6 +71,7 @@ class Player:
             self.weekly_score = 0
         self.score += points
         self.weekly_score += points
+        Player.points_epoch += 1
         self.update_rank()  # bonuses go through here too
 
     def mark_played(self, now: float | None = None) -> bool:
@@ -130,6 +132,7 @@ class Player:
         self.streak_shield = False
         self.weekly_score = 0
         self.day_streak = 0
+        Player.points_epoch += 1
 
 
 @dataclass

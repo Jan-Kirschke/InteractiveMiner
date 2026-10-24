@@ -198,12 +198,12 @@ class MainGameController:
             self._prev_logic_state = current
             self.sounds.set_scene(current.name)
             if current in (GameState.REVEALING, GameState.PODIUM):
-                self.db.save_all()
+                self.db.save_in_background()
 
     def _periodic_save(self):
         now = time.time()
         if now - self._last_save_time >= DB_SAVE_INTERVAL:
-            self.db.save_all()
+            self.db.save_in_background()  # never on this thread: a slow commit would stall the show
             self._last_save_time = now
 
     def shutdown(self):
