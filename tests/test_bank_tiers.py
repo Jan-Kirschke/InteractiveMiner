@@ -57,6 +57,8 @@ def game(tmp_path, monkeypatch):
     db = QuizDatabase(str(tmp_path / "quiz.db"))
     g = QuizLogic(db)
     g.special_slots = {}
+    # start from a bank without expert rows; each test adds what it needs
+    g.bank._conn.execute("DELETE FROM questions WHERE difficulty = 'expert'")
     yield g
     db.close()
 

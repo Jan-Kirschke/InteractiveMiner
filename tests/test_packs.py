@@ -8,7 +8,7 @@ questions on stream. These checks make that loud.
 import json
 from collections import Counter
 
-from quiz.config import DIFFICULTY_RAMP
+from quiz.config import DIFFICULTY_TIERS
 from quiz.import_questions import load_items
 from quiz.special import PACK_DIR
 
@@ -20,7 +20,7 @@ LEGACY = {
     "science_nature", "sports_global", "true_false_mix", "world_starter",
 }
 MAX_QUESTION, MAX_OPTION = 110, 28          # what the 1080-wide vertical layout fits without shrinking
-SERVED = set(DIFFICULTY_RAMP.values())      # bank.pick only ever asks for these labels
+SERVED = set(DIFFICULTY_TIERS)               # bank.pick only ever asks for these labels
 
 
 def bank_packs():

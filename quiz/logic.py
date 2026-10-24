@@ -810,7 +810,8 @@ class QuizLogic:
         leaders = heapq.nlargest(2, (s for s in self.standings.values() if s.points > 0 and not is_bot(s.username)),
                                  key=lambda s: s.points)
         facts = self._buildup_facts(q, leaders, stakes)
-        prefer = (["tier"] if self.level_up else ["jackpot", "lead"] if event == "final" else [])
+        # at the final, a jackpot chat earned outranks the tier step-up
+        prefer = (["jackpot", "tier", "lead"] if event == "final" else ["tier"] if self.level_up else [])
         turn = n % len(BUILDUP_FACTS)
         order = prefer + list(BUILDUP_FACTS[turn:] + BUILDUP_FACTS[:turn])
         pick = next((k for k in order if k in facts and k != self._last_fact), None)
