@@ -44,59 +44,93 @@ def _detect_nvenc(ffmpeg_path: str) -> bool:
         return False
 
 
-def _find_audio_device(ffmpeg_path: str) -> str | None:
-    """Find a DirectShow audio device for loopback capture."""
-    try:
-        result = subprocess.run(
-            [ffmpeg_path, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
-            capture_output=True, text=True, timeout=5,
-        )
-        lines = result.stderr.split("\n")
-        audio_section = False
-        for line in lines:
-            if "DirectShow audio devices" in line:
-                audio_section = True
-                continue
-            if audio_section and '"' in line:
-                start = line.index('"') + 1
-                end = line.index('"', start)
-                device_name = line[start:end]
-                if device_name:
-                    return device_name
-    except Exception:
-        pass
-    return None
+def _audio_input_args(audio_input: str) -> list[str]:
+    """FFmpeg input args for QUIZ_AUDIO_INPUT ("format:device"), or silence if unset.
+
+    Examples: "pulse:quiz_sink.monitor" (Linux null sink carrying only game audio),
+    "dshow:audio=CABLE Output (VB-Audio Virtual Cable)" (Windows).
+    Never auto-pick a device: the first Windows device is usually a microphone.
+    """
+    if audio_input and ":" in audio_input:
+        fmt, device = audio_input.split(":", 1)
+        return ["-thread_queue_size", "1024", "-f", fmt, "-i", device]
+    return ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
 
 
 class YouTubeBroadcaster:
-    """Streams the pygame display to YouTube Live via FFmpeg."""
+    """Streams the pygame display to YouTube Live via FFmpeg, restarting FFmpeg if it dies."""
+
+    RESTART_MIN = 5    # seconds before the first restart
+    RESTART_MAX = 60   # backoff ceiling
+    STABLE_RUN = 60    # a run this long resets the backoff
 
     def __init__(self, stream_key: str, width: int = 1920, height: int = 1080,
-                 fps: int = 30, bitrate: str = "4500k", ffmpeg_path: str = "ffmpeg"):
+                 fps: int = 30, bitrate: str = "4500k", ffmpeg_path: str = "ffmpeg",
+                 game_fps: int = 60, audio_input: str = "", output: str = ""):
         self._stream_key = stream_key
         self._width = width
         self._height = height
         self._fps = fps
         self._bitrate = bitrate
         self._ffmpeg_path = _find_ffmpeg(ffmpeg_path)
+        self._audio_input = audio_input
+        self._output = output
         self._proc = None
-        self._active = False
-        self._error_logged = False
-        self._game_fps = 60
-        self._skip_ratio = max(1, self._game_fps // self._fps)
+        self._want = False      # operator wants the stream on
+        self._active = False    # FFmpeg is running and accepting frames
+        self._skip_ratio = max(1, game_fps // fps)
         self._frame_queue = queue.Queue(maxsize=8)
-        self._stderr_lines = []  # collect stderr for diagnostics
+        self._stderr_lines = []
         self._force_cpu = False  # set True after GPU encoding fails
+        self._thread = None
+        self.restarts = 0
 
     def start(self):
-        """Launch the FFmpeg subprocess and begin streaming."""
-        if not self._stream_key:
-            print("[Broadcast] No stream key configured")
+        """Begin streaming; FFmpeg is relaunched with backoff until stop() is called."""
+        if not self._stream_key and not self._output:
+            print("[Broadcast] No stream key configured (set QUIZ_STREAM_KEY)")
             return False
+        if self._want:
+            return True
+        self._want = True
+        self._thread = threading.Thread(target=self._supervise, daemon=True)
+        self._thread.start()
+        return True
 
-        rtmp_url = f"rtmps://a.rtmps.youtube.com/live2/{self._stream_key}"
+    def _supervise(self):
+        backoff = self.RESTART_MIN
+        while self._want:
+            used_gpu, started = self._launch()
+            if started:
+                began = time.monotonic()
+                self._writer_loop()
+                ran = time.monotonic() - began
+                code = self._proc.returncode if self._proc else None
+                self._close_proc()
+                if not self._want:
+                    break
+                print(f"[Broadcast] FFmpeg exited (code {code}) after {ran:.0f}s")
+                for line in self._stderr_lines[-5:]:
+                    print(f"[Broadcast]   {line}")
+                if used_gpu and ran < 10:
+                    print("[Broadcast] GPU encoding failed, switching to CPU (libx264)")
+                    self._force_cpu = True
+                    continue
+                if ran >= self.STABLE_RUN:
+                    backoff = self.RESTART_MIN
+            if not self._want:
+                break
+            print(f"[Broadcast] Restarting stream in {backoff}s")
+            self.restarts += 1
+            deadline = time.monotonic() + backoff
+            while self._want and time.monotonic() < deadline:
+                time.sleep(0.2)
+            backoff = min(self.RESTART_MAX, backoff * 2)
 
-        # Detect GPU encoder
+    def _launch(self) -> tuple[bool, bool]:
+        """Start one FFmpeg process. Returns (used_gpu, started)."""
+        rtmp_url = self._output or f"rtmps://a.rtmps.youtube.com/live2/{self._stream_key}"
+
         use_nvenc = not self._force_cpu and _detect_nvenc(self._ffmpeg_path)
         if use_nvenc:
             video_codec = ["-c:v", "h264_nvenc", "-preset", "p3",
@@ -107,14 +141,8 @@ class YouTubeBroadcaster:
                            "-tune", "zerolatency", "-threads", "0"]
             print("[Broadcast] Using CPU encoding (libx264)")
 
-        # Build audio input args
-        audio_device = _find_audio_device(self._ffmpeg_path)
-        if audio_device:
-            audio_input = ["-f", "dshow", "-i", f"audio={audio_device}"]
-            print(f"[Broadcast] Audio device: {audio_device}")
-        else:
-            audio_input = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-            print("[Broadcast] No audio device found, streaming with silent audio")
+        audio_input = _audio_input_args(self._audio_input)
+        print(f"[Broadcast] Audio: {self._audio_input or 'silent (QUIZ_AUDIO_INPUT not set)'}")
 
         bufsize_val = int(self._bitrate.replace("k", "")) * 2
 
@@ -123,7 +151,6 @@ class YouTubeBroadcaster:
             "-hide_banner",
             "-loglevel", "error",
             "-y",
-
             # Video input: raw RGB from stdin
             "-f", "rawvideo",
             "-pix_fmt", "rgb24",
@@ -131,31 +158,20 @@ class YouTubeBroadcaster:
             "-r", str(self._fps),
             "-thread_queue_size", "1024",
             "-i", "pipe:0",
-
-            # Audio input
             *audio_input,
-
-            # Explicit stream mapping
             "-map", "0:v:0",
             "-map", "1:a:0",
-
-            # Video encoding
             *video_codec,
             "-b:v", self._bitrate,
             "-maxrate", self._bitrate,
             "-bufsize", f"{bufsize_val}k",
             "-g", str(self._fps * 2),
             "-pix_fmt", "yuv420p",
-
-            # Audio encoding
             "-c:a", "aac",
             "-b:a", "128k",
             "-ar", "44100",
-
-            # Stop when video pipe closes (anullsrc is infinite)
+            # Stop when the video pipe closes (anullsrc is infinite)
             "-shortest",
-
-            # Output
             "-f", "flv",
             "-flvflags", "no_duration_filesize",
             rtmp_url,
@@ -167,7 +183,6 @@ class YouTubeBroadcaster:
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startupinfo.wShowWindow = 0  # SW_HIDE
-
             self._stderr_lines = []
             self._proc = subprocess.Popen(
                 cmd,
@@ -177,130 +192,90 @@ class YouTubeBroadcaster:
                 bufsize=self._width * self._height * 3 * 4,  # ~24MB buffer (4 raw frames)
                 startupinfo=startupinfo,
             )
-            self._active = True
-            self._error_logged = False
-
-            # Background threads
-            threading.Thread(target=self._monitor_stderr, daemon=True).start()
-            threading.Thread(target=self._writer_loop, daemon=True).start()
-
-            print(f"[Broadcast] Streaming to YouTube at {self._fps}fps ({self._bitrate})")
-            return True
-
         except FileNotFoundError:
             print(f"[Broadcast] FFmpeg not found at '{self._ffmpeg_path}'")
-            print("[Broadcast] Run: python scripts/download_ffmpeg.py")
-            return False
+            return use_nvenc, False
         except Exception as e:
-            print(f"[Broadcast] Failed to start: {e}")
-            return False
+            print(f"[Broadcast] Failed to start FFmpeg: {e}")
+            return use_nvenc, False
+
+        threading.Thread(target=self._monitor_stderr, args=(self._proc,), daemon=True).start()
+        self._active = True
+        print(f"[Broadcast] Streaming to YouTube at {self._fps}fps ({self._bitrate})")
+        return use_nvenc, True
 
     def send_frame(self, surface: pygame.Surface, frame_count: int):
         """Capture a frame into the queue (non-blocking). Drops frames if behind."""
-        if not self._active or self._proc is None:
+        if not self._active:
             return
-
         if frame_count % self._skip_ratio != 0:
             return
-
         try:
-            raw = pygame.image.tobytes(surface, "RGB")
-            self._frame_queue.put_nowait(raw)
+            self._frame_queue.put_nowait(pygame.image.tobytes(surface, "RGB"))
         except queue.Full:
-            pass  # Drop frame - writer thread is behind
+            pass  # Drop frame - writer is behind
 
     def _writer_loop(self):
-        """Drain frame queue and write to FFmpeg stdin at a steady real-time rate."""
+        """Write queued frames to FFmpeg at real-time speed until it exits or stop() is called."""
         frame_interval = 1.0 / self._fps
         next_write = time.perf_counter()
-
-        while self._active:
-            proc = self._proc
-            if proc is None:
-                break
-
-            # Check if FFmpeg is still alive
-            if proc.poll() is not None:
-                code = proc.returncode
-                if not self._error_logged:
-                    print(f"[Broadcast] FFmpeg exited (code {code})")
-                    for line in self._stderr_lines:
-                        print(f"[Broadcast]   {line}")
-                    self._error_logged = True
-                self._active = False
-                # Auto-retry with CPU encoding if GPU failed
-                if not self._force_cpu and code != 0:
-                    print("[Broadcast] GPU encoding failed, retrying with CPU (libx264)...")
-                    self._force_cpu = True
-                    self._proc = None
-                    self.start()
-                    return
-                break
-
-            # Get next frame from queue
+        proc = self._proc
+        while self._want and proc.poll() is None:
             try:
                 raw = self._frame_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
-
-            # Rate limit: sleep until it's time for the next frame
-            now = time.perf_counter()
-            sleep_time = next_write - now
+            sleep_time = next_write - time.perf_counter()
             if sleep_time > 0:
                 time.sleep(sleep_time)
             next_write = time.perf_counter() + frame_interval
-
-            # Write to FFmpeg pipe
             try:
-                if self._active and self._proc and self._proc.stdin and not self._proc.stdin.closed:
-                    self._proc.stdin.write(raw)
+                proc.stdin.write(raw)
             except (BrokenPipeError, OSError, ValueError):
-                if not self._error_logged:
-                    print("[Broadcast] Stream pipe broken, stopping")
-                    self._error_logged = True
-                self._active = False
                 break
-
-    def stop(self):
-        """Gracefully stop streaming."""
         self._active = False
-        # Drain the queue so writer thread can exit
+
+    def _close_proc(self):
+        proc, self._proc = self._proc, None
+        self._active = False
+        if not proc:
+            return
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
         while not self._frame_queue.empty():
             try:
                 self._frame_queue.get_nowait()
             except queue.Empty:
                 break
-        # Give writer thread a moment to notice _active=False
-        time.sleep(0.1)
-        if self._proc:
-            try:
-                if not self._proc.stdin.closed:
-                    self._proc.stdin.close()
-            except Exception:
-                pass
-            try:
-                self._proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
-            self._proc = None
+
+    def stop(self):
+        """Stop streaming and do not restart."""
+        was_on = self._want
+        self._want = False
+        self._active = False
+        if self._thread:
+            self._thread.join(timeout=8)
+            self._thread = None
+        self._close_proc()
+        if was_on:
             print("[Broadcast] Stopped")
 
-    def _monitor_stderr(self):
-        """Read FFmpeg stderr and collect + log errors (masking stream key)."""
+    def _monitor_stderr(self, proc):
+        """Collect FFmpeg stderr, masking the stream key."""
         try:
-            proc = self._proc
-            if not proc:
-                return
             for line in proc.stderr:
                 text = line.decode("utf-8", errors="replace").strip()
-                if not text:
+                if not text or text.startswith(("frame=", "size=")):
                     continue
-                # Mask the stream key
                 if self._stream_key and self._stream_key in text:
                     text = text.replace(self._stream_key, "****")
-                # Skip progress lines
-                if text.startswith("frame=") or text.startswith("size="):
-                    continue
                 self._stderr_lines.append(text)
                 print(f"[Broadcast] FFmpeg: {text}")
         except Exception:

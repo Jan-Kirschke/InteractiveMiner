@@ -5,6 +5,7 @@ Usage:
     python -m quiz.game                  # Auto-detect from config channels
     python -m quiz.game --offline        # Offline mode with fake chat bots
     python -m quiz.game VIDEO_ID         # Connects to a specific YouTube livestream
+    python -m quiz.game --headless       # No window, 30 fps (servers / scheduled shows)
 
 The script will:
 1. Use an explicit VIDEO_ID argument if provided
@@ -20,8 +21,8 @@ Controls:
     Host: ESC to quit, F1 to skip current phase, F2 to toggle streaming
 """
 
+import os
 import sys
-from quiz.controller import MainGameController
 
 
 def main():
@@ -29,6 +30,14 @@ def main():
     offline = "--offline" in sys.argv
     if offline:
         sys.argv.remove("--offline")
+    if "--headless" in sys.argv:
+        # No window: render off-screen at the stream frame rate (servers, scheduled shows).
+        sys.argv.remove("--headless")
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("QUIZ_FPS", "30")
+        print("[Quiz] Headless mode")
+
+    from quiz.controller import MainGameController  # after env setup: config reads QUIZ_FPS
 
     if len(sys.argv) > 1:
         video_id = sys.argv[1]

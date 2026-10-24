@@ -3,12 +3,32 @@ The Lifelong Quiz - Configuration
 All tunable constants for the quiz game.
 """
 
+import os as _os
+from pathlib import Path as _Path
+
+
+def _load_dotenv(path):
+    """Read KEY=VALUE lines from a gitignored .env file into os.environ (existing vars win)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                _os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    except FileNotFoundError:
+        pass
+
+
+_load_dotenv(_Path(__file__).resolve().parent.parent / ".env")
+
 # ==========================================
 # WINDOW
 # ==========================================
 SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
-FPS = 60
+FPS = int(_os.environ.get("QUIZ_FPS", "60"))  # headless servers render at the stream rate (30)
 WINDOW_TITLE = "The Lifelong Quiz"
 
 # ==========================================
@@ -235,27 +255,14 @@ COMPETITION_ALERT_THRESHOLD = 20  # points gap to trigger "close race" alert
 # ==========================================
 # YOUTUBE STREAMING (via FFmpeg)
 # ==========================================
-def _load_dotenv(path):
-    """Read KEY=VALUE lines from a gitignored .env file into os.environ (existing vars win)."""
-    import os
-    try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-    except FileNotFoundError:
-        pass
 
-
-_load_dotenv(_ROOT / ".env")
-
-import os as _os
 STREAM_ENABLED = True              # Set True to stream to YouTube Live
 # Stream key comes from the environment or the gitignored .env file (see .env.example).
 YOUTUBE_STREAM_KEY = _os.environ.get("QUIZ_STREAM_KEY", "")
+# Audio source as "format:device", e.g. "pulse:quiz_sink.monitor". Empty = silent audio track.
+STREAM_AUDIO_INPUT = _os.environ.get("QUIZ_AUDIO_INPUT", "")
+# Optional output override (e.g. a local .flv file for testing). Empty = YouTube RTMPS ingest.
+STREAM_OUTPUT = _os.environ.get("QUIZ_STREAM_OUTPUT", "")
 STREAM_FPS = 30                     # Stream output framerate (30fps is ideal for quiz content)
 STREAM_BITRATE = "6000k"            # Video bitrate for 1080p30
 FFMPEG_PATH = "ffmpeg"              # Path to ffmpeg binary (auto-downloaded to scripts/)

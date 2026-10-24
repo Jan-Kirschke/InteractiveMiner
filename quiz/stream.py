@@ -206,9 +206,11 @@ class StreamWatcher:
     When a stream is found, calls the callback with the video ID.
     """
 
-    def __init__(self, on_stream_found, channel_ids: list[str] | None = None):
+    def __init__(self, on_stream_found, channel_ids: list[str] | None = None,
+                 current_video_id: str = ""):
         self._callback = on_stream_found
         self._channel_ids = channel_ids or []
+        self._current = current_video_id
         self._running = False
         self._thread = None
 
@@ -226,10 +228,11 @@ class StreamWatcher:
             if not self._running:
                 break
             vid = find_live_video_id(self._channel_ids)
-            if vid:
+            # Keep polling: after a long drop YouTube starts a new video and chat must follow it.
+            if vid and vid != self._current:
                 print(f"[Stream] Stream detected: {vid}")
+                self._current = vid
                 self._callback(vid)
-                break  # Stop polling once found
 
     def stop(self):
         self._running = False

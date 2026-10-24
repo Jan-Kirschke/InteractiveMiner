@@ -5,6 +5,7 @@ Ties together chat, logic, database, sounds, and UI into the game loop.
 
 import pygame
 import queue
+import signal
 import time
 import sys
 
@@ -13,6 +14,7 @@ from quiz.config import (
     DB_SAVE_INTERVAL, DB_PATH, DB_PATH_OFFLINE,
     VIDEO_ID, CHANNEL_IDS,
     STREAM_ENABLED, YOUTUBE_STREAM_KEY, STREAM_FPS, STREAM_BITRATE, FFMPEG_PATH,
+    STREAM_AUDIO_INPUT, STREAM_OUTPUT,
 )
 from quiz.models import GameState
 from quiz.db import QuizDatabase
@@ -54,10 +56,13 @@ class MainGameController:
         self._stream_watcher = StreamWatcher(
             on_stream_found=self._on_stream_found,
             channel_ids=CHANNEL_IDS,
+            current_video_id=resolved,
         )
-        # Only start watcher if we didn't already find a stream
-        if not resolved and not offline:
+        # Keep watching even after a stream is found, so chat follows a new video ID.
+        # An explicit video ID pins chat to that video.
+        if not offline and not (video_id or VIDEO_ID):
             self._stream_watcher.start()
+        if not resolved and not offline:
             print("[Game] ============================================")
             print("[Game] Chat not connected yet!")
             print("[Game] Options to fix:")
@@ -72,6 +77,7 @@ class MainGameController:
             width=SCREEN_WIDTH, height=SCREEN_HEIGHT,
             fps=STREAM_FPS, bitrate=STREAM_BITRATE,
             ffmpeg_path=FFMPEG_PATH,
+            game_fps=FPS, audio_input=STREAM_AUDIO_INPUT, output=STREAM_OUTPUT,
         )
 
         # Periodic save timer
@@ -88,13 +94,19 @@ class MainGameController:
         """Callback from StreamWatcher when a live stream is detected."""
         self.chat.connect_to(video_id)
 
+    def _request_stop(self, signum, _frame):
+        print(f"[Game] Signal {signum} received, shutting down")
+        self.running = False
+
     def run(self):
+        # systemd / supervisors stop us with SIGTERM: finish the frame, save, exit cleanly.
+        signal.signal(signal.SIGTERM, self._request_stop)
         self.chat.start()
 
         # Render the first frame, then start broadcaster so FFmpeg has data immediately
         self._render()
         pygame.display.flip()
-        if STREAM_ENABLED and YOUTUBE_STREAM_KEY:
+        if STREAM_ENABLED and (YOUTUBE_STREAM_KEY or STREAM_OUTPUT):
             self._broadcast_frame()  # Pre-fill queue with first frame
             self.broadcaster.start()
 
