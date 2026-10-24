@@ -109,39 +109,39 @@ def _glide(f0, f1, dur, curve=4.0):
 
 
 # Drums ---------------------------------------------------------------
+# Warm kit: every hit is band-limited below ~2.5 kHz and has a few ms of attack, so nothing
+# cracks like a snare or hisses like a cymbal on a phone speaker.
 def _kick(dur=0.45, punch=1.0):
     t = _t(dur)
     body = np.sin(_glide(160 * punch, 45, dur, 22)) * np.exp(-t * 7)
-    click = _filter(_noise(dur), 1500) * np.exp(-t * 120) * 0.25
-    return _fade(body + click)
-
-
-def _snare(dur=0.25, tone=0.35):
-    t = _t(dur)
-    rattle = _filter(_noise(dur), 1200, 9000) * np.exp(-t * 18)
-    body = np.sin(2 * np.pi * 190 * t) * np.exp(-t * 30) * tone
-    return _fade(rattle + body)
+    knock = np.sin(2 * np.pi * 700 * t) * np.exp(-t * 160) * 0.12   # a tonal knock, not a noise click
+    return _fade((body + knock) * np.clip(t / 0.002, 0, 1))
 
 
 def _clap(dur=0.3):
+    """Soft hand clap: three low-passed bursts and a short warm tail."""
     t = _t(dur)
-    n = _filter(_noise(dur), 900, 6000)
+    n = _filter(_noise(dur), 500, 1600, order=4)
     env = np.zeros_like(t)
-    for off in (0.0, 0.011, 0.022):
-        env += np.exp(-np.clip(t - off, 0, None) * 60) * (t >= off)
-    env += np.exp(-t * 14) * 0.5
+    for off in (0.0, 0.012, 0.025):
+        env += np.exp(-np.clip(t - off, 0, None) * 50) * np.clip((t - off) / 0.003, 0, 1)
+    env += np.exp(-t * 16) * 0.4 * np.clip(t / 0.006, 0, 1)
     return _fade(n * env * 0.7)
 
 
 def _hat(dur=0.07, open_=False):
-    t = _t(dur if not open_ else 0.35)
-    return _fade(_filter(_noise(len(t) / SR), 7000) * np.exp(-t * (14 if open_ else 70)))
+    """A shaker rather than a hi-hat: band-limited, rounded attack."""
+    t = _t(dur if not open_ else 0.3)
+    n = _filter(_noise(len(t) / SR), 1400, 2400, order=4)
+    return _fade(n * np.exp(-t * (16 if open_ else 55)) * np.clip(t / 0.004, 0, 1))
 
 
 def _crash(dur=2.5):
+    """Cymbal stand-in: a slow glassy shimmer of sine partials (no noise), blooming in 25 ms."""
     t = _t(dur)
-    shimmer = sum(np.sin(2 * np.pi * f * t) for f in (3150, 4870, 6230, 7710)) * 0.05
-    return _fade((_filter(_noise(dur), 4500) + shimmer) * np.exp(-t * 2.2))
+    shimmer = sum(a * np.sin(2 * np.pi * f * t + i) for i, (f, a) in
+                  enumerate(((1046.5, 0.5), (1318.5, 0.35), (1568.0, 0.3), (2093.0, 0.15))))
+    return _fade(shimmer * np.exp(-t * 2.2) * np.clip(t / 0.025, 0, 1) * 0.6)
 
 
 def _reverb(x, seconds=1.6, wet=0.22, stereo=True):
@@ -189,6 +189,58 @@ def _mix(*parts, length=None):
 def _norm(st, peak=0.62):
     m = np.max(np.abs(st)) or 1.0
     return st * (peak / m)
+
+
+def _kweight(x):
+    """ITU-R BS.1770 K-weighting (pre-filter shelf + RLB high-pass), applied as a magnitude
+    response in the frequency domain. The 48 kHz biquads are evaluated at f / 48000, so the
+    curve in Hz is the standard one at any sample rate."""
+    f = np.fft.rfftfreq(len(x), 1 / SR)
+    z = np.exp(1j * 2 * np.pi * f / 48000)
+
+    def biquad(b, a):
+        return (b[0] + b[1] / z + b[2] / z ** 2) / (a[0] + a[1] / z + a[2] / z ** 2)
+    h = biquad((1.53512485958697, -2.69169618940638, 1.19839281085285),
+               (1.0, -1.69065929318241, 0.73248077421585))
+    h = h * biquad((1.0, -2.0, 1.0), (1.0, -1.99004745483398, 0.99007225036621))
+    return np.fft.irfft(np.fft.rfft(x) * np.abs(h), len(x))
+
+
+def _db(v):
+    return float(20 * np.log10(v + 1e-9))
+
+
+def measure(st: np.ndarray) -> dict[str, float]:
+    """How a stereo buffer is heard: peak and RMS (dBFS), integrated and momentary-max loudness
+    (LUFS, BS.1770 gating), the share of energy above 3 kHz, and the loudest 30 ms above 3 kHz
+    (dBFS RMS): the last two catch hissy, snare-like transients."""
+    k = np.stack([_kweight(st[:, c]) for c in range(2)], axis=1)
+    blk, hop = int(0.4 * SR), int(0.1 * SR)
+    if len(k) < blk:
+        k = np.concatenate([k, np.zeros((blk - len(k), 2))])
+    power = np.cumsum(np.concatenate([[0.0], np.sum(k ** 2, axis=1)]))
+    starts = np.arange(0, len(k) - blk + 1, hop)
+    ms = (power[starts + blk] - power[starts]) / blk
+    lk = -0.691 + 10 * np.log10(ms + 1e-12)
+    gated = ms[lk > -70]
+    if len(gated):
+        rel = -0.691 + 10 * np.log10(np.mean(gated)) - 10
+        integrated = -0.691 + 10 * np.log10(np.mean(ms[(lk > -70) & (lk > rel)]))
+    else:
+        integrated = -99.0
+    mono = st.mean(axis=1)
+    spec = np.fft.rfft(mono)
+    f = np.fft.rfftfreq(len(mono), 1 / SR)
+    p = np.abs(spec) ** 2
+    spec[f < 3000] = 0
+    high = np.fft.irfft(spec, len(mono))
+    n = min(int(0.03 * SR), len(high))
+    e = np.cumsum(np.concatenate([[0.0], high ** 2]))
+    return {"peak": _db(np.max(np.abs(st))), "rms": _db(np.sqrt(np.mean(st ** 2))),
+            "lufs": float(integrated), "lufs_max": float(np.max(lk)),
+            "hf_share": float(p[f >= 3000].sum() / max(p.sum(), 1e-12)),
+            "hf_peak": _db(np.sqrt(np.max(e[n:] - e[:-n]) / n)),
+            "seconds": len(st) / SR}
 
 
 def _loop_mix(parts, bars):
@@ -302,30 +354,45 @@ def _sfx_final_countdown(dur=5.0):
 
 def _sfx_times_up():
     """Time's up: low impact plus a two-note horn."""
-    horn = _chord(["E4", "B4"], 0.5, harmonics=12, bright=0.8, decay=4, detune=0.003)
+    horn = _chord(["E4", "B4"], 0.5, harmonics=6, bright=1.2, decay=4, attack=0.012, detune=0.003)
     hit = _kick(0.8, punch=1.3)
     return _norm(_reverb(_mix((0, hit, 0.6), (0, horn, 0.6)).mean(axis=1), 1.4, 0.25), 0.4)
 
 
+def _mallet(freq, dur=0.35):
+    """Soft felt-mallet timpani hit: round sine partials, a 6 ms attack, nothing above 1 kHz."""
+    t = _t(dur)
+    out = sum(a * np.sin(2 * np.pi * freq * r * t) * np.exp(-t * d)
+              for r, a, d in ((1.0, 1.0, 9), (1.5, 0.3, 14), (2.0, 0.12, 18)))
+    return _fade(out * np.clip(t / 0.006, 0, 1))
+
+
 def _sfx_drumroll(dur=4.0):
-    """Soft brush roll that swells gently while the last answers lock in."""
+    """Soft timpani roll (A and E, the key's root and fifth) that swells gently while the
+    last answers lock in, then eases off just before the reveal so the stinger lands on air."""
     hits = []
-    step = 1 / 18
+    step = 1 / 14
     n = int(dur / step)
-    brush = _filter(_noise(0.1), 800, 5000) * np.exp(-_t(0.1) * 30)
+    low, high = _mallet(hz("A2")), _mallet(hz("E3"))
     for i in range(n):
         k = i / n
-        hits.append((i * step + _rng.uniform(-0.004, 0.004), brush, 0.12 + 0.3 * k ** 1.5))
-    return _norm(_reverb(_mix(*hits, length=int(dur * SR)).mean(axis=1), 0.8, 0.15)[:int(dur * SR)], 0.28)
+        swell = 0.25 + 0.75 * k ** 1.3
+        ease = min(1.0, (n - i) / (0.25 * 14))   # last 0.25 s fades down
+        hits.append((i * step + _rng.uniform(-0.005, 0.005), low if i % 2 else high,
+                     swell * ease * _rng.uniform(0.85, 1.0)))
+    t = _t(dur)
+    drone = np.sin(2 * np.pi * hz("A1") * t) * 0.25 * (t / dur) ** 1.5   # felt under the roll
+    hits.append((0, drone, 1.0))
+    return _norm(_reverb(_mix(*hits, length=int(dur * SR)).mean(axis=1), 0.8, 0.12)[:int(dur * SR)], 0.22)
 
 
 def _sfx_correct():
-    """Reveal with right answers: crash, bright major stab, sparkle arpeggio."""
-    stab = _chord(["C4", "E4", "G4", "C5"], 1.4, harmonics=14, bright=0.7, decay=2.2, detune=0.004)
+    """Reveal with right answers: shimmer, warm major stab, sparkle arpeggio."""
+    stab = _chord(["C4", "E4", "G4", "C5"], 1.4, harmonics=7, bright=1.0, decay=2.2, attack=0.008, detune=0.004)
     parts = [(0, _crash(), 0.35), (0, _kick(0.6, 1.2), 0.8), (0, stab, 0.9)]
-    for i, n in enumerate(("C6", "E6", "G6", "C7")):
+    for i, n in enumerate(("C5", "E5", "G5", "C6")):
         parts.append((0.08 + i * 0.07, _bell(hz(n), 1.0, 4), 0.25))
-    return _norm(_reverb(_mix(*parts).mean(axis=1), 1.8, 0.25), 0.66)
+    return _norm(_reverb(_mix(*parts).mean(axis=1), 1.8, 0.25), 0.44)
 
 
 def _sfx_wrong():
@@ -335,7 +402,7 @@ def _sfx_wrong():
         parts.append((i * 0.22, _voice(hz(n), 0.5 if i < 2 else 1.0, harmonics=6, bright=1.2,
                                        decay=3 if i < 2 else 1.6, detune=0.003), 0.55))
     parts.append((0.44, _voice(hz("A2"), 1.1, harmonics=5, decay=1.5), 0.45))
-    return _norm(_reverb(_mix(*parts).mean(axis=1), 1.5, 0.22), 0.5)
+    return _norm(_reverb(_mix(*parts).mean(axis=1), 1.5, 0.22), 0.36)
 
 
 def _sfx_new_question():
@@ -373,7 +440,7 @@ def _sfx_fanfare():
 def _sfx_whoosh():
     t = _t(0.45)
     env = np.sin(np.pi * t / 0.45) ** 2
-    n = _filter(_noise(0.45), 500, 4000) * env
+    n = _filter(_noise(0.45), 150, 1100, order=3) * env   # soft air, no hiss
     pan = np.linspace(-0.8, 0.8, len(t))
     return _norm(np.stack([n * np.cos((pan + 1) * np.pi / 4), n * np.sin((pan + 1) * np.pi / 4)], axis=1), 0.3)
 
