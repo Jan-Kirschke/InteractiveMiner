@@ -88,7 +88,7 @@ def level_ups(game, upto=10):
 def test_level_up_fires_once_per_ramp_step(game):
     game._enter_intro()
     game._pop_question = served(None)(game)
-    assert level_ups(game) == [4, 8]
+    assert level_ups(game) == [4, 8, 10]                   # Q10 asks for expert (EXPERT_FINAL)
     assert any("LEVEL UP" in e.text and "HARD" in e.text for e in game.event_feed)
 
 
@@ -98,12 +98,18 @@ def test_level_up_waits_for_a_question_of_the_new_tier(game):
     assert level_ups(game) == [5, 10]               # Q4 and Q8-9 served below the ramp's tier
 
 
+def test_a_question_above_the_ramp_does_not_level_up_early(game):
+    game._enter_intro()
+    game._pop_question = served(["easy", "hard", "easy", "medium"] + ["medium"] * 6)(game)
+    assert level_ups(game, upto=4) == [4]                  # Q2 measured hard: still the easy part of the ramp
+
+
 def test_a_new_match_levels_up_again(game):
     game._pop_question = served(None)(game)
     game._enter_intro()
     level_ups(game)
     game._enter_intro()
-    assert level_ups(game) == [4, 8]
+    assert level_ups(game) == [4, 8, 10]
 
 
 def test_dry_tier_serves_the_nearest_tier(game, monkeypatch):
@@ -233,7 +239,7 @@ def test_stakes_are_what_the_fastest_fresh_right_answer_scores(game):
     game._pop_question = served(None)(game)
     play_match(game, play)
     assert got == stakes
-    assert stakes[1] == 20 and stakes[5] == 37 and stakes[10] == 60   # 20 x1.25 x1.5 lightning; 20 x1.5 x2
+    assert stakes[1] == 20 and stakes[5] == 37 and stakes[10] == 80   # 20 x1.25 x1.5 lightning; 20 x2 expert x2
 
 
 def standing(game, user, pts):
