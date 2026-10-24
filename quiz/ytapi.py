@@ -358,7 +358,9 @@ class YouTubeAPI:
             "snippet": {"title": self.title[:100], "description": self.description,
                         "scheduledStartTime": _iso(self._clock() + 30)},   # must be in the future
             "status": {"privacyStatus": self.privacy, "selfDeclaredMadeForKids": False},
-            "contentDetails": {"enableAutoStart": True, "enableAutoStop": False,
+            # auto-start off: on the quiz channel it never fired and it blocks manual transitions
+            # (403 invalidTransition, measured 2026-10-24); the show takes it live itself
+            "contentDetails": {"enableAutoStart": False, "enableAutoStop": False,
                                "latencyPreference": "ultraLow", "enableDvr": False,
                                # no enableEmbed: channels not allowed to embed get 400 invalidEmbedSetting
                                # the testing step needs the monitor stream (viewers never see it)
@@ -367,7 +369,7 @@ class YouTubeAPI:
         return self.call("POST", "liveBroadcasts", {"part": "snippet,status,contentDetails"}, body)
 
     def _go_live(self, bid: str, sid: str, wait_live: float, poll: float, stop: threading.Event):
-        """Auto-start normally takes it live; if not within wait_live while video arrives, transition."""
+        """Take it live: wait out a starting state, then ready -> testing -> live once video arrives."""
         deadline = self._clock() + wait_live
         while True:
             state = self.broadcast_state(bid)
@@ -376,7 +378,8 @@ class YouTubeAPI:
                 return
             if state in ENDED_STATES or state is None:
                 raise YouTubeError(409, "broadcastEnded", f"broadcast {bid} is {state or 'gone'}")
-            if self._clock() >= deadline or stop.is_set():
+            # created, ready and testing never move on their own (auto-start is off): transition now
+            if state in ("created", "ready", "testing") or self._clock() >= deadline or stop.is_set():
                 break
             stop.wait(poll)
         if stop.is_set() or self.stream_status(sid) != "active":

@@ -51,7 +51,7 @@ class FakeYouTube:
         ]
         self.broadcasts = {}
         self.calls = []
-        self.auto_start = True        # enableAutoStart: live as soon as it is bound to an active stream
+        self.auto_start = False       # the quiz channel never auto-started a bound broadcast (2026-10-24)
         self.refresh = "ok"           # or "invalid_grant"
         self.quota_left = 10_000
         self.hang = 0.0
@@ -124,6 +124,8 @@ class FakeYouTube:
             target = params["broadcastStatus"]
             if b["status"]["lifeCycleStatus"] == target:
                 return _error(403, "redundantTransition")
+            if b.get("contentDetails", {}).get("enableAutoStart"):
+                return _error(403, "invalidTransition")   # auto-start on: no manual transitions (2026-10-24)
             if target == "live" and b["status"]["lifeCycleStatus"] in ("created", "ready"):
                 return _error(403, "invalidTransition")   # the quiz channel, 2026-10-24: testing first
             if target == "live":
@@ -236,7 +238,7 @@ def test_without_a_broadcast_one_is_created_bound_and_categorised(yt, monkeypatc
     (_, _, params, body, _), = fake.posts("liveBroadcasts")
     assert params["part"] == "snippet,status,contentDetails"
     assert body["status"] == {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
-    assert body["contentDetails"] == {"enableAutoStart": True, "enableAutoStop": False,
+    assert body["contentDetails"] == {"enableAutoStart": False, "enableAutoStop": False,
                                       "latencyPreference": "ultraLow", "enableDvr": False,
                                       "monitorStream": {"enableMonitorStream": True, "broadcastStreamDelayMs": 0}}
     assert body["snippet"]["title"] == ytapi.DEFAULT_TITLE
