@@ -39,7 +39,7 @@ SCOPE = "https://www.googleapis.com/auth/youtube"
 DEFAULT_TITLE = "The Lifelong Quiz · LIVE trivia, answer 1-4 in chat"
 DEFAULT_DESCRIPTION = (
     "Live trivia, all day. Type 1, 2, 3 or 4 in chat to answer; the fastest right answers score most.\n"
-    "Commands: !ready  !rank  !card  !crew <name>  !duel @name")
+    "Commands: !ready  !rank  !card  !crew name  !duel @name")
 ENTERTAINMENT = "24"
 AUTH_EXPIRED = "YouTube authorisation expired: run quizctl youtube-auth"
 
@@ -127,8 +127,10 @@ class YouTubeAPI:
         self._quota_until = 0.0
         self._transitioned: dict[str, float] = {}
         self._announced: set[tuple[str, str]] = set()
-        self.title = os.environ.get("QUIZ_YT_TITLE") or DEFAULT_TITLE
-        self.description = os.environ.get("QUIZ_YT_DESCRIPTION") or DEFAULT_DESCRIPTION
+        # YouTube rejects < and > in titles and descriptions (HTTP 400 invalidDescription)
+        no_angles = str.maketrans("", "", "<>")
+        self.title = (os.environ.get("QUIZ_YT_TITLE") or DEFAULT_TITLE).translate(no_angles)
+        self.description = (os.environ.get("QUIZ_YT_DESCRIPTION") or DEFAULT_DESCRIPTION).translate(no_angles)
         self.privacy = os.environ.get("QUIZ_YT_PRIVACY") or "public"
 
     # ---- OAuth -------------------------------------------------------------------------------

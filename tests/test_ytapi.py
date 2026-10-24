@@ -238,6 +238,7 @@ def test_without_a_broadcast_one_is_created_bound_and_categorised(yt, monkeypatc
                                       "latencyPreference": "ultraLow", "enableDvr": False,
                                       "enableEmbed": True, "monitorStream": {"enableMonitorStream": False}}
     assert body["snippet"]["title"] == ytapi.DEFAULT_TITLE
+    assert not set("<>") & set(body["snippet"]["description"])   # YouTube answers 400 invalidDescription
     assert body["snippet"]["scheduledStartTime"] > ytapi._iso(clock.t)   # must be in the future
     (_, _, bind, _, _), = fake.posts("liveBroadcasts/bind")
     assert (bind["id"], bind["streamId"]) == (bid, "S-ours")
