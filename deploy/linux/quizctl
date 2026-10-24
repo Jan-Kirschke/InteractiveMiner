@@ -5,6 +5,7 @@ set -euo pipefail
 
 APP=/opt/quiz
 ENV_FILE=$APP/.env
+SECRETS=$APP/secrets
 START_DROPIN=/etc/systemd/system/quiz-start.timer.d/schedule.conf
 STOP_DROPIN=/etc/systemd/system/quiz-stop.timer.d/schedule.conf
 
@@ -23,6 +24,9 @@ quizctl config                show all settings (stream key masked)
 quizctl set NAME VALUE        change a setting, e.g. quizctl set QUIZ_STREAM_HEIGHT 1080
 quizctl unset NAME            remove a setting (back to the default)
 quizctl update                pull the latest code and restart a running show
+quizctl youtube-client        store the Google OAuth client JSON (read from stdin)
+quizctl youtube-auth          authorise the show to manage the channel's broadcasts (device code)
+quizctl youtube-status        stream health and broadcast state, via the YouTube API
 EOF
 }
 
@@ -49,6 +53,10 @@ restart_if_running() {
     else
         echo "Saved. It applies to the next show."
     fi
+}
+
+ytapi() {  # run quiz.ytapi as the quiz user, with the show's settings
+    sudo -u quiz bash -c "cd $APP && venv/bin/python -m quiz.ytapi $1"
 }
 
 to_minutes() {  # 3h -> 180, 90m -> 90, 2h30m -> 150
@@ -78,11 +86,13 @@ case "$cmd" in
     status)
         if systemctl is-active --quiet quiz; then
             echo "Show: RUNNING since $(systemctl show quiz -p ActiveEnterTimestamp --value)"
-            journalctl -u quiz -n 200 --no-pager -o cat | grep -E '^\[Broadcast\]|^\[Chat\]|^\[Stream\]' | tail -n 4
+            journalctl -u quiz -n 400 --no-pager -o cat | grep -E '^\[Broadcast\]|^\[Chat\]|^\[Stream\]|^YouTube' | tail -n 6
         else
             echo "Show: stopped"
         fi
         if grep -qE '^QUIZ_STREAM_KEY=.+' "$ENV_FILE"; then echo "Stream key: set"; else echo "Stream key: MISSING (run: quizctl key)"; fi
+        if [ -f "$SECRETS/youtube_token.json" ]; then echo "YouTube API: authorised (the show manages its broadcasts)"
+        else echo "YouTube API: not set up (docs/youtube-api.md)"; fi
         show_schedule ;;
     logs)
         if [ -n "${1:-}" ]; then journalctl -u quiz -n "$1" --no-pager -o cat
@@ -151,6 +161,21 @@ case "$cmd" in
         sudo -u quiz bash -c "cd $APP && set -a && . ./.env && set +a && venv/bin/python -m quiz.sounds"             || echo "Sound pre-render failed; the show renders them at start instead."
         echo "Updated to $(sudo -u quiz git -C "$APP" log --oneline -1)."
         restart_if_running ;;
+    youtube-client)
+        need_root
+        install -d -m 700 -o quiz -g quiz "$SECRETS"
+        tmp=$(mktemp); chmod 600 "$tmp"
+        cat > "$tmp"
+        grep -q '"client_id"' "$tmp" || { rm -f "$tmp"; echo "That is not an OAuth client JSON (no client_id)." >&2; exit 1; }
+        install -m 600 -o quiz -g quiz "$tmp" "$SECRETS/youtube_client.json"; rm -f "$tmp"
+        echo "OAuth client saved. Next: quizctl youtube-auth" ;;
+    youtube-auth)
+        need_root
+        [ -f "$SECRETS/youtube_client.json" ] || { echo "No OAuth client yet: run quizctl youtube-client first." >&2; exit 1; }
+        install -d -m 700 -o quiz -g quiz "$SECRETS"
+        ytapi auth
+        restart_if_running ;;
+    youtube-status) need_root; ytapi status ;;
     help|-h|--help) usage ;;
     *) usage; exit 1 ;;
 esac

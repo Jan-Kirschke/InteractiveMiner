@@ -7,6 +7,10 @@
 #   .\scripts\quiz-server.ps1 schedule "18:00 01:00" 3h
 #   .\scripts\quiz-server.ps1 set QUIZ_STREAM_HEIGHT 1080
 #   .\scripts\quiz-server.ps1 shell           (open a terminal on the server)
+#   .\scripts\quiz-server.ps1 youtube-client <downloaded client JSON>   (sent over ssh stdin)
+#   .\scripts\quiz-server.ps1 youtube-auth    (shows a URL and a code to approve)
+#   .\scripts\quiz-server.ps1 youtube-status
+#   Setup: docs/youtube-api.md
 #
 # Server address and SSH key come from the repo's .env (QUIZ_SERVER, QUIZ_SSH_KEY).
 # Full guide: deploy/linux/SERVER.md
@@ -40,6 +44,18 @@ if ($cmd[0] -eq "key" -and $cmd.Count -gt 1) {
     Write-Host "Type only: .\scripts\quiz-server.ps1 key"
     Write-Host "Then paste the stream key when it asks. Do not put the key on the command line."
     exit 1
+}
+
+if ($cmd[0] -eq "youtube-client") {
+    if ($cmd.Count -ne 2 -or -not (Test-Path -LiteralPath $cmd[1] -PathType Leaf)) {
+        Write-Host "Usage: .\scripts\quiz-server.ps1 youtube-client <path to the downloaded client JSON>"
+        exit 1
+    }
+    # The file goes over ssh's stdin byte for byte, never on a command line.
+    $file = (Resolve-Path -LiteralPath $cmd[1]).Path
+    $p = Start-Process -FilePath "ssh" -NoNewWindow -Wait -PassThru -RedirectStandardInput $file `
+        -ArgumentList @("-i", "`"$sshKey`"", "root@$server", "quizctl youtube-client")
+    exit $p.ExitCode
 }
 
 if ($cmd[0] -eq "shell") {

@@ -23,9 +23,30 @@ On the server itself, the same commands work as `quizctl status`, `quizctl start
 
 1. In YouTube Studio, go to **Create → Go live → Stream**, and copy the stream key.
 2. Run `.\scripts\quiz-server.ps1 key` and paste it. It is stored only on the server, readable by nobody else.
-3. Run `.\scripts\quiz-server.ps1 start`. Within about 30 seconds the channel is live. YouTube's
-   "Stream now" goes live as soon as video arrives, so no click in Studio is needed.
-4. Run `.\scripts\quiz-server.ps1 stop` to end it, or let the schedule end it.
+3. Set up the YouTube API once (next section). Since 24 October 2026 YouTube no longer creates a
+   broadcast by itself when video arrives, so without it the stream is invisible.
+4. Run `.\scripts\quiz-server.ps1 start`. Within about a minute the channel is live.
+5. Run `.\scripts\quiz-server.ps1 stop` to end it, or let the schedule end it. Either way the broadcast is ended.
+
+## YouTube API (the show makes its own broadcasts)
+
+Click-by-click guide: [docs/youtube-api.md](../../docs/youtube-api.md). In short:
+
+1. Google Cloud Console: create a project, enable **YouTube Data API v3**.
+2. OAuth consent screen: **External**, add the scope `https://www.googleapis.com/auth/youtube`.
+3. **Publish the app ("In production")**. In "Testing" the authorisation expires after 7 days.
+   You will see "Google hasn't verified this app": click **Advanced > Go to … (unsafe)**.
+4. Create an OAuth client ID of type **TVs and Limited Input devices** and download its JSON.
+5. Then, in PowerShell:
+
+```
+.\scripts\quiz-server.ps1 youtube-client "$env:USERPROFILE\Downloads\client_secret_XXXX.json"
+.\scripts\quiz-server.ps1 youtube-auth      # open the URL, enter the code, approve with the CHANNEL's account
+.\scripts\quiz-server.ps1 youtube-status    # channel, stream health, broadcast state
+```
+
+If the account has several channels or a Brand Account, pick The Lifelong Quiz in the chooser.
+`youtube-auth` restarts a running show so it starts managing its broadcast at once.
 
 ## Schedule
 
@@ -67,6 +88,9 @@ A change restarts a running show (viewers see a short interruption), or applies 
 | `QUIZ_PODIUM_SECONDS` | `14` | How long the podium stays on screen. |
 | `QUIZ_MIN_PLAYERS` | `4` | Bots fill each match until this many real players answer. `0` = never any bots. Bots are labelled and never ranked. |
 | `QUIZ_STREAM_KEY` | (secret) | Set it with the `key` command, never with `set`. |
+| `QUIZ_YT_PRIVACY` | `public` | Privacy of the broadcasts the show creates: `public`, `unlisted` or `private`. |
+| `QUIZ_YT_TITLE` | The Lifelong Quiz · LIVE trivia, answer 1-4 in chat | Title of new broadcasts. |
+| `QUIZ_YT_DESCRIPTION` | how to play | Description of new broadcasts. |
 
 Leave `QUIZ_AUDIO_INPUT`, `SDL_AUDIODRIVER` and `PULSE_SINK` as they are: they route the game sound into the stream.
 
@@ -85,6 +109,8 @@ JSON or CSV pack in `quiz/packs/` (format in `quiz/import_questions.py`), commit
 
 - **Channel not live:** run `status`. Check that the stream key is set, then run `logs` and look for `[Broadcast]` lines.
   A rejected key shows as FFmpeg errors followed by restarts with growing pauses (5 s up to 60 s).
+  Then run `youtube-status` and look for `YouTube:` lines in `logs`; see the troubleshooting list in
+  [docs/youtube-api.md](../../docs/youtube-api.md) (expired authorisation, quota, wrong channel).
 - **"chat offline" on screen:** the stream is live but chat is not connected yet. It retries every
   20 seconds; a fresh stream can take a minute to show up on the channel page.
 - **Start over:** run `restart`. The scores live in `/opt/quiz/data/quiz_data.db` and survive restarts and updates.
