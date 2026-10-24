@@ -11,6 +11,78 @@ Special question types and rounds that fit "answer 1-4 in chat or on the phone p
 
 **Built (2026-10-24, branch feature/matches):** the shared plumbing, Crowd Mind, Lonely Answer, Higher or Lower, Odd One Out and the 50:50 joker. `config.SPECIAL_SLOTS = {2: "higher_lower", 4: "majority", 6: "odd_one_out"}` gives every 10-question match 3 special rounds. 30% of the Crowd Mind slots secretly play as Lonely Answer (`LONELY_CHANCE`). Closest Call is not built, so `special_number.json` stays inert. Tests: `tests/test_special.py`.
 
+## Game loop 2: less repetition across a 24-match show (design, 2026-10-24 evening)
+
+A 3-hour show plays about 24 matches, 240 questions. Before this, each match had the same shape, the same host lines and the same scoring. The aim: match N+1 feels different from match N, chat plays together as well as alone, and the questions visibly get harder. Everything works through chat only, uses no per-message or per-frame work over all players, and is shown through toasts, host lines and logic fields (the visual pass comes later).
+
+Each feature has a one-line rule. Built in this order, one commit each:
+
+| # | Feature | One-line rule |
+|---|---|---|
+| 1 | Difficulty pays | Easy x1, medium x1.25, hard x1.5 on the question's shown difficulty (crowd rounds x1). |
+| 1 | Level up | When the ramp steps up (Q4 medium, Q8 hard) and a question of that tier is served, a LEVEL UP toast and `level_up` play once. |
+| 1 | Graceful ramp | When a tier runs dry, the nearest tier is served (lower first), and the label and points follow the question actually served. |
+| 2 | Fresh categories | The vote never offers the last 3 voted categories. |
+| 2 | Host-line variety | Every reveal and question line has several wordings that rotate, so the same wording never plays twice in a row. |
+| 3 | Combo steps | Your streak multiplier steps up: x1.3 from 3 right in a row, x1.5 from 5, x2 from 10, x2.5 from 15, x3 from 25. |
+| 4 | Rotating formats | Matches rotate Classic, Speed, Survivors, Teams by match number, so no two matches in a row share a format. |
+| 4 | Speed Match | Every question is a 22 s lightning question at 1.5x. |
+| 4 | Survivors | Answer every question right (crowd rounds: just answer); the survivors split 200 points, at least 20 each. |
+| 4 | Teams | Your name puts you in Team Gold or Team Teal for good; the team with the higher average match points gets +15 for every member who played. |
+| 4 | Halftime | After Q5, a halftime toast names the leader and the format's state. |
+| 5 | Community goal | Chat's right answers on Q1-Q9 reach 5 per player of the last match (at least 10), and Q10 becomes a jackpot: every right answer +25. |
+| 6 | `!double` | Once per match, after 5 answers in it: this question's answer pays x2 if right, or costs up to 20 match points if wrong. |
+
+### Tension build-up (BUILT, operator request, top priority)
+
+Every question now opens with `GameState.BUILDUP`: `... REVEALING -> BUILDUP -> ASKING ...`, and `INTRO -> BUILDUP` for Q1.
+
+- **Length:** `BUILDUP_TIME`, 4 s (`QUIZ_BUILDUP_SECONDS`). `BUILDUP_TIME_BIG`, 6 s, before the final and a difficulty step-up.
+- **Serving:** the question and its event are served at BUILDUP entry, so the build-up can talk about them. Answers still count only from ASKING, so the UI should not show the options during BUILDUP.
+- **`logic.buildup`:** set during BUILDUP and None otherwise. Its keys are exactly the brief's contract: `q_no`, `of`, `tier`, `stakes`, `kind`, `event`, `headline`, `subline`, `spotlight`, `intensity`.
+  - `stakes` = `question_stakes()`: the fastest right answer from a player with no streak. It uses the same `question_mult()` as scoring: difficulty, lightning, final.
+  - `kind` shows a Lonely Answer as `majority`, so the twist stays hidden.
+  - `event` is `final`, `lightning`, `first_blood`, `jackpot` or None.
+- **`headline`:** "QUESTION n · ...". The event wins (FOR DOUBLE POINTS, LIGHTNING ROUND, ...), then a step-up (THE HARD ROUND), then the special round, then THE WARM-UP (Q1) or THE LAST HURDLE (Q9), then a rotating line.
+- **`subline`:** one fact from the match. A step-up says so. The final prefers the lead. Otherwise it rotates through these, never the same kind twice in a row:
+  - "Only 3 players are still perfect" (`logic.perfect`: every answer right, while a crowd round only needs an answer);
+  - "alice leads by 12";
+  - "bob's 6-answer streak is on the line";
+  - "The hardest question so far: only 18% ever got it right" (`bank.stats`, from 15 real answers);
+  - "Last match, only 31% got the hard ones right";
+  - "Only 2 of 9 got the last one right".
+
+  With no fact, a rotating tip is used.
+- **`spotlight`:** the player the fact names, else the match leader, else None. Bots are never named, spotlighted, perfect or counted.
+- **`intensity`:** 0.15 at Q1, rising about 0.08 per question. Step-ups add 0.1, events 0.05 and a race closer than the stakes 0.05. The value is capped at 0.95, never falls within a match, and is 1.0 for the final. `logic.buildup_intensity` keeps the last value and resets to 0 in the lobby.
+- **Host line:** a rotating opener, the fact and "Up to N points". The opener never repeats twice in a row.
+- **Cost:** everything is computed once per question at BUILDUP entry. The scans cover this match's standings (two top scorers, the best streak) and one bank lookup, never per frame or per message.
+
+**Not built, and why:**
+- Category Gauntlet: the lobby vote already makes every non-mixed match one category.
+- `!shield`: `Player.streak_shield` already halves the streak once, earned at a 5-streak.
+- Expert tier: the bank knows only easy, medium and hard (`bank.measured_difficulty`) and no pack labels "expert". It needs a bank change first.
+- Harder late-show matches: the question bumper (`transitions.py`) reads the static `DIFFICULTY_RAMP`, so a shifted ramp would show the wrong tier. It waits for the visual pass.
+- A hype meter per question: the community goal covers the group moment, and two meters would compete for the screen.
+
+**Status: all of the table is BUILT** (branch `game/loop2`; tests in `tests/test_loop.py`, each rule checked against a named mutant).
+
+**Bots** never survive, never join a team, never count for the community goal and cannot use `!double`.
+
+**Logic fields for the visual pass.** Today these features show only as toasts and host lines.
+
+| Feature | Fields |
+|---|---|
+| Format | `match_format`; `special.FORMATS[fmt]` = (label, colour, rule) |
+| Difficulty | `level_up` (the tier this question stepped up to, else ""); `tier_reached`; `question_mult()`; `question_stakes()` |
+| Combo | `logic.combo_mult(streak)` and `config.COMBO_STEPS`, for a per-player step meter |
+| Survivors | `perfect` (set, or None before Q1); `match_stats["survivors"]` = (count, share) |
+| Teams | `team_points`, `team_count`, `team_scores()` (averages), `special.TEAMS[team]` = (label, colour), `logic.team_of(name)`; `match_stats["team"]` = (winner or "", gold, teal) |
+| Community goal | `community_goal`, `community_correct`, `community_jackpot` |
+| `!double` | `double_picks` (this question), `doubles_used` (this match), `MatchStanding.answered` |
+
+**Sound cues:** `level_up`, `combo`, `round_sting` (format at match open), `halftime`, `jackpot` (survivor and community payouts), `team_win`, `crowd` (goal half-way, team lead change) and `power_up` (goal reached, `!double` earned or used).
+
 ## Shared plumbing (once, for all top 4)
 
 1. `Question` gains `kind: str = "classic"` and `value: float | None = None`.

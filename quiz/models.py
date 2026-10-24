@@ -16,6 +16,7 @@ class GameState(Enum):
     WAITING = auto()
     LOBBY = auto()
     INTRO = auto()
+    BUILDUP = auto()   # the tension beat before every question: logic.buildup holds what to show
     ASKING = auto()
     LOCKING = auto()
     REVEALING = auto()
@@ -172,6 +173,7 @@ class MatchStanding:
     best_streak: int = 0
     streak: int = 0
     fastest: float = 0.0  # fastest correct answer time in this match (0 = none)
+    answered: int = 0     # questions answered in this match (a void crowd round does not count)
 
 
 @dataclass

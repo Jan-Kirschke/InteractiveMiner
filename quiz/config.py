@@ -79,6 +79,8 @@ def _env_num(name, default):
 MATCH_LENGTH = 10
 LOBBY_TIME = _env_num("QUIZ_LOBBY_SECONDS", 30)          # category vote, !ready check-ins
 INTRO_TIME = 4             # "MATCH 15" title sting
+BUILDUP_TIME = _env_num("QUIZ_BUILDUP_SECONDS", 4)       # tension beat before every question
+BUILDUP_TIME_BIG = max(BUILDUP_TIME, 6)                  # before the final and a difficulty step-up
 QUESTION_DISPLAY_TIME = _env_num("QUIZ_QUESTION_SECONDS", 30)
 LATE_ANSWER_GRACE = _env_num("QUIZ_LATE_SECONDS", 4)     # "time's up" while late chat messages still arrive
 REVEAL_AT = 1.1   # seconds into the reveal before the right answer lights up (answer split counts up first)
@@ -91,9 +93,22 @@ FINAL_QUESTION_MULT = 2.0  # the last question pays double
 SPECIAL_SLOTS = {2: "higher_lower", 4: "majority", 6: "odd_one_out"}
 LONELY_CHANCE = 0.3        # share of Crowd Mind slots secretly played as Lonely Answer (least picked wins)
 HALF_STREAK = 3            # 50:50 joker ("!half 1 3"): once per match from this answer streak in the match
+DOUBLE_AFTER = 5           # "!double": once per match after this many answers in it...
+DOUBLE_STAKE = 20          # ...x2 if right, or this many match points lost if wrong (never below 0)
 CROWD_MIN_REAL = 3         # Crowd Mind needs this many real (non-bot) answers, or the question is void
 DIFFICULTY_RAMP = {1: "easy", 2: "easy", 3: "easy", 4: "medium", 5: "medium",
                    6: "medium", 7: "medium", 8: "hard", 9: "hard", 10: "hard"}
+# Match formats rotate by match number (quiz/special.py FORMATS), so no two matches in a row share one
+FORMAT_ROTATION = ("classic", "speed", "survivors", "teams")
+SURVIVOR_POT = 200         # Survivors: every answer right, and the survivors split this...
+SURVIVOR_MIN = 20          # ...but each gets at least this
+TEAM_WIN_BONUS = 15        # Teams: every member who played on the team with the higher average
+# Community goal: chat's real right answers on Q1-Q9 reach this many per player of the last match
+# (at least the minimum), and every right answer on Q10 earns JACKPOT_BONUS on top
+COMMUNITY_GOAL_PER_PLAYER = 5
+COMMUNITY_GOAL_MIN = 10
+DIFFICULTY_TIERS = ("easy", "medium", "hard")   # a dry tier falls back to its nearest neighbour, lower first
+DIFFICULTY_MULT = {"easy": 1.0, "medium": 1.25, "hard": 1.5}   # on the question's shown difficulty
 
 # ==========================================
 # SCORING
@@ -103,8 +118,8 @@ SPEED_BONUS_TIER1_THRESHOLD = 0.25  # first 25% of time -> 2x
 SPEED_BONUS_TIER2_THRESHOLD = 0.50  # first 50% of time -> 1.5x
 SPEED_BONUS_TIER1_MULT = 2.0
 SPEED_BONUS_TIER2_MULT = 1.5
-STREAK_BONUS_PER = 0.1  # +10% per consecutive correct
-MAX_STREAK_MULT = 3.0
+# Combo: the streak multiplier steps up at these streaks (right answers in a row before this one)
+COMBO_STEPS = ((3, 1.3), (5, 1.5), (10, 2.0), (15, 2.5), (25, 3.0))
 
 # ==========================================
 # RANKS
@@ -141,6 +156,7 @@ NUM_ANSWER_OPTIONS = 4
 # ==========================================
 # VOTABLE CATEGORIES
 # ==========================================
+RECENT_CATEGORIES = 3   # the vote never offers the last 3 voted categories
 VOTABLE_CATEGORIES = {
     9: "General Knowledge",
     10: "Books",
@@ -231,8 +247,6 @@ DOUBLE_POINTS_MULT = 2.0
 COMEBACK_BONUS = 5                # extra points when breaking a 3+ wrong streak
 COMEBACK_STREAK_THRESHOLD = 3     # wrong answers in a row before comeback triggers
 
-# Streak milestones that trigger special effects
-STREAK_MILESTONES = [3, 5, 10, 15, 25, 50, 100]
 
 # Achievement definitions
 ACHIEVEMENTS = {

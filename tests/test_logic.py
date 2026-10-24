@@ -109,6 +109,8 @@ def test_full_match_cycle_records_winner_and_ladders(game):
 
     for q in range(1, 11):
         expire(game)
+        assert game.state == GameState.BUILDUP and game.q_index == q
+        expire(game)
         assert game.state == GameState.ASKING and game.q_index == q
         correct = game.current_question.correct_index
         game.process_message("alice", str(correct + 1))
@@ -140,6 +142,7 @@ def test_final_question_pays_double_and_lightning_is_shorter(game):
     game.q_index = 9
     game._transition_to(GameState.ASKING)                            # question 10
     assert game.is_double_points
+    game.current_question.difficulty = "easy"                        # x1: difficulty pays is in test_loop.py
     game.process_message("alice", str(game.current_question.correct_index + 1))
     game.current_answers["alice"] = (game.current_question.correct_index, game.question_start_time + 1)
     res = game._resolve_question()

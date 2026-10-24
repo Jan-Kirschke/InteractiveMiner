@@ -5,12 +5,14 @@ LOBBY (vote, !ready) -> INTRO -> 10 x (ASKING -> LOCKING -> REVEALING) -> PODIUM
 Match points reset every match; weekly and lifetime points keep growing.
 """
 
+import heapq
 import math
 import time
 import html
 import random
 import re
 import threading
+import zlib
 from pathlib import Path
 
 try:
@@ -20,31 +22,33 @@ except ImportError:
 
 from quiz.config import (
     REVEAL_AT,
-    MATCH_LENGTH, LOBBY_TIME, INTRO_TIME, QUESTION_DISPLAY_TIME,
+    MATCH_LENGTH, LOBBY_TIME, INTRO_TIME, BUILDUP_TIME, BUILDUP_TIME_BIG, QUESTION_DISPLAY_TIME,
     LATE_ANSWER_GRACE, REVEAL_DISPLAY_TIME, PODIUM_TIME,
     LIGHTNING_QUESTION, BONUS_QUESTIONS, FINAL_QUESTION_MULT, DIFFICULTY_RAMP,
+    DIFFICULTY_TIERS, DIFFICULTY_MULT,
+    FORMAT_ROTATION, SURVIVOR_POT, SURVIVOR_MIN, TEAM_WIN_BONUS,
+    COMMUNITY_GOAL_PER_PLAYER, COMMUNITY_GOAL_MIN,
     BASE_POINTS, SPEED_BONUS_TIER1_THRESHOLD, SPEED_BONUS_TIER2_THRESHOLD,
     SPEED_BONUS_TIER1_MULT, SPEED_BONUS_TIER2_MULT,
-    STREAK_BONUS_PER, MAX_STREAK_MULT,
+    COMBO_STEPS,
     OTDB_BASE_URL, OTDB_TOKEN_URL, OTDB_BATCH_SIZE,
     OTDB_MIN_CACHE, OTDB_REQUEST_COOLDOWN, OTDB_SEEN_EXPIRY,
-    VOTABLE_CATEGORIES,
+    VOTABLE_CATEGORIES, RECENT_CATEGORIES,
     COMEBACK_BONUS, COMEBACK_STREAK_THRESHOLD,
-    STREAK_MILESTONES,
     CHAT_FEED_MAX, CHAT_FEED_DURATION,
     MIN_PLAYERS, BOT_DIFFICULTY,
     COLOR_CORRECT, COLOR_TEXT_GOLD, COLOR_AMBER, COLOR_RANK_DIAMOND,
     LIGHTNING_TIME, LIGHTNING_MULT, JACKPOT_BONUS, FIRST_BLOOD_BONUS,
     PARTICIPATION_MILESTONES, PARTICIPATION_BONUS, STREAK_SHIELD_THRESHOLD,
-    COMMAND_COOLDOWN, SPECIAL_SLOTS, CROWD_MIN_REAL, LONELY_CHANCE, HALF_STREAK,
+    COMMAND_COOLDOWN, SPECIAL_SLOTS, CROWD_MIN_REAL, LONELY_CHANCE, HALF_STREAK, DOUBLE_AFTER, DOUBLE_STAKE,
 )
 from quiz.models import (
     GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding, Duel,
 )
 from quiz.db import QuizDatabase
-from quiz.bank import QuestionBank, REPEAT_WINDOWS
+from quiz.bank import QuestionBank, REPEAT_WINDOWS, MEASURE_AFTER
 from quiz.import_questions import load_items
-from quiz.special import SpecialDecks
+from quiz.special import SpecialDecks, FORMATS, TEAMS
 
 PACK_DIR = Path(__file__).resolve().parent / "packs"
 
@@ -171,20 +175,79 @@ BOT_PROFILES = [
 
 
 
-def host_line_for_rate(rate: float, answers: int) -> str:
+REVEAL_LINES = {   # several wordings per outcome; turn picks one, so a run of similar reveals never repeats
+    "none": ("Nobody answered that one. Type 1 to 4 in chat to play!",
+             "Silence in chat! Type 1 to 4 to play along.",
+             "No answers that time. Jump in: just type 1 to 4!"),
+    "zero": ("Ouch! Nobody got that one.", "Nobody! That one beat the whole chat.",
+             "Zero right answers. That was a tough one."),
+    "brutal": ("Brutal! Only {pct}% knew it.", "Only {pct}% got that. Respect to them!",
+               "That one hurt: just {pct}% right."),
+    "tricky": ("Tricky one: {pct}% got it right.", "{pct}% got it. Chat is split!",
+               "Not easy: {pct}% right."),
+    "good": ("Nice work, chat: {pct}% got it.", "{pct}% right. Chat is warming up!",
+             "Solid: {pct}% knew that one."),
+    "easy": ("Too easy? {pct}% knew that.", "{pct}% right! Chat knows its stuff.",
+             "Chat cruised through that one: {pct}% right."),
+}
+
+
+def host_line_for_rate(rate: float, answers: int, turn: int = 0) -> str:
     """The AI host's one-liner after a reveal, by how many players got it right."""
-    if answers == 0:
-        return "Nobody answered that one. Type 1 to 4 in chat to play!"
     pct = round(rate * 100)
-    if pct == 0:
-        return "Ouch! Nobody got that one."
-    if pct < 25:
-        return f"Brutal! Only {pct}% knew it."
-    if pct < 50:
-        return f"Tricky one: {pct}% got it right."
-    if pct < 80:
-        return f"Nice work, chat: {pct}% got it."
-    return f"Too easy? {pct}% knew that."
+    bucket = ("none" if answers == 0 else "zero" if pct == 0 else "brutal" if pct < 25
+              else "tricky" if pct < 50 else "good" if pct < 80 else "easy")
+    lines = REVEAL_LINES[bucket]
+    return lines[turn % len(lines)].format(pct=pct)
+
+
+QUESTION_LINES = ("Question {n} of {of}. {cat}, {diff}.", "Here it is: {cat}, {diff}. Question {n} of {of}.",
+                  "{cat}, {diff}: question {n} of {of}.", "Question {n}! {cat}, {diff}.")
+
+
+def format_for(match_no: int) -> str:
+    """The match format: config.FORMAT_ROTATION in turn, so match N+1 never repeats match N's."""
+    return FORMAT_ROTATION[(match_no - 1) % len(FORMAT_ROTATION)]
+
+
+def team_of(username: str) -> str:
+    """Team Gold or Team Teal, from the name (crc32: the same in every process and show)."""
+    return ("gold", "teal")[zlib.crc32(username.lower().encode("utf-8")) & 1]
+
+
+COMBO_NAMES = {3: "ON FIRE", 5: "UNSTOPPABLE", 10: "LEGENDARY", 15: "QUIZ MACHINE", 25: "GODLIKE"}
+
+
+def combo_mult(streak: int) -> float:
+    """The streak multiplier: x1.3 from 3 right in a row, x1.5 from 5, x2 from 10, x2.5 from 15, x3 from 25."""
+    return next((m for at, m in reversed(COMBO_STEPS) if streak >= at), 1.0)
+
+
+def tier_rank(difficulty: str) -> int:
+    """easy 0, medium 1, hard 2 (an unknown label counts as medium)."""
+    return DIFFICULTY_TIERS.index(difficulty) if difficulty in DIFFICULTY_TIERS else 1
+
+
+def nearest_tier(questions: list, difficulty: str) -> list:
+    """The questions of the wanted tier, or else of the nearest tier (the lower one on a tie)."""
+    if not questions:
+        return []
+    want = tier_rank(difficulty)
+    best = min((abs(tier_rank(q.difficulty) - want), tier_rank(q.difficulty) > want) for q in questions)
+    return [q for q in questions
+            if (abs(tier_rank(q.difficulty) - want), tier_rank(q.difficulty) > want) == best]
+
+
+# Tension build-up (GameState.BUILDUP): "QUESTION 8 · THE HARD ROUND", then one fact from the match
+BUILDUP_EVENT_HEADLINE = {"final": "FOR DOUBLE POINTS", "lightning": "LIGHTNING ROUND",
+                          "first_blood": "FIRST BLOOD BONUS", "jackpot": "JACKPOT ROUND"}
+BUILDUP_KIND_HEADLINE = {"majority": "CROWD MIND", "higher_lower": "HIGHER OR LOWER", "odd_one_out": "ODD ONE OUT"}
+BUILDUP_HEADLINES = ("THE NEXT HURDLE", "NO MISTAKES NOW", "KEEP IT ALIVE", "STAY SHARP", "EYES ON THE PRIZE")
+BUILDUP_OPENERS = ("Here comes question {n}.", "Question {n}, get ready.", "On to question {n}.",
+                   "Next hurdle: question {n}.", "Eyes up for question {n}.", "Question {n} is on its way.")
+BUILDUP_FILLERS = ("The fastest right answers score the most", "Streaks multiply your points",
+                   "Type 1 to 4 in chat the moment it appears", "Every point counts on the weekly ladder")
+BUILDUP_FACTS = ("perfect", "lead", "goal", "streak", "hardest", "tier_history", "last")   # rotated, never twice in a row
 
 
 CROWD_KINDS = ("majority", "minority")
@@ -206,10 +269,10 @@ def crowd_winners(counts: list[int], minority: bool = False) -> list[int]:
     return [i for i, c in enumerate(counts) if c == target]
 
 
-def host_line_for_result(res: RoundResult) -> str:
+def host_line_for_result(res: RoundResult, turn: int = 0) -> str:
     q = res.question
     if q.kind not in CROWD_KINDS:
-        return host_line_for_rate(res.correct_rate, res.total_answers)
+        return host_line_for_rate(res.correct_rate, res.total_answers, turn)
     if res.void:
         return f"Only {res.total_answers} real players: a crowd round needs {CROWD_MIN_REAL}, so this one does not count."
     picks = " and ".join(q.options[i] for i in res.winners)
@@ -239,6 +302,7 @@ def _rest_after_command(raw: str) -> str:
 STATE_DURATIONS = {
     GameState.LOBBY: LOBBY_TIME,
     GameState.INTRO: INTRO_TIME,
+    GameState.BUILDUP: BUILDUP_TIME,
     GameState.ASKING: QUESTION_DISPLAY_TIME,
     GameState.LOCKING: LATE_ANSWER_GRACE,
     GameState.REVEALING: REVEAL_DISPLAY_TIME,
@@ -287,6 +351,9 @@ class QuizLogic:
         self.lock_order: list[tuple[str, float]] = []  # (username, seconds after question start)
         self.half_picks: dict[str, tuple[int, int]] = {}  # 50:50 joker this question: the two options named
         self.halves_used: set[str] = set()                # who spent their joker this match
+        self.double_picks: set[str] = set()               # "!double" on this question
+        self.doubles_used: set[str] = set()               # who spent their !double this match
+        self._chat_sounds: list[str] = []                 # sounds from chat commands, played on the next frame
         self.question_start_time = 0.0
         self.question_duration = float(QUESTION_DISPLAY_TIME)
         self.last_result: RoundResult | None = None
@@ -303,6 +370,31 @@ class QuizLogic:
         # Show moments
         self.is_double_points = False  # final question
         self.mini_event = ""            # "lightning", "jackpot", "first_blood", ""
+        self.tier_reached = 0           # highest ramp tier served this match (tier_rank): LEVEL UP fires above it
+        self.level_up = ""              # the tier this question levelled up to ("medium", "hard"), else ""
+        # Tension build-up (GameState.BUILDUP; the contract is in docs/game-modes.md)
+        self.buildup: dict | None = None   # q_no, of, tier, stakes, kind, event, headline, subline, spotlight, intensity
+        self.buildup_intensity = 0.0       # the last build-up's intensity, 0..1: scales the tension while asking
+        self.perfect: set[str] | None = None   # real players with every question right so far (None before Q1)
+        self._prepared = False             # BUILDUP served this question already
+        self._hardest_rate = 1.0           # lowest all-time right rate of a question served this match
+        self._last_fact = ""               # the build-up fact kind used last, never twice in a row
+        self._line_turn = 0                # rotates the build-up wordings
+        self._ask_turn = 0                 # rotates the question wordings
+        self._combo_hits: list[tuple[int, str]] = []   # (streak, player) reaching a combo step this reveal
+        # Match format (special.FORMATS): classic, speed, survivors (logic.perfect), teams
+        self.match_format = "classic"
+        self.team_points: dict[str, int] | None = None   # teams format: team -> match points of its members
+        self.team_count = {"gold": 0, "teal": 0}          # real members who answered this match
+        self._team_members: dict[str, str] = {}
+        self._team_leader = ""
+        # Community goal: right answers on Q1-Q9 by real players; reaching the goal makes Q10 a jackpot
+        self.community_goal = COMMUNITY_GOAL_MIN
+        self.community_correct = 0
+        self.community_jackpot = False
+        self._recent_categories: list = []   # the last voted categories: the vote does not offer them again
+        self._tier_results: dict[str, list[int]] = {}   # this match: tier -> [real answers, right]
+        self._tier_last: dict[str, list[int]] = {}      # the same for the last match
         self.event_feed: list[GameEvent] = []
         self.sound_queue: list[str] = []
         self._last_countdown_second = None
@@ -476,9 +568,8 @@ class QuizLogic:
             self._question_cache = [c for c in self._question_cache if c.text != q.text]
             return q
         if self._question_cache:
-            idx = next((i for i, q in enumerate(self._question_cache)
-                        if q.difficulty == difficulty), 0)
-            q = self._question_cache.pop(idx)
+            q = nearest_tier(self._question_cache, difficulty)[0]
+            self._question_cache.remove(q)
             self._seen_questions[self._hash_question(q)] = time.time()
             return q
         self._purge_seen()
@@ -486,8 +577,7 @@ class QuizLogic:
                   if self._hash_question(q) not in self._seen_questions]
         if not unseen:
             unseen = list(FALLBACK_QUESTIONS)
-        preferred = [q for q in unseen if q.difficulty == difficulty]
-        q = random.choice(preferred or unseen)
+        q = random.choice(nearest_tier(unseen, difficulty))
         self._seen_questions[self._hash_question(q)] = time.time()
         options = list(q.options)
         random.shuffle(options)
@@ -512,7 +602,9 @@ class QuizLogic:
     # STATE MACHINE
     # ------------------------------------------
     def update(self, dt: float):
-        self.sound_queue.clear()
+        self.sound_queue.clear()   # the controller runs chat before update(): chat sounds wait in _chat_sounds
+        self.sound_queue += self._chat_sounds
+        self._chat_sounds.clear()
         self._ensure_cache()
 
         if self.state == GameState.WAITING:
@@ -555,6 +647,8 @@ class QuizLogic:
             self._resolve_vote()
             self._transition_to(GameState.INTRO)
         elif s == GameState.INTRO:
+            self._transition_to(GameState.BUILDUP)
+        elif s == GameState.BUILDUP:
             self._transition_to(GameState.ASKING)
         elif s == GameState.ASKING:
             self._transition_to(GameState.LOCKING)
@@ -564,7 +658,7 @@ class QuizLogic:
             if self.q_index >= MATCH_LENGTH:
                 self._transition_to(GameState.PODIUM)
             else:
-                self._transition_to(GameState.ASKING)
+                self._transition_to(GameState.BUILDUP)
         elif s == GameState.PODIUM:
             self._transition_to(GameState.LOBBY)
 
@@ -578,29 +672,56 @@ class QuizLogic:
         self.last_result = None
         self.mini_event = ""
         self.is_double_points = False
-        available = list(VOTABLE_CATEGORIES.items())
-        if self._current_category_id:
-            available = [(c, n) for c, n in available if c != self._current_category_id]
+        self.buildup = None
+        self.buildup_intensity = 0.0
+        available = [(c, n) for c, n in VOTABLE_CATEGORIES.items() if c not in self._recent_categories]
         chosen = random.sample(available, 3) + [(None, "Mixed bag")]
         self.vote_state = ThemeVoteState(options={i: opt for i, opt in enumerate(chosen, 1)})
-        self._say(f"Match {self.match_no} starts in {LOBBY_TIME} seconds. "
-                  "Vote for the category: type 1 to 4!")
+        self.match_format = format_for(self.match_no)
+        label, color, rule = FORMATS[self.match_format]
+        if self.match_format == "classic":
+            self._say(f"Match {self.match_no} starts in {LOBBY_TIME} seconds. "
+                      "Vote for the category: type 1 to 4!")
+        else:
+            self._push_event(f"NEXT: {label}. {rule}", color, "MODE")
+            self._say(f"Next up, match {self.match_no}: {label}! {rule}. Vote for the category: type 1 to 4!")
 
     def _enter_intro(self):
         self.q_index = 0
         self.standings = {}
         self.halves_used = set()
+        self.doubles_used = set()
+        self.tier_reached = 0
+        self.perfect = None
+        self.buildup_intensity = 0.0
+        self._hardest_rate = 1.0
+        self._tier_results = {}
         self.pips = []
         self.podium = []
         self.match_started_at = time.time()
         self._prev_weekly_positions = {
             p.username: i for i, p in enumerate(self.db.get_weekly_top(n=1_000_000), 1)
         }
+        teams = self.match_format == "teams"
+        self.team_points = {"gold": 0, "teal": 0} if teams else None
+        self.team_count = {"gold": 0, "teal": 0}
+        self._team_members = {}
+        self._team_leader = ""
+        self.community_goal = max(COMMUNITY_GOAL_MIN, COMMUNITY_GOAL_PER_PLAYER * self.match_player_count)
+        self.community_correct = 0
+        self.community_jackpot = False
         self.sound_queue.append("show_open")
-        self._say(f"Match {self.match_no}: {self.match_category}. "
-                  f"{MATCH_LENGTH} questions, fastest right answers score most. Good luck!")
+        if self.match_format == "classic":
+            self._say(f"Match {self.match_no}: {self.match_category}. "
+                      f"{MATCH_LENGTH} questions, fastest right answers score most. Good luck!")
+        else:
+            label, color, rule = FORMATS[self.match_format]
+            self._push_event(f"{label}: {rule}", color, "MODE")
+            self.sound_queue.append("round_sting")
+            self._say(f"Match {self.match_no}: {label}, {self.match_category}. {rule}!")
 
-    def _enter_asking(self):
+    def _prepare_question(self):
+        """Serve the next question and its event: BUILDUP does it, so the build-up can talk about it."""
         self._update_participation_streaks()
         self._last_round_real_players = {u for u in self.current_answers if not is_bot(u)}
 
@@ -611,11 +732,9 @@ class QuizLogic:
         self.current_answers = {}
         self.lock_order = []
         self.half_picks = {}
-        self.question_start_time = time.time()
-        self._last_countdown_second = None
-        self._bots_in_round = 0
+        self.double_picks = set()
         self.new_players_this_round = []
-        self.sound_queue.append("new_question")
+        self._check_level_up()
 
         # Fixed event slots give every match the same shape.
         self.is_double_points = self.q_index == MATCH_LENGTH
@@ -624,6 +743,24 @@ class QuizLogic:
             self.mini_event = "lightning"
         elif self.q_index in BONUS_QUESTIONS:
             self.mini_event = random.choice(["first_blood", "jackpot"])
+
+    def _enter_buildup(self):
+        self._prepare_question()
+        self._prepared = True
+        if self.is_double_points or self.level_up:
+            self.state_duration = self.state_timer = BUILDUP_TIME_BIG
+        self.buildup = self._make_buildup()
+        self.buildup_intensity = self.buildup["intensity"]
+
+    def _enter_asking(self):
+        if not self._prepared:      # straight into ASKING (tests, or a skipped build-up)
+            self._prepare_question()
+        self._prepared = False
+        self.buildup = None
+        self.question_start_time = time.time()
+        self._last_countdown_second = None
+        self._bots_in_round = 0
+        self.sound_queue.append("new_question")
 
         if self.is_double_points:
             self._push_event("FINAL QUESTION: DOUBLE POINTS!", COLOR_TEXT_GOLD, "2X")
@@ -645,13 +782,147 @@ class QuizLogic:
             self._say(f"Jackpot round! One lucky right answer wins {JACKPOT_BONUS} points.")
         elif self.current_question.kind in SPECIAL_INTROS:
             self._say(SPECIAL_INTROS[self.current_question.kind])
+        elif self.level_up:
+            self._say(f"Level up! {self.level_up.capitalize()} questions from here, "
+                      f"worth {DIFFICULTY_MULT[self.level_up]:g}x points.")
         else:
             diff = self.current_question.difficulty
-            self._say(f"Question {self.q_index} of {MATCH_LENGTH}. "
-                      f"{self.current_question.category}, {diff}.")
+            self._ask_turn += 1
+            self._say(QUESTION_LINES[self._ask_turn % len(QUESTION_LINES)].format(
+                n=self.q_index, of=MATCH_LENGTH, cat=self.current_question.category, diff=diff))
 
+        if self.match_format == "speed":
+            self.state_duration = self.state_timer = LIGHTNING_TIME
         self.question_duration = self.state_duration
         self._schedule_bots()
+
+    def _check_level_up(self):
+        """LEVEL UP once per ramp step, when a question of the new tier is really served."""
+        q, self.level_up = self.current_question, ""
+        ramp = DIFFICULTY_RAMP.get(self.q_index, "medium")
+        if q.kind in CROWD_KINDS or tier_rank(ramp) <= self.tier_reached or tier_rank(q.difficulty) < tier_rank(ramp):
+            return
+        self.tier_reached = tier_rank(ramp)
+        self.level_up = ramp
+        self._push_event(f"LEVEL UP: {ramp.upper()} questions, {DIFFICULTY_MULT[ramp]:g}x points",
+                         COLOR_TEXT_GOLD, "LVL")
+        self.sound_queue.append("level_up")
+
+    # ------------------------------------------
+    # TENSION BUILD-UP (once per question: the scans here are over this match's players, never per frame)
+    # ------------------------------------------
+    def _make_buildup(self) -> dict:
+        q, n = self.current_question, self.q_index
+        crowd = q.kind in CROWD_KINDS
+        event = "final" if self.is_double_points else (self.mini_event or None)
+        stakes = self.question_stakes()
+        leaders = heapq.nlargest(2, (s for s in self.standings.values() if s.points > 0 and not is_bot(s.username)),
+                                 key=lambda s: s.points)
+        facts = self._buildup_facts(q, leaders, stakes)
+        prefer = (["tier"] if self.level_up else ["jackpot", "lead"] if event == "final" else [])
+        turn = n % len(BUILDUP_FACTS)
+        order = prefer + list(BUILDUP_FACTS[turn:] + BUILDUP_FACTS[:turn])
+        pick = next((k for k in order if k in facts and k != self._last_fact), None)
+        if pick:
+            subline, spotlight = facts[pick]
+        else:
+            pick = f"filler{self._line_turn % len(BUILDUP_FILLERS)}"
+            if pick == self._last_fact:
+                self._line_turn += 1
+                pick = f"filler{self._line_turn % len(BUILDUP_FILLERS)}"
+            subline, spotlight = BUILDUP_FILLERS[self._line_turn % len(BUILDUP_FILLERS)], None
+        self._last_fact = pick
+        if spotlight is None and leaders:
+            spotlight = leaders[0].username
+
+        if event:                   # the event names the question; a step-up then says so in the subline
+            headline = BUILDUP_EVENT_HEADLINE[event]
+        elif self.level_up:
+            headline = f"THE {self.level_up.upper()} ROUND"
+        elif q.kind in BUILDUP_KIND_HEADLINE or q.kind == "minority":
+            headline = BUILDUP_KIND_HEADLINE["majority" if q.kind == "minority" else q.kind]
+        elif n == 1:
+            headline = "THE WARM-UP"
+        elif n == MATCH_LENGTH - 1:
+            headline = "THE LAST HURDLE"
+        else:
+            headline = BUILDUP_HEADLINES[n % len(BUILDUP_HEADLINES)]
+
+        # Intensity: Q1 light, rising every question, a bump for step-ups, events and a close race; the final is 1
+        close = len(leaders) == 2 and leaders[0].points - leaders[1].points <= stakes
+        level = 0.15 + 0.7 * (n - 1) / max(1, MATCH_LENGTH - 1)
+        level += 0.1 * bool(self.level_up) + 0.05 * bool(event) + 0.05 * close
+        intensity = 1.0 if event == "final" else min(0.95, level)
+        intensity = round(max(self.buildup_intensity, intensity), 3)
+
+        if event == "final":
+            opener = "The final question, and it pays double."
+        elif self.level_up and pick == "tier":
+            opener = f"Level up at question {n}!"
+        else:
+            self._line_turn += 1
+            opener = BUILDUP_OPENERS[self._line_turn % len(BUILDUP_OPENERS)].format(n=n)
+        self._say(f"{opener} {subline}. Up to {stakes} points.")
+        return {
+            "q_no": n, "of": MATCH_LENGTH,
+            "tier": DIFFICULTY_RAMP.get(n, "medium") if crowd else q.difficulty,
+            "stakes": stakes, "kind": "majority" if q.kind == "minority" else q.kind,   # the twist stays hidden
+            "event": event, "headline": f"QUESTION {n} · {headline}", "subline": subline,
+            "spotlight": spotlight, "intensity": intensity,
+        }
+
+    def _buildup_facts(self, q: Question, leaders: list, stakes: int) -> dict:
+        """fact kind -> (subline, player to spotlight or None), from what really happened."""
+        facts = {}
+        if self.level_up:
+            facts["tier"] = (f"{self.level_up.capitalize()} questions from here, "
+                             f"{DIFFICULTY_MULT[self.level_up]:g}x points", None)
+        if self.perfect is not None:
+            alive = [u for u in self.perfect if not is_bot(u)]
+            if len(alive) == 1:
+                facts["perfect"] = (f"Only {alive[0]} is still perfect", alive[0])
+            elif alive:
+                only = "Only " if len(alive) <= 5 else ""
+                facts["perfect"] = (f"{only}{len(alive)} players are still perfect", None)
+        if leaders:
+            a = leaders[0]
+            if len(leaders) == 1:
+                facts["lead"] = (f"{a.username} leads with {a.points}", a.username)
+            elif a.points == leaders[1].points:
+                facts["lead"] = (f"{a.username} and {leaders[1].username} are level on {a.points}", a.username)
+            else:
+                tail = f", and {stakes} points are up for grabs" if self.is_double_points else ""
+                facts["lead"] = (f"{a.username} leads by {a.points - leaders[1].points}{tail}", a.username)
+        if self.community_jackpot and self.is_double_points:
+            facts["jackpot"] = (f"Chat unlocked the jackpot: every right answer +{JACKPOT_BONUS}", None)
+        elif not self.community_jackpot and self.q_index < MATCH_LENGTH:
+            left = self.community_goal - self.community_correct
+            facts["goal"] = (f"Chat needs {left} more right answers for a jackpot final", None)
+        best = max(((self.db._players[u].streak, u) for u in self.standings
+                    if not is_bot(u) and u in self.db._players), default=(0, ""))
+        if best[0] >= 3:
+            facts["streak"] = (f"{best[1]}'s {best[0]}-answer streak is on the line", best[1])
+        if q.kind == "classic":
+            asked, right = self.bank.stats(q.text)
+            if asked >= MEASURE_AFTER:
+                rate = right / asked
+                pct = round(rate * 100)
+                if self.q_index > 1 and rate < min(0.5, self._hardest_rate):
+                    facts["hardest"] = (f"The hardest question so far: only {pct}% ever got it right", None)
+                else:
+                    facts["hardest"] = (f"{pct}% of players have ever got this one right", None)
+                self._hardest_rate = min(self._hardest_rate, rate)
+        answers, right = self._tier_last.get(q.difficulty, (0, 0))
+        if q.kind not in CROWD_KINDS and answers >= 3:
+            pct = round(100 * right / answers)
+            facts["tier_history"] = (f"Last match, {'only ' if pct < 40 else ''}{pct}% got the "
+                                     f"{q.difficulty} ones right", None)
+        res = self.last_result
+        if res and res.total_answers and res.question.kind not in CROWD_KINDS:
+            right = len([u for u, _, _ in res.correct_players])
+            only = "Only " if right * 2 < res.total_answers else ""
+            facts["last"] = (f"{only}{right} of {res.total_answers} got the last one right", None)
+        return facts
 
     def _enter_locking(self):
         self.sound_queue += ["times_up", "drumroll"]
@@ -667,14 +938,113 @@ class QuizLogic:
         self.last_result = self._resolve_question()
         self._announce_overtakes(before)
         res = self.last_result
+        survivors_before = len(self.perfect) if self.perfect is not None else -1
+        self._track_perfect(res)
+        self._format_status(survivors_before)
+        self._count_community(res)
         self.pips.append("done" if res.total_answers and res.correct_rate >= 0.5 else "miss")
         self._stinger_due = True
-        self._say(host_line_for_result(res))
+        self._say(host_line_for_result(res, self.round_count))
         if res.question.kind == "minority" and not res.void:
             self._push_event("TWIST! Lonely Answer: the least picked answer wins", COLOR_AMBER, "TWST")
             self.sound_queue.append("double_points")
 
+    def _track_perfect(self, res: RoundResult):
+        """Who is still perfect (every answer right; a crowd round only needs an answer), and how
+        each tier went for real players. O(answers), once per question."""
+        q = res.question
+        if res.void or not q.text:
+            return
+        scored = {u for u, _, _ in res.correct_players if not is_bot(u)}
+        if q.kind in CROWD_KINDS:
+            scored |= {u for u, _ in res.wrong_players if not is_bot(u)}
+        else:
+            real = sum(1 for u in self.current_answers if not is_bot(u))
+            tally = self._tier_results.setdefault(q.difficulty, [0, 0])
+            tally[0] += real
+            tally[1] += len(scored)
+        self.perfect = scored if self.perfect is None else self.perfect & scored
+
+    def _count_community(self, res: RoundResult):
+        """Community goal: Q1-Q9 real right answers; half-way and the unlock each announce once."""
+        if self.q_index >= MATCH_LENGTH or self.community_jackpot:
+            return
+        before = self.community_correct
+        self.community_correct += sum(1 for u, _, _ in res.correct_players if not is_bot(u))
+        goal = self.community_goal
+        if self.community_correct >= goal:
+            self.community_jackpot = True
+            self._push_event(f"COMMUNITY GOAL! {goal} right answers: every right answer on the final "
+                             f"wins +{JACKPOT_BONUS}", COLOR_EVENT_PURPLE, "GOAL")
+            self.sound_queue.append("power_up")
+        elif before * 2 < goal <= self.community_correct * 2:
+            self._push_event(f"Community goal half-way: {self.community_correct}/{goal} right answers",
+                             COLOR_EVENT_PURPLE, "GOAL")
+            self.sound_queue.append("crowd")
+
+    def _format_status(self, survivors_before: int):
+        """After each reveal: the survivors or the team race; at halftime, the leader as well."""
+        status, color = "", COLOR_AMBER
+        if self.match_format == "survivors" and self.perfect is not None:
+            n = len(self.perfect)
+            if n == 0:
+                if survivors_before > 0:
+                    self._push_event("SURVIVORS wiped out! Nobody gets the pot", COLOR_EVENT_RED, "OUT")
+            else:
+                status = f"{n} SURVIVOR{'S' if n > 1 else ''} left for {SURVIVOR_POT} points"
+                color = FORMATS["survivors"][1]
+        elif self.team_points is not None:
+            s = self.team_scores()
+            status, color = f"TEAM GOLD {s['gold']} - {s['teal']} TEAM TEAL (average points)", TEAMS["gold"][1]
+            lead = "gold" if s["gold"] > s["teal"] else "teal" if s["teal"] > s["gold"] else ""
+            if lead and lead != self._team_leader:
+                if self._team_leader:
+                    self.sound_queue.append("crowd")      # the lead changed hands
+                self._team_leader = lead
+        if self.q_index == MATCH_LENGTH // 2:
+            real = [s for s in self.standings.values() if not is_bot(s.username) and s.points > 0]
+            top = max(real, key=lambda s: s.points, default=None)
+            head = f"HALFTIME: {top.username} leads with {top.points}" if top else "HALFTIME: all to play for"
+            self._push_event(head + (f". {status}" if status else ""), COLOR_TEXT_GOLD, "HALF")
+            self.sound_queue.append("halftime")
+        elif status:
+            self._push_event(status, color, "MODE")
+
+    def _format_payouts(self) -> dict:
+        """Podium: the survivors split the pot, the better team's members get their bonus."""
+        stats = {}
+        if self.match_format == "survivors":
+            alive = sorted(u for u in (self.perfect or ()) if not is_bot(u))
+            share = max(SURVIVOR_MIN, SURVIVOR_POT // len(alive)) if alive else 0
+            for u in alive:
+                self._award_bonus(u, share)
+            stats["survivors"] = (len(alive), share)
+            if alive:
+                self._push_event(f"{len(alive)} SURVIVORS split the pot: +{share} each!" if len(alive) > 1
+                                 else f"{alive[0]} SURVIVES ALONE and takes all {share}!",
+                                 FORMATS["survivors"][1], "WIN")
+                self.sound_queue.append("jackpot")
+        elif self.team_points is not None:
+            s = self.team_scores()
+            win = "gold" if s["gold"] > s["teal"] else "teal" if s["teal"] > s["gold"] else ""
+            stats["team"] = (win, s["gold"], s["teal"])
+            if not self._team_members:
+                return stats
+            members = [u for u, t in self._team_members.items() if t == win]
+            for u in members:
+                self._award_bonus(u, TEAM_WIN_BONUS)
+            if win:
+                self._push_event(f"{TEAMS[win][0]} wins! +{TEAM_WIN_BONUS} for its {len(members)} players",
+                                 TEAMS[win][1], "TEAM")
+            else:
+                self._push_event(f"Gold and Teal tie at {s['gold']}!", COLOR_AMBER, "TEAM")
+            self.sound_queue.append("team_win")
+        return stats
+
     def _enter_podium(self):
+        if self._tier_results:
+            self._tier_last = self._tier_results
+        extra_stats = self._format_payouts()
         real = [s for s in self.standings.values() if not is_bot(s.username)]
         real.sort(key=lambda s: (-s.points, s.fastest or 999))
         self.podium = [s for s in real if s.points > 0][:3]
@@ -686,6 +1056,7 @@ class QuizLogic:
             "fastest": (fastest.username, fastest.fastest) if fastest else None,
             "best_streak": (streak.username, streak.best_streak) if streak and streak.best_streak else None,
             "crew": race[0][:2] if race and race[0][1] > 0 else None,
+            **extra_stats,   # "survivors": (count, share each), "team": (winner or "", gold avg, teal avg)
         }
         self._resolve_duels()
         winner = self.podium[0] if self.podium else None
@@ -807,14 +1178,30 @@ class QuizLogic:
     def _award_bonus(self, username: str, points: int):
         self.db.get_or_create_player(username).add_points(points)
         self._standing(username).points += points
+        self._team_add(username, points)
         self.db.mark_dirty(username)
+
+    def _team_add(self, username: str, points: int):
+        """Teams format: a real player's match points also go to their team (O(1))."""
+        if self.team_points is None or is_bot(username):
+            return
+        team = self._team_members.get(username)
+        if team is None:
+            team = self._team_members[username] = team_of(username)
+            self.team_count[team] += 1
+        self.team_points[team] += points
+
+    def team_scores(self) -> dict[str, int]:
+        """Teams format: each team's average match points per member who answered."""
+        pts = self.team_points or {"gold": 0, "teal": 0}
+        return {t: round(pts[t] / self.team_count[t]) if self.team_count[t] else 0 for t in ("gold", "teal")}
 
     def _resolve_question(self) -> RoundResult:
         q = self.current_question
         if not q:
             return RoundResult(Question("?", "?", [], 0, "", ""), [], [], 0)
 
-        correct_players, wrong_players = [], []
+        correct_players, wrong_players, double_ready = [], [], []
         crowd = q.kind in CROWD_KINDS
         # A crowd round is decided and scored by real players only: bots must never sway it
         answers = {u: a for u, a in self.current_answers.items() if not is_bot(u)} if crowd else self.current_answers
@@ -835,21 +1222,26 @@ class QuizLogic:
             old_rank = player.rank
             answer_time = max(0.0, timestamp - self.question_start_time)
             half = self.half_picks.get(username)
+            self._team_add(username, 0)   # answering makes you a team member for this match
+            st.answered += 1
+            if st.answered == DOUBLE_AFTER and not is_bot(username) and username not in self.doubles_used:
+                double_ready.append(username)
 
             if choice in winners or (half and q.correct_index in half):
-                pts = self._calculate_points(timestamp, player.streak)
-                if self.mini_event == "lightning":
-                    pts = int(pts * LIGHTNING_MULT)
-                if self.is_double_points:
-                    pts = int(pts * FINAL_QUESTION_MULT)
+                pts = int(self._calculate_points(timestamp, player.streak) * self.question_mult(q))
                 if half:
                     pts = max(1, pts // 2)   # 50:50 joker: two guesses, half the points
+                if username in self.double_picks:
+                    pts *= 2                 # !double paid off
+                if self.community_jackpot and self.is_double_points and not is_bot(username):
+                    pts += JACKPOT_BONUS     # chat reached the community goal: every right answer on the final
                 if player.wrong_streak >= COMEBACK_STREAK_THRESHOLD:
                     pts += COMEBACK_BONUS
                     self._push_event(f"{username} COMEBACK! +{COMEBACK_BONUS}", COLOR_CORRECT, "BACK")
                     self.sound_queue.append("streak")
                 player.record_correct(pts)
                 st.points += pts
+                self._team_add(username, pts)
                 st.correct += 1
                 st.streak += 1
                 st.best_streak = max(st.best_streak, st.streak)
@@ -863,6 +1255,10 @@ class QuizLogic:
             else:
                 player.record_wrong()
                 st.streak = 0
+                if username in self.double_picks:   # !double lost: match points only, never below 0
+                    lost = min(DOUBLE_STAKE, st.points)
+                    st.points -= lost
+                    self._team_add(username, -lost)
                 if getattr(player, "_shield_used", False):
                     self._push_event(f"{username} SHIELD! Streak saved (x{player.streak})",
                                      COLOR_EVENT_BLUE, "SHD")
@@ -872,6 +1268,20 @@ class QuizLogic:
 
         correct_players.sort(key=lambda c: c[2])
         fastest_player, fastest_time = (correct_players[0][0], correct_players[0][2]) if correct_players else ("", 0.0)
+
+        if self._combo_hits:   # one toast for the round: the biggest step, and how many others stepped up
+            n, top = max(self._combo_hits)
+            more = len(self._combo_hits) - 1
+            self._push_event(f"{top}: {n} in a row, {COMBO_NAMES.get(n, 'COMBO')} COMBO x{combo_mult(n):g}"
+                             + (f" (+{more} more combos)" if more else ""), COLOR_TEXT_GOLD, "FIRE")
+            self.sound_queue.append("combo")
+            self._combo_hits = []
+
+        if double_ready:
+            who = ", ".join(double_ready[:3]) + (f" +{len(double_ready) - 3}" if len(double_ready) > 3 else "")
+            self._push_event(f"{who}: !double unlocked! x2 if right, -{DOUBLE_STAKE} if wrong",
+                             COLOR_EVENT_BLUE, "x2")
+            self.sound_queue.append("power_up")
 
         unlocked = [u for u, _, _ in correct_players if not is_bot(u) and u not in self.halves_used
                     and self.standings[u].streak == HALF_STREAK]
@@ -897,6 +1307,21 @@ class QuizLogic:
             option_counts=option_counts, winners=winners, void=void,
         )
 
+    def question_mult(self, q: Question | None = None) -> float:
+        """This question's multiplier on every right answer: difficulty (not on crowd rounds),
+        lightning (every question of a speed match), final double."""
+        q = q or self.current_question
+        mult = 1.0 if q.kind in CROWD_KINDS else DIFFICULTY_MULT.get(q.difficulty, 1.0)
+        if self.mini_event == "lightning" or self.match_format == "speed":
+            mult *= LIGHTNING_MULT
+        if self.is_double_points:
+            mult *= FINAL_QUESTION_MULT
+        return mult
+
+    def question_stakes(self) -> int:
+        """What this question is worth: the fastest right answer from a player with no streak."""
+        return int(BASE_POINTS * SPEED_BONUS_TIER1_MULT * self.question_mult())
+
     def _calculate_points(self, answer_timestamp: float, current_streak: int) -> int:
         elapsed = answer_timestamp - self.question_start_time
         time_fraction = max(0, min(1, elapsed / self.question_duration))
@@ -906,18 +1331,14 @@ class QuizLogic:
             speed_mult = SPEED_BONUS_TIER2_MULT
         else:
             speed_mult = 1.0
-        streak_mult = min(MAX_STREAK_MULT, 1.0 + current_streak * STREAK_BONUS_PER)
+        streak_mult = combo_mult(current_streak)
         return max(1, int(BASE_POINTS * speed_mult * streak_mult))
 
     def _check_achievements(self, player: Player, answer_time: float, old_rank: str):
         if player.correct_answers == 1:
             self._push_event(f"{player.username} got their first answer right!", COLOR_TEXT_GOLD, "ACH")
-        if player.streak in STREAK_MILESTONES:
-            names = {3: "On Fire", 5: "Unstoppable", 10: "Legendary Streak", 15: "Quiz Machine",
-                     25: "GODLIKE", 50: "Transcendent", 100: "The Chosen One"}
-            self._push_event(f"{player.username}: {names.get(player.streak, 'Streak')} (x{player.streak})",
-                             COLOR_TEXT_GOLD, "FIRE")
-            self.sound_queue.append("streak")
+        if any(player.streak == at for at, _ in COMBO_STEPS):
+            self._combo_hits.append((player.streak, player.username))
         if answer_time < 2.0:
             self._push_event(f"{player.username} SPEED DEMON ({answer_time:.1f}s)", COLOR_RANK_DIAMOND, "FAST")
         if player.rank != old_rank:
@@ -1042,6 +1463,8 @@ class QuizLogic:
         else:
             winner = random.choice([o for o, c in counts.items() if c == top])
         cid, name = self.vote_state.options[winner]
+        if cid:
+            self._recent_categories = (self._recent_categories + [cid])[-RECENT_CATEGORIES:]
         self._set_category(cid)
         self.match_category = name
         self._push_event(f"Category: {name}!", COLOR_TEXT_GOLD, "VOTE")
@@ -1115,7 +1538,8 @@ class QuizLogic:
         Once per match, from a HALF_STREAK answer streak in this match; not on crowd or two-option rounds."""
         q = self.current_question
         if (is_bot(username) or self.state not in (GameState.ASKING, GameState.LOCKING) or not q
-                or q.kind in CROWD_KINDS or len(q.options) < 4 or username in self.halves_used):
+                or q.kind in CROWD_KINDS or len(q.options) < 4 or username in self.halves_used
+                or username in self.double_picks):   # one power-up per answer
             return
         st = self.standings.get(username)
         if not st or st.streak < HALF_STREAK:
@@ -1132,6 +1556,20 @@ class QuizLogic:
         self.halves_used.add(username)
         self._push_event(f"{username} plays the 50:50 joker!", COLOR_EVENT_PURPLE, "50")
         self.sound_queue.append("vote")
+
+    def _cmd_double(self, username: str):
+        """!double: once per match after DOUBLE_AFTER answers in it, while a question with a right
+        answer is open; this answer pays x2 if right, or costs up to DOUBLE_STAKE match points."""
+        q, st = self.current_question, self.standings.get(username)
+        if (is_bot(username) or self.state != GameState.ASKING or not q or q.kind in CROWD_KINDS
+                or username in self.doubles_used or username in self.half_picks
+                or not st or st.answered < DOUBLE_AFTER):
+            return
+        self.double_picks.add(username)
+        self.doubles_used.add(username)
+        self._push_event(f"{username} doubles down: x2 or -{DOUBLE_STAKE}!", COLOR_EVENT_BLUE, "x2")
+        if "power_up" not in self._chat_sounds:   # a burst of doubles is one sound
+            self._chat_sounds.append("power_up")
 
     def process_message(self, username: str, message: str, raw: str = "", at: float | None = None):
         """at: when the answer arrived (the answer page stamps it on receipt); None = now."""
@@ -1166,6 +1604,14 @@ class QuizLogic:
             return
         if cmd in ("half", "5050"):
             self._cmd_half(username, _rest_after_command(msg), at)
+            return
+        if msg in ("double", "x2"):
+            self._cmd_double(username)
+            return
+        if msg == "team":
+            if not is_bot(username) and self._check_command_cooldown(username):
+                team = team_of(username)
+                self._push_event(f"{username} plays for Team {team.capitalize()}", TEAMS[team][1], "TEAM")
             return
         if msg == "card":
             if self._check_command_cooldown(username) and not is_bot(username):
