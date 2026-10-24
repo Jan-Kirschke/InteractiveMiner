@@ -166,7 +166,7 @@ class YouTubeBroadcaster:
             "-pix_fmt", "rgb24",
             "-s", f"{self._out_size[0]}x{self._out_size[1]}",
             "-r", str(self._fps),
-            "-thread_queue_size", "1024",
+            "-thread_queue_size", "8",   # if FFmpeg falls behind, the writer notices instead of lag piling up
             "-i", "pipe:0",
             *audio_input,
             "-map", "0:v:0",

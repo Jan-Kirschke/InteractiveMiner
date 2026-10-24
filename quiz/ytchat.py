@@ -62,8 +62,8 @@ def next_continuation(continuations: list) -> tuple[str, float]:
     return "", 0.0
 
 
-def parse_chat(response: dict) -> tuple[list[tuple[str, str]], str, float]:
-    """([(author, text)], next token, wait seconds) from a get_live_chat response."""
+def parse_chat(response: dict) -> tuple[list[tuple[str, str, str]], str, float]:
+    """([(message id, author, text)], next token, wait seconds) from a get_live_chat response."""
     lc = response.get("continuationContents", {}).get("liveChatContinuation")
     if not lc:
         return [], "", 0.0
@@ -75,7 +75,7 @@ def parse_chat(response: dict) -> tuple[list[tuple[str, str]], str, float]:
         author = item.get("authorName", {}).get("simpleText", "").lstrip("@")
         text = "".join(r.get("text", "") for r in item.get("message", {}).get("runs", [])).strip()
         if author and text:
-            messages.append((author, text))
+            messages.append((item.get("id", ""), author, text))
     token, wait = next_continuation(lc.get("continuations"))
     return messages, token, wait
 
@@ -83,7 +83,9 @@ def parse_chat(response: dict) -> tuple[list[tuple[str, str]], str, float]:
 class LiveChat:
     """One live chat session. open() finds the chat, poll() returns new (author, text) pairs."""
 
-    MIN_WAIT, MAX_WAIT = 0.5, 2.0   # YouTube suggests up to 10 s; answers need to arrive quickly
+    # YouTube always suggests 10 s, but delivers a message to a poller about 1.2 s after it was sent
+    # (measured); polling every 0.5 s keeps our share of the delay small without throttling.
+    MIN_WAIT, MAX_WAIT = 0.5, 0.5
 
     def __init__(self, url: str, session: requests.Session | None = None):
         self.url = url
@@ -91,6 +93,7 @@ class LiveChat:
         self._http = session or requests.Session()
         self._version = ""
         self._token = ""
+        self._seen: dict[str, None] = {}   # recent message ids: YouTube sometimes delivers one twice
 
     def open(self) -> bool:
         resp = self._http.get(self.url, headers=_HEADERS, cookies=_COOKIES, timeout=15)
@@ -112,4 +115,12 @@ class LiveChat:
         resp = self._http.post(_CHAT_URL, json=body, headers=_HEADERS, cookies=_COOKIES, timeout=15)
         resp.raise_for_status()
         messages, self._token, wait = parse_chat(resp.json())
-        return messages, min(self.MAX_WAIT, max(self.MIN_WAIT, wait))
+        fresh = []
+        for msg_id, author, text in messages:
+            if msg_id and msg_id in self._seen:
+                continue
+            self._seen[msg_id] = None
+            fresh.append((author, text))
+        while len(self._seen) > 2000:
+            del self._seen[next(iter(self._seen))]
+        return fresh, min(self.MAX_WAIT, max(self.MIN_WAIT, wait))
