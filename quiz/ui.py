@@ -17,6 +17,7 @@ import pygame
 from quiz.config import SCREEN_WIDTH, SCREEN_HEIGHT, FONT_DIR, MATCH_LENGTH, REVEAL_AT
 from quiz.models import GameState
 from quiz.logic import is_bot
+from quiz.motion import clamp01, heartbeat, lerp, out_back, out_cubic, progress, smoothstep
 from quiz.transitions import Transitions
 
 # ==========================================
@@ -40,13 +41,40 @@ EVENT_STYLE = {
     "jackpot": ("JACKPOT ROUND", (190, 120, 255)),
 }
 DIFF_COLORS = {"easy": GOOD, "medium": (255, 159, 28), "hard": BAD}
-# Special rounds (quiz/special.py): kind -> (chip label, colour, one-line rule under the question)
-ROUND_STYLE = {}
+# Special rounds (quiz/special.py): kind -> (chip label, colour, rule under the question, tag on the winner)
+ROUND_STYLE = {
+    "majority": ("CROWD MIND", (255, 140, 200), "No right answer: pick what most of chat picks", "CROWD PICK"),
+    "minority": ("TWIST: LONELY ANSWER", (255, 128, 64), "The least picked answer wins", "LONELY PICK"),
+    "higher_lower": ("HIGHER OR LOWER", (150, 230, 90), "Two choices: type 1 or 2", "CORRECT"),
+    "odd_one_out": ("ODD ONE OUT", (90, 220, 230), "Three belong together: which one does not?", "ODD ONE"),
+}
 
 
 def round_style(q, revealed=False):
-    """(label, colour, rule) for a special round's chip, or None for a classic question."""
+    """(label, colour, rule, tag) for a special round, or None for a classic question.
+    Lonely Answer looks exactly like Crowd Mind until the reveal."""
+    if q.kind == "minority" and not revealed:
+        return ROUND_STYLE["majority"]
     return ROUND_STYLE.get(q.kind)
+
+
+def winners_title(q):
+    return {"majority": "FASTEST CROWD READERS", "minority": "FASTEST LONELY PICKS"}.get(q.kind, "FASTEST RIGHT")
+
+
+def reveal_lines(res):
+    """(headline, colour, line) under the reveal's answers: how many knew it and the fact."""
+    q = res.question
+    if q.kind in ("majority", "minority"):
+        if res.void:
+            return "VOID", FAINT, "A crowd round needs 3 real players: nobody scores"
+        picks = " + ".join(q.options[i] for i in res.winners) or "-"
+        if q.kind == "minority":
+            return "TWIST: LEAST PICKED WINS", ROUND_STYLE["minority"][1], f"Lonely Answer: {picks}"
+        pct = int(round(res.correct_rate * 100))
+        return f"{pct}% READ THE CROWD", GOOD if pct >= 50 else ACCENT, f"Chat's pick: {picks}"
+    knew = int(round(res.correct_rate * 100))
+    return f"{knew}% KNEW IT", GOOD if knew >= 50 else ACCENT, q.fact or f"The answer: {q.correct_answer}"
 
 # ==========================================
 # LAYOUT
@@ -64,41 +92,9 @@ BODY_BOTTOM = FOOTER_Y - 28
 
 
 # ==========================================
-# EASING
+# EASING (quiz/motion.py; the TV layout's names)
 # ==========================================
-def clamp01(t):
-    return max(0.0, min(1.0, t))
-
-
-def ease_out_cubic(t):
-    t = clamp01(t)
-    return 1 - (1 - t) ** 3
-
-
-def ease_out_back(t):
-    t = clamp01(t)
-    c = 1.70158
-    return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2
-
-
-def ease_in_out(t):
-    t = clamp01(t)
-    return 3 * t * t - 2 * t * t * t
-
-
-def progress(age, delay, dur):
-    return clamp01((age - delay) / dur)
-
-
-def lerp(a, b, t):
-    return a + (b - a) * t
-
-
-def heartbeat(since):
-    """0..1 pulse for a lub-dub: 'since' = seconds since the beat started (matches sounds.final_countdown)."""
-    lub = math.exp(-since * 10)
-    dub = 0.6 * math.exp(-(since - 0.22) * 10) if since >= 0.22 else 0.0
-    return min(1.0, lub + dub)
+ease_out_cubic, ease_out_back, ease_in_out = out_cubic, out_back, smoothstep
 
 
 def mix(c1, c2, t):
@@ -785,7 +781,12 @@ class UIManager:
             p = 1.0 if small else ease_out_cubic(progress(age, 0.05 + i * 0.08, 0.4))
             self._blit(self._render_name(line, size, DIM if small else INK, kind="display"),
                        (MAIN_X, ty + i * lh + (1 - p) * 26), alpha=255 * p)
-        return ty + len(lines) * lh
+        bottom = ty + len(lines) * lh
+        if rs and not small:   # the special round's rule, in its colour
+            p = ease_out_cubic(progress(age, 0.3, 0.4))
+            self._text("black", 30, rs[2].upper(), rs[1], (MAIN_X, bottom + 8), alpha=255 * p)
+            bottom += 52
+        return bottom
 
     def _option_rects(self, top, max_h=190):
         g = 24
@@ -793,7 +794,7 @@ class UIManager:
         h = min(max_h, (BODY_BOTTOM - top - g) // 2)
         return [(MAIN_X + (i % 2) * (w + g), top + (i // 2) * (h + g), w, h) for i in range(4)]
 
-    def _draw_option(self, i, text, rect, alpha=255, scale=1.0, dim=0.0, outline=None, lift=0):
+    def _draw_option(self, i, text, rect, alpha=255, scale=1.0, dim=0.0, outline=None, lift=0, right_pad=110):
         x, y, w, h = rect
         if scale != 1.0:
             cx, cy = x + w / 2, y + h / 2
@@ -816,12 +817,19 @@ class UIManager:
             self._text("display", int(r * 1.15), str(i + 1), DARK_INK, (kx, ky), "center", alpha=a)
             self._shape(i, kx + r + 34, ky, 15, knob)
         tx = kx + r + 66
-        lines, size = self._fit_wrap(text, "black", (46, 40, 34, 30), x + w - tx - 110, 2)
+        lines, size = self._fit_wrap(text, "black", (46, 40, 34, 30), x + w - tx - right_pad, 2)
         lh = int(size * 1.1)
         for j, line in enumerate(lines):
             self._blit(self._render_name(line, size, mix(INK, (190, 190, 210), dim), kind="black"),
                        (tx, ky - len(lines) * lh / 2 + j * lh + lh / 2), "midleft", alpha=a)
         return (x, y, w, h)
+
+    def _strike(self, x0, x1, cy, k):
+        """Odd One Out reveal: a line draws through an answer that belongs with the others."""
+        xe = int(lerp(x0, x1, k))
+        if xe > x0 + 4:
+            pygame.draw.line(self.screen, DARK_INK, (x0, cy + 2), (xe, cy + 2), 6)   # shadow keeps it visible on light cards
+            pygame.draw.line(self.screen, INK, (x0, cy), (xe, cy), 4)
 
     def _draw_question(self, logic, age, now):
         q = logic.current_question
@@ -926,6 +934,8 @@ class UIManager:
             self._blit(n, (x + 24 + ox, ry), "midleft", alpha=255 * p)
             if bot:
                 self._text("black", 15, "BOT", FAINT, (x + 34 + n.get_width() + ox, ry), "midleft", alpha=200 * p)
+            elif name in logic.half_picks:
+                self._text("black", 18, "50:50", ACCENT, (x + 36 + n.get_width() + ox, ry), "midleft", alpha=255 * p)
             self._text("bold", 20, f"{at:.1f}s", DIM, (x + RAIL_W - 24, ry), "midright", alpha=255 * p)
         if not rows:
             self._text("bold", 24, "Be the first: type 1-4!", FAINT, (x + 24, y + 80))
@@ -987,14 +997,17 @@ class UIManager:
         total = max(1, res.total_answers)
         reveal = age >= REVEAL_AT
         k = ease_out_cubic(progress(age, REVEAL_AT, 0.4))
+        rs = round_style(q, revealed=True)
         for i, (opt, rect) in enumerate(zip(q.options, rects)):
             correct = i in res.winners
             x, y, w, h = self._draw_option(
                 i, opt, rect,
-                dim=(0.55 * k if reveal and not correct else 0.0),
+                dim=(0.55 * k if reveal and not correct and res.winners else 0.0),
                 outline=INK if reveal and correct else None,
-                lift=int(8 * k) if reveal and correct else 0,
+                lift=int(8 * k) if reveal and correct else 0, right_pad=150,   # room for the percentage
             )
+            if reveal and not correct and q.kind == "odd_one_out":
+                self._strike(x + 2 * min(39, int(h * 0.22)) + 90, x + w - 170, y + h // 2, k)   # from the shape on
             # HQ-style answer split: a bar grows along the button while the percentage counts up
             target = res.option_counts[i] / total if i < len(res.option_counts) else 0
             shown = target * ease_out_cubic(progress(age, 0.25, 0.9))
@@ -1009,7 +1022,7 @@ class UIManager:
                     ring = pygame.Surface((w + 2 * grow, h + 2 * grow), pygame.SRCALPHA)
                     pygame.draw.rect(ring, (*INK, int(230 * (1 - flash))), ring.get_rect(), width=6, border_radius=24 + grow // 2)
                     self.screen.blit(ring, (x - grow, y - grow))
-                tag = self._render("black", 18, "CORRECT", DARK_INK)
+                tag = self._render("black", 18, rs[3] if rs else "CORRECT", DARK_INK)
                 self.screen.blit(self._alpha_rect(tag.get_width() + 24, 30, (*INK, 255), 15), (x + w - tag.get_width() - 44, y + 12))
                 self._blit(tag, (x + w - 32, y + 27), "midright")
                 if "burst" not in self._burst_done and res.correct_players:
@@ -1021,19 +1034,19 @@ class UIManager:
         sy = last[1] + last[3] + 24 + int((1 - p) * 30)
         if sy + 66 <= BODY_BOTTOM + 30:
             self._panel(MAIN_X, sy, MAIN_W, 66, radius=18)
-            knew = int(round(res.correct_rate * 100))
-            self._text("display", 38, f"{knew}% KNEW IT", GOOD if knew >= 50 else ACCENT, (MAIN_X + 26, sy + 33), "midleft", alpha=255 * p)
-            line = q.fact or f"The answer: {q.correct_answer}"
-            lines, size = self._fit_wrap(line, "semi", (28, 24), MAIN_W - 380, 2)
+            head, hcol, line = reveal_lines(res)
+            hr = self._text("display", 38, head, hcol, (MAIN_X + 26, sy + 33), "midleft", alpha=255 * p)
+            lx = max(MAIN_X + 330, hr.right + 30)
+            lines, size = self._fit_wrap(line, "semi", (28, 24), MAIN_X + MAIN_W - 24 - lx, 2)
             lh = int(size * 1.1)
             for j, part in enumerate(lines):
                 self._blit(self._render_name(part, size, INK, kind="semi"),
-                           (MAIN_X + 330, sy + 33 - len(lines) * lh / 2 + j * lh + lh / 2), "midleft", alpha=255 * p)
+                           (lx, sy + 33 - len(lines) * lh / 2 + j * lh + lh / 2), "midleft", alpha=255 * p)
 
         x, y = RAIL_X, BODY_Y
         h = 230
         self._panel(x, y, RAIL_W, h)
-        self._panel_title(x, y, RAIL_W, "FASTEST RIGHT")
+        self._panel_title(x, y, RAIL_W, winners_title(q))
         for i, (name, pts, t) in enumerate(res.correct_players[:3]):
             ry = y + 84 + i * 46
             pp = ease_out_back(progress(age, 1.3 + i * 0.15, 0.35))
@@ -1043,7 +1056,7 @@ class UIManager:
             self._text("bold", 20, f"{t:.1f}s", DIM, (x + RAIL_W - 110, ry), "midright")
             self._text("black", 28, f"+{pts}", GOOD, (x + RAIL_W - 24, ry), "midright", scale=lerp(1.6, 1.0, clamp01(pp)))
         if not res.correct_players:
-            self._text("bold", 24, "Nobody got this one", FAINT, (x + 24, y + 84))
+            self._text("bold", 24, "Round void: nobody scores" if res.void else "Nobody got this one", FAINT, (x + 24, y + 84))
         y += h + 20
         h2 = 250
         self._panel(x, y, RAIL_W, h2)

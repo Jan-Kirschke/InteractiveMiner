@@ -53,7 +53,7 @@ across the screen. On TV it moves left to right, slanted like the stage stripes.
 moves bottom to top, the "swipe up to next" gesture. On the curtain, "QUESTION" sits over a
 huge numeral that rolls like an odometer from the last number to this one. The match pips
 (green and red history) light the new one, and "OF 10 · EASY" rises from a mask. Event
-variants: LIGHTNING ROUND (sky blue, bolt badge, "12 SECONDS · 1.5x POINTS"), FINAL QUESTION
+variants: LIGHTNING ROUND (sky blue, bolt badge, "22 SECONDS · 1.5x POINTS"), FINAL QUESTION
 (gold, x2 badge), BONUS ROUND (purple). The curtain then leaves the same way, uncovering the
 new question.
 
@@ -78,15 +78,16 @@ new question.
 ### 2. Match open: colour iris, logo flash, shape burst (LOBBY to INTRO). BUILT
 
 Pink, blue, orange, teal, then violet discs swell from the centre and swallow the lobby. On
-violet, the four answer shapes pop in a row and the justified lockup "THE LIFELONG / QUIZ"
-rises. "• LIVE · MATCH N" follows, and a dotted orbit draws on (the HQ intro's dotted circle).
-The logo sinks. At the state change the colours open again as rings, and the answer shapes
-plus 30 HQ shapes burst outward over the existing "MATCH N" sting.
+violet the Spotlight LQ logo draws on: the four answer-colour arcs, the gold "LQ" and the
+tracked wordmark "THE LIFELONG QUIZ". "• LIVE · MATCH N" follows, and a dotted orbit draws on
+(the HQ intro's dotted circle). The logo sinks. At the state change the colours open again as
+rings, the four answer shapes fly out of their quarter of the ring, and 30 HQ shapes burst
+outward over the "MATCH N" sting.
 
 | t (ms) | |
 |---|---|
 | -1500 to -940 | five discs, 50 ms stagger, 360 ms in-cubic each |
-| -1010 to -600 | orbit draws, shapes pop (60 ms stagger), lockup rises line by line |
+| -1100 to -600 | ring draws on, orbit draws, LQ then the wordmark rise |
 | -200 to 0 | logo sinks into its baseline mask |
 | 0 to +730 | violet, teal, orange, blue and pink open in turn (out-quad, 45 ms lag), then the hole; the burst flies (exponential drag) and shrinks away by +1000 |
 
@@ -117,27 +118,26 @@ sits over the podium.
 - **Suspense:** the podium is not computed until the state change, so the card cannot spoil it.
 - **Cost:** about 20 rects, 6 riders, 3 dots, and 3 or 4 cached text blits.
 
-### 4. Reveal shutter (LOCKING to REVEALING). Not built
+### 4. Reveal shutter (LOCKING to REVEALING). Not built as a cut-away
 
-Four answer-colour bars slam closed in the last 180 ms of LOCKING and open over the first
-260 ms of REVEALING, hiding the layout jump (cut 3). Cost is under 0.5 ms. Ranked below the
-top three: the moment of truth wants immediacy, and two cut-aways per question risks
-fatigue. A cheaper fix for the same cut is to animate the layout change in ui.py: tween the
-option rects from the ASKING positions to the REVEALING ones over 300 ms.
+The layout jump (cut 3) is fixed in the Shorts layout instead (`quiz/ui_vertical.py`): the
+answer buttons glide from their question positions to the results positions over the first
+600 ms of REVEALING (in-out cubic) while the question cross-fades to its smaller size. The TV
+layout (`quiz/ui.py`) still cuts.
 
-### 5. Halftime standings (end of REVEALING Q5, about 2.4 s). Not built
+### 5. Halftime standings (end of REVEALING Q5). BUILT for Shorts
 
-A cutscene with information: the top 5 match standings slide in as bars, with overtakes
-marked. It uses 2.4 s of the reveal's dead time. Ranked lower because it duplicates the rail
-standings on TV and needs its own data design. It is the most useful idea for Shorts, which
-has no rail.
+Drawn by `ui_vertical`, not by the transitions module, because it is a state view with data:
+from 3.9 s into the Q5 reveal, the answer-colour bands sweep right to left onto violet, gold
+"HALFTIME" rises, and the top 5 match standings slide in as bars with overtake arrows. The Q6
+bumper wipes over it. TV keeps its rail standings and has no halftime.
 
-### 6. Next-match sweep (PODIUM to LOBBY). Not built
+### 6. Next-match sweep (PODIUM to LOBBY). BUILT
 
-Reuse concept 1's wipe with a "NEXT MATCH · VOTE NOW" card. Almost free to add, but the lobby
-is a low-attention moment.
+The question wipe with "NEXT MATCH", the match number rolling on (15 to 16) and "VOTE THE
+CATEGORY · TYPE 1-4"; no pips. Lead 1.1 s, tail 0.5 s.
 
-**Top 3 = 1, 2 and 3. They run 11 times per match: 9 question bumpers, 1 open, 1 final.**
+**They run 12 times per match: 9 question bumpers, 1 open, 1 final, 1 next-match sweep.**
 
 ## 3. CPU
 
@@ -164,9 +164,15 @@ this PC was busy with other sessions. Assume a 2 vCPU cloud core is about 2x slo
 state underneath for those frames (0.5 to 1.0 s per transition), which saves its 3 to 9 ms
 per frame.
 
+Whole `ui.draw` for the Shorts layout, one full match (13,883 frames, 30 fps fake clock, same
+PC, back to back): before the visual overhaul (53b3f6b) p50 4.64 / p95 8.68 / p99 12.51 ms,
+after p50 4.63 / p95 8.34 / p99 10.08 ms. Glows, shadows, button faces, beams and bokeh are
+rendered once and cached (`quiz/gfx.py`); nothing smoothscales or blurs a large surface per
+frame.
+
 ## 4. Wiring (exact)
 
-`quiz/transitions.py` imports only `quiz.config` and `quiz.models`, so `quiz/ui.py` can import
+`quiz/transitions.py` imports only `quiz.config`, `quiz.models`, `quiz.motion` and `quiz.gfx`, so `quiz/ui.py` can import
 it with no cycle. `VerticalUI` subclasses `UIManager`, so both get it.
 
 ```python
@@ -207,12 +213,11 @@ cut-away from `now`.
   320 px, and also clear `ui_vertical.SAFE_BOTTOM = 1500`: the lowest element, the question
   pips, ends at about y = 1300. Decorative shapes may sit in the overlay zones.
 - The type is bigger and stacked: the numeral is 620 px, "AND THE / WINNER / IS..." runs on
-  three lines, and the lockup is a justified block. Lines that might overflow are fitted to the
+  three lines, and the logo scales with the orbit. Lines that might overflow are fitted to the
   width.
 
 ## 6. Follow-ups
 
 - Move the `"whoosh"` to the cover start, or add a short pre-roll riser, so the sound follows
   the picture into each cut-away.
-- Fix cut 3 inside ui.py by tweening the option rects (see concept 4).
-- Build concept 5 (halftime standings) for Shorts.
+- Fix cut 3 inside ui.py (TV) by tweening the option rects, as the Shorts layout does.

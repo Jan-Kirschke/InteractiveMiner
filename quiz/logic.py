@@ -36,7 +36,7 @@ from quiz.config import (
     COLOR_CORRECT, COLOR_TEXT_GOLD, COLOR_AMBER, COLOR_RANK_DIAMOND,
     LIGHTNING_TIME, LIGHTNING_MULT, JACKPOT_BONUS, FIRST_BLOOD_BONUS,
     PARTICIPATION_MILESTONES, PARTICIPATION_BONUS, STREAK_SHIELD_THRESHOLD,
-    COMMAND_COOLDOWN, SPECIAL_SLOTS,
+    COMMAND_COOLDOWN, SPECIAL_SLOTS, CROWD_MIN_REAL, LONELY_CHANCE, HALF_STREAK,
 )
 from quiz.models import (
     GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding, Duel,
@@ -187,6 +187,38 @@ def host_line_for_rate(rate: float, answers: int) -> str:
     return f"Too easy? {pct}% knew that."
 
 
+CROWD_KINDS = ("majority", "minority")
+_CROWD_INTRO = "Crowd Mind! No right answer: pick what you think most of chat will pick."
+SPECIAL_INTROS = {
+    "majority": _CROWD_INTRO, "minority": _CROWD_INTRO,   # Lonely Answer hides as Crowd Mind
+    "higher_lower": "Higher or lower! Just two choices: type 1 or 2.",
+    "odd_one_out": "Odd one out! Three of these belong together. Which one does not?",
+}
+
+
+def crowd_winners(counts: list[int], minority: bool = False) -> list[int]:
+    """Crowd Mind: the most-picked options win (ties all win). Lonely Answer: the least-picked
+    option that anyone picked."""
+    picked = [c for c in counts if c > 0]
+    if not picked:
+        return []
+    target = min(picked) if minority else max(picked)
+    return [i for i, c in enumerate(counts) if c == target]
+
+
+def host_line_for_result(res: RoundResult) -> str:
+    q = res.question
+    if q.kind not in CROWD_KINDS:
+        return host_line_for_rate(res.correct_rate, res.total_answers)
+    if res.void:
+        return f"Only {res.total_answers} real players: a crowd round needs {CROWD_MIN_REAL}, so this one does not count."
+    picks = " and ".join(q.options[i] for i in res.winners)
+    if q.kind == "minority":
+        return f"Twist! Lonely Answer: the LEAST picked answer wins. {picks} takes it!"
+    pct = round(res.correct_rate * 100)
+    return f"Chat went with {picks}! {pct}% read the crowd."
+
+
 CREW_TEAM_SIZE = 3          # a crew scores its best 3 members, so small friend groups can win
 CREW_NAME_MAX = 20
 _CREW_CLEAN_RE = re.compile(r"[^\w &'.-]+")
@@ -253,6 +285,8 @@ class QuizLogic:
         self.current_question: Question | None = None
         self.current_answers: dict[str, tuple[int, float]] = {}
         self.lock_order: list[tuple[str, float]] = []  # (username, seconds after question start)
+        self.half_picks: dict[str, tuple[int, int]] = {}  # 50:50 joker this question: the two options named
+        self.halves_used: set[str] = set()                # who spent their joker this match
         self.question_start_time = 0.0
         self.question_duration = float(QUESTION_DISPLAY_TIME)
         self.last_result: RoundResult | None = None
@@ -467,7 +501,12 @@ class QuizLogic:
         """The special round for this match slot, or None (no slot, or its deck is empty)."""
         if not slot:
             return None
-        return self.special.draw(slot)
+        if slot not in CROWD_KINDS:
+            return self.special.draw(slot)
+        q = self.special.draw("majority")   # Lonely Answer plays the Crowd Mind pack
+        if q and (slot == "minority" or random.random() < LONELY_CHANCE):
+            q.kind = "minority"             # the twist: shown only on the reveal
+        return q
 
     # ------------------------------------------
     # STATE MACHINE
@@ -550,6 +589,7 @@ class QuizLogic:
     def _enter_intro(self):
         self.q_index = 0
         self.standings = {}
+        self.halves_used = set()
         self.pips = []
         self.podium = []
         self.match_started_at = time.time()
@@ -570,6 +610,7 @@ class QuizLogic:
                                  or self._pop_question(DIFFICULTY_RAMP.get(self.q_index, "medium")))
         self.current_answers = {}
         self.lock_order = []
+        self.half_picks = {}
         self.question_start_time = time.time()
         self._last_countdown_second = None
         self._bots_in_round = 0
@@ -602,6 +643,8 @@ class QuizLogic:
             self._push_event(f"JACKPOT: one right answer wins +{JACKPOT_BONUS}", COLOR_EVENT_PURPLE, "JP")
             self.sound_queue.append("double_points")
             self._say(f"Jackpot round! One lucky right answer wins {JACKPOT_BONUS} points.")
+        elif self.current_question.kind in SPECIAL_INTROS:
+            self._say(SPECIAL_INTROS[self.current_question.kind])
         else:
             diff = self.current_question.difficulty
             self._say(f"Question {self.q_index} of {MATCH_LENGTH}. "
@@ -626,7 +669,10 @@ class QuizLogic:
         res = self.last_result
         self.pips.append("done" if res.total_answers and res.correct_rate >= 0.5 else "miss")
         self._stinger_due = True
-        self._say(host_line_for_rate(res.correct_rate, res.total_answers))
+        self._say(host_line_for_result(res))
+        if res.question.kind == "minority" and not res.void:
+            self._push_event("TWIST! Lonely Answer: the least picked answer wins", COLOR_AMBER, "TWST")
+            self.sound_queue.append("double_points")
 
     def _enter_podium(self):
         real = [s for s in self.standings.values() if not is_bot(s.username)]
@@ -769,25 +815,35 @@ class QuizLogic:
             return RoundResult(Question("?", "?", [], 0, "", ""), [], [], 0)
 
         correct_players, wrong_players = [], []
-        answers = self.current_answers
+        crowd = q.kind in CROWD_KINDS
+        # A crowd round is decided and scored by real players only: bots must never sway it
+        answers = {u: a for u, a in self.current_answers.items() if not is_bot(u)} if crowd else self.current_answers
         option_counts = [0] * len(q.options)
-        for choice, _ in answers.values():
-            if 0 <= choice < len(option_counts):
-                option_counts[choice] += 1
+        for username, (choice, _) in answers.items():
+            picks = self.half_picks.get(username, (choice,))
+            for c in picks:   # a 50:50 is half a vote for each option it named: the split still adds up to 100%
+                if 0 <= c < len(option_counts):
+                    option_counts[c] += 1 / len(picks)
         winners, void = [q.correct_index], False
+        if crowd:
+            void = len(answers) < CROWD_MIN_REAL
+            winners = [] if void else crowd_winners(option_counts, q.kind == "minority")
 
-        for username, (choice, timestamp) in answers.items():
+        for username, (choice, timestamp) in ({} if void else answers).items():
             player = self.db.get_or_create_player(username)
             st = self._standing(username)
             old_rank = player.rank
             answer_time = max(0.0, timestamp - self.question_start_time)
+            half = self.half_picks.get(username)
 
-            if choice in winners:
+            if choice in winners or (half and q.correct_index in half):
                 pts = self._calculate_points(timestamp, player.streak)
                 if self.mini_event == "lightning":
                     pts = int(pts * LIGHTNING_MULT)
                 if self.is_double_points:
                     pts = int(pts * FINAL_QUESTION_MULT)
+                if half:
+                    pts = max(1, pts // 2)   # 50:50 joker: two guesses, half the points
                 if player.wrong_streak >= COMEBACK_STREAK_THRESHOLD:
                     pts += COMEBACK_BONUS
                     self._push_event(f"{username} COMEBACK! +{COMEBACK_BONUS}", COLOR_CORRECT, "BACK")
@@ -802,6 +858,8 @@ class QuizLogic:
                 if not is_bot(username):
                     self._check_achievements(player, answer_time, old_rank)
                 correct_players.append((username, pts, answer_time))
+            elif crowd:
+                wrong_players.append((username, choice))  # no right answer to miss: the streak stays
             else:
                 player.record_wrong()
                 st.streak = 0
@@ -814,6 +872,12 @@ class QuizLogic:
 
         correct_players.sort(key=lambda c: c[2])
         fastest_player, fastest_time = (correct_players[0][0], correct_players[0][2]) if correct_players else ("", 0.0)
+
+        unlocked = [u for u, _, _ in correct_players if not is_bot(u) and u not in self.halves_used
+                    and self.standings[u].streak == HALF_STREAK]
+        if unlocked:
+            who = ", ".join(unlocked[:3]) + (f" +{len(unlocked) - 3}" if len(unlocked) > 3 else "")
+            self._push_event(f"{who}: 50:50 joker unlocked! Type !half and two numbers", COLOR_EVENT_PURPLE, "50")
 
         if self.mini_event == "first_blood" and correct_players:
             self._award_bonus(fastest_player, FIRST_BLOOD_BONUS)
@@ -917,7 +981,9 @@ class QuizLogic:
         n = len(self.current_question.options)
         diff = BOT_DIFFICULTY["easy"]
         for bot_name in active_bots:
-            if random.random() < diff["accuracy"]:
+            if correct_idx < 0:  # crowd round: no right answer, and bot picks never count
+                choice = random.randrange(n)
+            elif random.random() < diff["accuracy"]:
                 choice = correct_idx
             else:
                 choice = random.choice([i for i in range(n) if i != correct_idx])
@@ -1044,6 +1110,29 @@ class QuizLogic:
                 self.sound_queue.append("rank_up")
                 return
 
+    def _cmd_half(self, username: str, rest: str, at: float | None = None):
+        """50:50 joker: "!half 1 3" answers with two options; right if either is, for half the points.
+        Once per match, from a HALF_STREAK answer streak in this match; not on crowd or two-option rounds."""
+        q = self.current_question
+        if (is_bot(username) or self.state not in (GameState.ASKING, GameState.LOCKING) or not q
+                or q.kind in CROWD_KINDS or len(q.options) < 4 or username in self.halves_used):
+            return
+        st = self.standings.get(username)
+        if not st or st.streak < HALF_STREAK:
+            return
+        digits = [c for c in rest if not c.isspace()]
+        picks = sorted({int(c) - 1 for c in digits if c in "1234"})
+        if len(digits) != 2 or len(picks) != 2:
+            return   # exactly two different options, nothing else
+        old = self.current_answers.get(username)
+        if old and self.state != GameState.ASKING:
+            return   # answers are locked once time is up
+        self._record_answer(username, picks[0], at)
+        self.half_picks[username] = (picks[0], picks[1])
+        self.halves_used.add(username)
+        self._push_event(f"{username} plays the 50:50 joker!", COLOR_EVENT_PURPLE, "50")
+        self.sound_queue.append("vote")
+
     def process_message(self, username: str, message: str, raw: str = "", at: float | None = None):
         """at: when the answer arrived (the answer page stamps it on receipt); None = now."""
         msg = message.strip().lower()  # chat already stripped punctuation: "!rank" arrives as "rank"
@@ -1074,6 +1163,9 @@ class QuizLogic:
             return
         if msg == "accept":
             self._cmd_accept(username)
+            return
+        if cmd in ("half", "5050"):
+            self._cmd_half(username, _rest_after_command(msg), at)
             return
         if msg == "card":
             if self._check_command_cooldown(username) and not is_bot(username):
@@ -1107,6 +1199,8 @@ class QuizLogic:
 
         if self.state in (GameState.ASKING, GameState.LOCKING):
             if self.current_question and choice < len(self.current_question.options):  # "3" on true/false
+                if self.state == GameState.ASKING:
+                    self.half_picks.pop(username, None)   # a plain answer replaces the 50:50 (the joker stays spent)
                 self._record_answer(username, choice, at)
         elif self.state == GameState.LOBBY and self.vote_state:
             vote = choice + 1

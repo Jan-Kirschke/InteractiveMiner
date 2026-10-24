@@ -6,8 +6,9 @@ then) and uncovers during the first few hundred ms of the next state, while that
 own entry animation plays underneath. State durations and answer windows are untouched.
 
     question    REVEALING -> ASKING   colour-band wipe, "QUESTION 3 -> 4" odometer bumper
-    match_open  LOBBY -> INTRO        iris of answer colours, logo flash, shape burst
+    match_open  LOBBY -> INTRO        iris of answer colours, the Spotlight LQ logo, shape burst
     final       REVEALING -> PODIUM   gold-fringed curtain, "AND THE WINNER IS..."
+    next_match  PODIUM -> LOBBY       the question wipe, "NEXT MATCH 15 -> 16"
 
 Resolution-independent: geometry comes from the target surface (16:9 TV or 9:16 Shorts)
 and is laid out once per size. In portrait the wipe travels bottom to top (the Shorts
@@ -29,7 +30,10 @@ import random
 import pygame
 
 from quiz.config import FONT_DIR, MATCH_LENGTH, LIGHTNING_QUESTION, BONUS_QUESTIONS, LIGHTNING_TIME, DIFFICULTY_RAMP
+from quiz import gfx
 from quiz.models import GameState
+from quiz.motion import (in_cubic as _in_cubic, in_out_cubic as _in_out, out_back as _out_back,
+                         out_cubic as _out_cubic, out_quad as _out_quad, progress as _prog)
 
 # ==========================================
 # PALETTE (the show palette from quiz/ui.py plus a flat HQ violet for the cut-aways)
@@ -51,43 +55,16 @@ SHAPE_COLORS = (PINK, BLUE, ORANGE, TEAL, ACCENT, VIOLET)
 DIFF_COLORS = {"easy": GOOD, "medium": ORANGE, "hard": BAD}
 BAND_COLORS = (PINK, BLUE, ORANGE, TEAL)   # answer 1-4 order, front band first
 # Special-round slots (QuizLogic.special_slots): bumper label, colour, sub line
-SPECIAL_BUMPERS = {}
+CROWD_PINK = (255, 140, 200)
+SPECIAL_BUMPERS = {
+    "majority": ("CROWD MIND", CROWD_PINK, [("NO RIGHT ANSWER", INK), ("  ·  MATCH THE CROWD", LILAC)]),
+    "higher_lower": ("HIGHER OR LOWER", (150, 230, 90), [("TWO CHOICES", INK), ("  ·  TYPE 1 OR 2", LILAC)]),
+    "odd_one_out": ("ODD ONE OUT", (90, 220, 230), [("THREE BELONG", INK), ("  ·  FIND THE ONE THAT DOESN'T", LILAC)]),
+}
+SPECIAL_BUMPERS["minority"] = SPECIAL_BUMPERS["majority"]   # Lonely Answer's twist waits for the reveal
 
 # YouTube Shorts covers the top and bottom of a 1080x1920 frame with its own UI
 SHORTS_SAFE_TOP, SHORTS_SAFE_BOTTOM = 180, 320
-
-
-# ==========================================
-# EASING
-# ==========================================
-def _clamp01(t):
-    return max(0.0, min(1.0, t))
-
-
-def _prog(t, delay, dur):
-    return _clamp01((t - delay) / dur)
-
-
-def _out_cubic(t):
-    return 1 - (1 - _clamp01(t)) ** 3
-
-
-def _out_quad(t):
-    return 1 - (1 - _clamp01(t)) ** 2
-
-
-def _in_cubic(t):
-    return _clamp01(t) ** 3
-
-
-def _in_out(t):
-    t = _clamp01(t)
-    return 4 * t ** 3 if t < 0.5 else 1 - (-2 * t + 2) ** 3 / 2
-
-
-def _out_back(t, c=1.70158):
-    t = _clamp01(t)
-    return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2
 
 
 # ==========================================
@@ -213,8 +190,8 @@ FINAL_RIDERS = {
 # TRANSITIONS
 # ==========================================
 class Transitions:
-    LEAD = {"question": 1.1, "question_event": 1.5, "match_open": 1.5, "final": 1.6}
-    TAIL = {"question": 0.5, "match_open": 1.0, "final": 0.5}
+    LEAD = {"question": 1.1, "question_event": 1.5, "match_open": 1.5, "final": 1.6, "next_match": 1.1}
+    TAIL = {"question": 0.5, "match_open": 1.0, "final": 0.5, "next_match": 0.5}
 
     def __init__(self, fonts=None):
         self.fonts = fonts or _Fonts()
@@ -259,7 +236,7 @@ class Transitions:
         t = now - self.boundary
         cols = getattr(self, "cols", 9)
         last_panel = (cols - 1) / 2 - (0.5 if cols % 2 == 0 else 0)
-        full = {"question": self.IN_DUR,
+        full = {"question": self.IN_DUR, "next_match": self.IN_DUR,
                 "match_open": (len(self.IRIS_COLORS) - 1) * self.IRIS_STAG + self.IRIS_DUR,
                 "final": last_panel * self.DROP_STAG + self.DROP_DUR}[self.kind]
         return -self._lead + full + 0.01 <= t < 0
@@ -302,6 +279,9 @@ class Transitions:
                      else "bonus" if n in BONUS_QUESTIONS else getattr(logic, "special_slots", {}).get(n, ""))
             kind, target = "question", GameState.ASKING
             info = {"n": n, "event": event, "difficulty": DIFFICULTY_RAMP.get(n, "medium"), "pips": list(logic.pips)}
+        elif state == GameState.PODIUM:
+            kind, target = "next_match", GameState.LOBBY
+            info = {"n": logic.match_no + 1, "event": "next_match"}
         else:
             return
         rem = logic.time_remaining
@@ -399,6 +379,7 @@ class Transitions:
             "lightning": ("LIGHTNING ROUND", SKY, [(f"{LIGHTNING_TIME} SECONDS", INK), ("  ·  1.5x POINTS", LILAC)]),
             "bonus": ("BONUS ROUND", PURPLE, [("EXTRA POINTS", INK), ("  ·  UP FOR GRABS", LILAC)]),
             **SPECIAL_BUMPERS,
+            "next_match": ("NEXT MATCH", ACCENT, [("VOTE THE CATEGORY", INK), ("  ·  TYPE 1-4", LILAC)]),
         }.get(ev, ("QUESTION", INK, None))
         if sub is None:
             sub = [(f"OF {MATCH_LENGTH}", LILAC)] + ([("  ·  ", LILAC), (diff.upper(), DIFF_COLORS.get(diff, INK))] if diff else [])
@@ -422,6 +403,13 @@ class Transitions:
         s["pip_y"] = s["sub_y"] + s["sub"].get_height() + g3
         self._s = s
         self._make_riders(QUESTION_RIDERS, n)
+
+    # 4. NEXT MATCH SWEEP (PODIUM -> LOBBY): the same wipe, the match number rolls on
+    def _build_next_match(self):
+        self._build_question()
+
+    def _draw_next_match(self, screen, t):
+        self._draw_question(screen, t)
 
     def _quad(self, a, b):
         """Band between along-positions a < b; the far side of each edge is `slant` further along."""
@@ -479,13 +467,13 @@ class Transitions:
         sub = s["sub"]
         _rise(screen, sub, cx - sub.get_width() // 2, s["sub_y"] + oy,
               _out_cubic(_prog(t_in, settle + 0.12 + hold, 0.28)))
-        # Pips: one per question, the upcoming one lights as the number rolls
+        # Pips: one per question, the upcoming one lights as the number rolls (not between matches)
         pips = self.info.get("pips", [])
         n = self.info["n"]
         py = s["pip_y"] + oy
         step, pw, ph = int(50 * u), int(40 * u), int(16 * u)
         px = cx - (MATCH_LENGTH * step - (step - pw)) // 2
-        for i in range(MATCH_LENGTH):
+        for i in range(MATCH_LENGTH if self.kind == "question" else 0):
             x = px + i * step
             lit = i == n - 1 and roll > 0.5
             col = (GOOD if pips[i] == "done" else BAD) if i < len(pips) else ACCENT if lit else PIP_OFF
@@ -517,31 +505,26 @@ class Transitions:
     IRIS_DUR, IRIS_STAG, OPEN_DUR, OPEN_LAG = 0.36, 0.05, 0.55, 0.045
     IRIS_COLORS = (PINK, BLUE, ORANGE, TEAL, FLAT)
 
-    def _justified(self, text, width):
-        """Anton line set to an exact width (the lockup's lines share one measure)."""
-        probe = self.fonts.get("display", 100).size(text)[0]
-        return self._text("display", max(10, int(100 * width / probe)), text, INK)
-
     def _build_match_open(self):
         u = self.u
-        measure = min(int(760 * u), self.w - 2 * self.margin)   # corners stay inside the orbit
-        l1, l2 = self._justified("THE LIFELONG", measure), self._justified("QUIZ", measure)
+        orbit = int(min(self.w, self.safe_bottom - self.safe_top) * 0.46)
+        ring = int(orbit * 0.6)    # the Spotlight LQ logo, at the logo's own proportions
+        lq = self._ring_logo_lq(int(ring * 0.86))
+        word = gfx.tracked(self.fonts.get("black", max(12, int(ring * 0.105))), "THE LIFELONG QUIZ", INK, max(2, ring // 45))
         tag = self._line([(f"LIVE  ·  MATCH {self.info.get('match_no', '')}", LILAC)], "black", int(34 * u), 6)
-        gap, shapes_h, tag_gap = int(26 * u), int(110 * u), int(46 * u)
-        total = shapes_h + l1.get_height() + gap + l2.get_height() + tag_gap + tag.get_height()
-        top = self.cy - total // 2
-        s = {"l1": l1, "l2": l2, "tag": tag, "x": self.cx - measure // 2, "shape_y": top + int(34 * u),
-             "l1_y": top + shapes_h}
-        s["l2_y"] = s["l1_y"] + l1.get_height() + gap
-        s["tag_y"] = s["l2_y"] + l2.get_height() + tag_gap
-        s["orbit"] = int(min(self.w, self.safe_bottom - self.safe_top) * 0.46)
+        s = {"lq": lq, "word": word, "tag": tag, "ring": ring, "orbit": orbit,
+             "lq_y": self.cy - int(ring * 0.044) - lq.get_height() // 2,
+             "word_y": self.cy + int(ring * 0.51) - word.get_height() // 2,
+             "tag_y": self.cy + orbit + int(30 * u)}
+        if s["tag_y"] + tag.get_height() > self.safe_bottom:
+            s["tag_y"] = self.cy + ring + int(36 * u)
         self._s = s
         rng = random.Random(self.info.get("match_no", 0))
         self._burst = []
         sp_u = self.r_full / 1100
-        for k in range(4):   # the answer shapes launch first, from their place in the logo
-            a = -math.pi / 2 + (k - 1.5) * 0.5
-            self._burst.append((ANSWER_SHAPES[k], BAND_COLORS[k], self.cx + (k - 1.5) * 120 * u, s["shape_y"],
+        for k in range(4):   # the answer shapes launch first, each out of its own quarter of the ring
+            a = math.radians(-45 + k * 90)
+            self._burst.append((ANSWER_SHAPES[k], BAND_COLORS[k], self.cx + math.cos(a) * ring, self.cy + math.sin(a) * ring,
                                 math.cos(a) * 1900 * sp_u, math.sin(a) * 1500 * sp_u, 34 * u, rng.uniform(-3, 3)))
         for _ in range(30):
             a = rng.uniform(0, 6.283)
@@ -550,6 +533,14 @@ class Transitions:
                                 self.cx + math.cos(a) * 60 * u, self.cy + math.sin(a) * 40 * u,
                                 math.cos(a) * sp, math.sin(a) * sp * 0.75, rng.choice((10, 14, 18, 24, 30)) * u,
                                 rng.uniform(-4, 4)))
+
+    def _ring_logo_lq(self, size):
+        key = ("lq", size)
+        s = self._cache.get(key)
+        if s is None:
+            s = _tight(gfx.gold_text(self.fonts.get("display", size), "LQ"))
+            self._store(key, s)
+        return s
 
     def _annulus(self, screen, color, r_in, r_out):
         r_in, r_out = int(r_in), int(r_out)
@@ -592,13 +583,12 @@ class Transitions:
             self._draw_burst(screen, t)
             return
         sink = 1 - _in_cubic(_prog(t, -0.2, 0.2))
-        for k in range(4):   # four answer shapes pop in a row above the lockup
-            p = _out_back(_prog(t_in, settle + k * 0.06, 0.3), 2.0) * sink
-            if p > 0:
-                _shape(screen, ANSWER_SHAPES[k], self.cx + (k - 1.5) * 120 * u, s["shape_y"], 34 * u * p, 0,
-                       BAND_COLORS[k])
-        _rise(screen, s["l1"], s["x"], s["l1_y"], _out_cubic(_prog(t_in, settle + 0.08, 0.3)) * sink)
-        _rise(screen, s["l2"], s["x"], s["l2_y"], _out_cubic(_prog(t_in, settle + 0.16, 0.32)) * sink)
+        drawn = _out_cubic(_prog(t_in, settle - 0.1, 0.4)) * sink   # the logo's four arcs draw on
+        if drawn > 0:
+            gfx.ring(screen, self.cx, self.cy, s["ring"], max(6, s["ring"] // 11), drawn=drawn)
+        lq, word = s["lq"], s["word"]
+        _rise(screen, lq, self.cx - lq.get_width() // 2, s["lq_y"], _out_cubic(_prog(t_in, settle + 0.06, 0.32)) * sink)
+        _rise(screen, word, self.cx - word.get_width() // 2, s["word_y"], _out_cubic(_prog(t_in, settle + 0.18, 0.3)) * sink)
         tag = s["tag"]
         tp = _out_cubic(_prog(t_in, settle + 0.34, 0.28)) * sink
         if tp > 0:

@@ -79,7 +79,7 @@ def _env_num(name, default):
 MATCH_LENGTH = 10
 LOBBY_TIME = _env_num("QUIZ_LOBBY_SECONDS", 30)          # category vote, !ready check-ins
 INTRO_TIME = 4             # "MATCH 15" title sting
-QUESTION_DISPLAY_TIME = _env_num("QUIZ_QUESTION_SECONDS", 20)
+QUESTION_DISPLAY_TIME = _env_num("QUIZ_QUESTION_SECONDS", 30)
 LATE_ANSWER_GRACE = _env_num("QUIZ_LATE_SECONDS", 4)     # "time's up" while late chat messages still arrive
 REVEAL_AT = 1.1   # seconds into the reveal before the right answer lights up (answer split counts up first)
 REVEAL_DISPLAY_TIME = _env_num("QUIZ_REVEAL_SECONDS", 8)
@@ -87,7 +87,11 @@ PODIUM_TIME = _env_num("QUIZ_PODIUM_SECONDS", 14)
 LIGHTNING_QUESTION = 5     # fixed event slots inside a match
 BONUS_QUESTIONS = (3, 7)   # first blood or jackpot
 FINAL_QUESTION_MULT = 2.0  # the last question pays double
-SPECIAL_SLOTS = {}         # question number -> special round (quiz/special.py), drawn from packs/special_*.json
+# Special rounds (quiz/special.py, packs/special_*.json): question number -> round type
+SPECIAL_SLOTS = {2: "higher_lower", 4: "majority", 6: "odd_one_out"}
+LONELY_CHANCE = 0.3        # share of Crowd Mind slots secretly played as Lonely Answer (least picked wins)
+HALF_STREAK = 3            # 50:50 joker ("!half 1 3"): once per match from this answer streak in the match
+CROWD_MIN_REAL = 3         # Crowd Mind needs this many real (non-bot) answers, or the question is void
 DIFFICULTY_RAMP = {1: "easy", 2: "easy", 3: "easy", 4: "medium", 5: "medium",
                    6: "medium", 7: "medium", 8: "hard", 9: "hard", 10: "hard"}
 
@@ -251,7 +255,7 @@ ACHIEVEMENTS = {
 LIGHTNING_ROUND_CHANCE = 0.08   # 8% chance: shorter time, 1.5x points
 JACKPOT_CHANCE = 0.10           # 10% chance: random correct player wins jackpot
 FIRST_BLOOD_CHANCE = 0.15       # 15% chance: fastest correct player gets bonus
-LIGHTNING_TIME = 12             # seconds (instead of 20)
+LIGHTNING_TIME = _env_num("QUIZ_LIGHTNING_SECONDS", 22)   # seconds (instead of the normal 30)
 LIGHTNING_MULT = 1.5
 JACKPOT_BONUS = 25              # flat bonus for jackpot winner
 FIRST_BLOOD_BONUS = 15          # flat bonus for first correct answerer
