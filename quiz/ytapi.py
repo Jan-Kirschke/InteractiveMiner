@@ -360,7 +360,8 @@ class YouTubeAPI:
             "status": {"privacyStatus": self.privacy, "selfDeclaredMadeForKids": False},
             "contentDetails": {"enableAutoStart": True, "enableAutoStop": False,
                                "latencyPreference": "ultraLow", "enableDvr": False,
-                               "enableEmbed": True, "monitorStream": {"enableMonitorStream": False}},
+                               # no enableEmbed: channels not allowed to embed get 400 invalidEmbedSetting
+                               "monitorStream": {"enableMonitorStream": False}},
         }
         return self.call("POST", "liveBroadcasts", {"part": "snippet,status,contentDetails"}, body)
 
