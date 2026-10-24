@@ -185,6 +185,7 @@ class QuizLogic:
         self.current_question: Question | None = None
         self.current_answers: dict[str, tuple[int, float]] = {}
         self.question_start_time = 0.0
+        self.question_duration = float(QUESTION_DISPLAY_TIME)
 
         # Results
         self.last_result: RoundResult | None = None
@@ -500,6 +501,7 @@ class QuizLogic:
         if self.mini_event == "lightning":
             self.state_duration = LIGHTNING_TIME
             self.state_timer = LIGHTNING_TIME
+        self.question_duration = self.state_duration
 
         # Schedule filler bots
         self._schedule_bots()
@@ -715,7 +717,7 @@ class QuizLogic:
 
     def _calculate_points(self, answer_timestamp: float, current_streak: int) -> int:
         elapsed = answer_timestamp - self.question_start_time
-        time_fraction = max(0, min(1, elapsed / QUESTION_DISPLAY_TIME))
+        time_fraction = max(0, min(1, elapsed / self.question_duration))
 
         if time_fraction <= SPEED_BONUS_TIER1_THRESHOLD:
             speed_mult = SPEED_BONUS_TIER1_MULT
@@ -737,7 +739,7 @@ class QuizLogic:
         # First correct ever
         if player.correct_answers == 1:
             self._push_event(
-                f"{player.username} earned FIRST BLOOD!",
+                f"{player.username} got their first answer right!",
                 COLOR_TEXT_GOLD, "ACH",
             )
 
@@ -1050,14 +1052,8 @@ class QuizLogic:
                 self.reset_all_scores()
                 return
 
-        # Accept "1", "2", "3", "4" — already normalized by chat (punctuation stripped)
-        # Also handle edge cases: "1 ", "answer 2", etc. — check first char
-        answer = ""
-        if msg in ("1", "2", "3", "4"):
-            answer = msg
-        elif len(msg) <= 10 and msg and msg[0] in "1234":
-            # Short message starting with a valid digit (e.g. "1!" normalized to "1")
-            answer = msg[0]
+        # Only a bare digit counts ("2!" arrives here as "2"); "2nd place" or "1000" do not.
+        answer = msg if msg in ("1", "2", "3", "4") else ""
 
         if answer:
             choice = int(answer) - 1
@@ -1152,6 +1148,11 @@ class QuizLogic:
         if self.state_duration <= 0:
             return 0
         return max(0, min(1, self.state_timer / self.state_duration))
+
+    @property
+    def active_player_count(self) -> int:
+        """Real players in this round, or last round's if this one has just started."""
+        return max(self._count_real_in_round(), len(self._last_round_real_players))
 
     @property
     def answer_count(self) -> int:

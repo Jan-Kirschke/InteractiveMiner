@@ -162,6 +162,7 @@ from pathlib import Path as _Path
 _ROOT = _Path(__file__).resolve().parent.parent
 
 DB_PATH = str(_ROOT / "data" / "quiz_data.db")
+DB_PATH_OFFLINE = str(_ROOT / "data" / "quiz_offline.db")  # fake chat users never touch the live DB
 DB_SAVE_INTERVAL = 10  # seconds
 
 # ==========================================
@@ -234,8 +235,27 @@ COMPETITION_ALERT_THRESHOLD = 20  # points gap to trigger "close race" alert
 # ==========================================
 # YOUTUBE STREAMING (via FFmpeg)
 # ==========================================
+def _load_dotenv(path):
+    """Read KEY=VALUE lines from a gitignored .env file into os.environ (existing vars win)."""
+    import os
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    except FileNotFoundError:
+        pass
+
+
+_load_dotenv(_ROOT / ".env")
+
+import os as _os
 STREAM_ENABLED = True              # Set True to stream to YouTube Live
-YOUTUBE_STREAM_KEY = "d4t6-3q2b-0hem-5hms-3y37"             # Your YouTube stream key (from YouTube Studio)
+# Stream key comes from the environment or the gitignored .env file (see .env.example).
+YOUTUBE_STREAM_KEY = _os.environ.get("QUIZ_STREAM_KEY", "")
 STREAM_FPS = 30                     # Stream output framerate (30fps is ideal for quiz content)
 STREAM_BITRATE = "6000k"            # Video bitrate for 1080p30
 FFMPEG_PATH = "ffmpeg"              # Path to ffmpeg binary (auto-downloaded to scripts/)

@@ -1239,10 +1239,10 @@ class UIManager:
 
         # 3. Player count
         pc = data.get("player_count", 0)
-        players_surf = self.font_small.render(f"{pc} Players", True, COLOR_TEXT_SECONDARY)
+        players_surf = self.font_small.render(f"{pc} playing", True, COLOR_TEXT_SECONDARY)
         rx -= players_surf.get_width()
         self._text_shadowed(
-            f"{pc} Players", self.font_small, COLOR_TEXT_SECONDARY, (rx, y),
+            f"{pc} playing", self.font_small, COLOR_TEXT_SECONDARY, (rx, y),
         )
 
     # ------------------------------------------

@@ -18,3 +18,8 @@ scripts/ffmpeg/
 
 # System files
 assets/images/desktop.ini
+
+# Secrets (stream key, OAuth tokens)
+.env
+secrets/
+data/quiz_offline.db

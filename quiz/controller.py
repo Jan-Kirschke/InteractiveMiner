@@ -10,7 +10,7 @@ import sys
 
 from quiz.config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, FPS, WINDOW_TITLE,
-    DB_SAVE_INTERVAL,
+    DB_SAVE_INTERVAL, DB_PATH, DB_PATH_OFFLINE,
     VIDEO_ID, CHANNEL_IDS,
     STREAM_ENABLED, YOUTUBE_STREAM_KEY, STREAM_FPS, STREAM_BITRATE, FFMPEG_PATH,
 )
@@ -44,7 +44,7 @@ class MainGameController:
 
         # Subsystems
         self.msg_queue = queue.Queue()
-        self.db = QuizDatabase()
+        self.db = QuizDatabase(DB_PATH_OFFLINE if offline else DB_PATH)
         self.logic = QuizLogic(self.db)
         self.chat = ChatManager(resolved, self.msg_queue, offline=offline)
         self.ui = UIManager(self.screen)
@@ -167,7 +167,7 @@ class MainGameController:
             "state_name": state.name,
             "round_count": self.logic.round_count,
             "category": self.logic.current_category_name,
-            "player_count": self.db.get_player_count(exclude_bots=False),
+            "player_count": self.logic.active_player_count,
             "connected": self.chat.is_connected,
             "broadcasting": self.broadcaster.is_active,
             "chat_status": self.chat.status_text,

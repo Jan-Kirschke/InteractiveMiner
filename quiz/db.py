@@ -14,6 +14,10 @@ from quiz.models import Player
 BOT_PREFIX = "[Bot] "
 
 
+def is_bot(username: str) -> bool:
+    return username.startswith(BOT_PREFIX)
+
+
 class QuizDatabase:
     def __init__(self, db_path=DB_PATH):
         self._db_path = db_path
@@ -75,6 +79,13 @@ class QuizDatabase:
         self._conn.commit()
 
     def _load_all(self):
+        # Bots are never persisted or ranked; purge rows left by older versions.
+        purged = self._conn.execute(
+            "DELETE FROM players WHERE username LIKE ?", (BOT_PREFIX + "%",),
+        ).rowcount
+        self._conn.commit()
+        if purged:
+            print(f"[DB] Purged {purged} stored bot rows")
         cursor = self._conn.execute("SELECT * FROM players")
         for row in cursor:
             p = Player(
@@ -105,13 +116,13 @@ class QuizDatabase:
 
     def get_top_players(self, n: int = 10) -> list[Player]:
         sorted_players = sorted(
-            self._players.values(),
+            (p for p in self._players.values() if not is_bot(p.username)),
             key=lambda p: p.score,
             reverse=True,
         )
         return sorted_players[:n]
 
-    def get_player_count(self, exclude_bots: bool = False) -> int:
+    def get_player_count(self, exclude_bots: bool = True) -> int:
         if exclude_bots:
             return sum(1 for u in self._players if not u.startswith(BOT_PREFIX))
         return len(self._players)
@@ -158,7 +169,7 @@ class QuizDatabase:
             data = []
             for uname in to_save:
                 p = self._players.get(uname)
-                if p:
+                if p and not is_bot(uname):
                     data.append((
                         p.username, p.score, p.streak, p.best_streak,
                         p.rank, p.games_played, p.correct_answers,
