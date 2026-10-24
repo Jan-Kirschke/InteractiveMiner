@@ -12,6 +12,7 @@ import html
 import random
 import re
 import threading
+import zlib
 from pathlib import Path
 
 try:
@@ -25,6 +26,7 @@ from quiz.config import (
     LATE_ANSWER_GRACE, REVEAL_DISPLAY_TIME, PODIUM_TIME,
     LIGHTNING_QUESTION, BONUS_QUESTIONS, FINAL_QUESTION_MULT, DIFFICULTY_RAMP,
     DIFFICULTY_TIERS, DIFFICULTY_MULT,
+    FORMAT_ROTATION, SURVIVOR_POT, SURVIVOR_MIN, TEAM_WIN_BONUS,
     BASE_POINTS, SPEED_BONUS_TIER1_THRESHOLD, SPEED_BONUS_TIER2_THRESHOLD,
     SPEED_BONUS_TIER1_MULT, SPEED_BONUS_TIER2_MULT,
     COMBO_STEPS,
@@ -45,7 +47,7 @@ from quiz.models import (
 from quiz.db import QuizDatabase
 from quiz.bank import QuestionBank, REPEAT_WINDOWS, MEASURE_AFTER
 from quiz.import_questions import load_items
-from quiz.special import SpecialDecks
+from quiz.special import SpecialDecks, FORMATS, TEAMS
 
 PACK_DIR = Path(__file__).resolve().parent / "packs"
 
@@ -200,6 +202,16 @@ def host_line_for_rate(rate: float, answers: int, turn: int = 0) -> str:
 
 QUESTION_LINES = ("Question {n} of {of}. {cat}, {diff}.", "Here it is: {cat}, {diff}. Question {n} of {of}.",
                   "{cat}, {diff}: question {n} of {of}.", "Question {n}! {cat}, {diff}.")
+
+
+def format_for(match_no: int) -> str:
+    """The match format: config.FORMAT_ROTATION in turn, so match N+1 never repeats match N's."""
+    return FORMAT_ROTATION[(match_no - 1) % len(FORMAT_ROTATION)]
+
+
+def team_of(username: str) -> str:
+    """Team Gold or Team Teal, from the name (crc32: the same in every process and show)."""
+    return ("gold", "teal")[zlib.crc32(username.lower().encode("utf-8")) & 1]
 
 
 COMBO_NAMES = {3: "ON FIRE", 5: "UNSTOPPABLE", 10: "LEGENDARY", 15: "QUIZ MACHINE", 25: "GODLIKE"}
@@ -366,6 +378,12 @@ class QuizLogic:
         self._line_turn = 0                # rotates the build-up wordings
         self._ask_turn = 0                 # rotates the question wordings
         self._combo_hits: list[tuple[int, str]] = []   # (streak, player) reaching a combo step this reveal
+        # Match format (special.FORMATS): classic, speed, survivors (logic.perfect), teams
+        self.match_format = "classic"
+        self.team_points: dict[str, int] | None = None   # teams format: team -> match points of its members
+        self.team_count = {"gold": 0, "teal": 0}          # real members who answered this match
+        self._team_members: dict[str, str] = {}
+        self._team_leader = ""
         self._recent_categories: list = []   # the last voted categories: the vote does not offer them again
         self._tier_results: dict[str, list[int]] = {}   # this match: tier -> [real answers, right]
         self._tier_last: dict[str, list[int]] = {}      # the same for the last match
@@ -649,8 +667,14 @@ class QuizLogic:
         available = [(c, n) for c, n in VOTABLE_CATEGORIES.items() if c not in self._recent_categories]
         chosen = random.sample(available, 3) + [(None, "Mixed bag")]
         self.vote_state = ThemeVoteState(options={i: opt for i, opt in enumerate(chosen, 1)})
-        self._say(f"Match {self.match_no} starts in {LOBBY_TIME} seconds. "
-                  "Vote for the category: type 1 to 4!")
+        self.match_format = format_for(self.match_no)
+        label, color, rule = FORMATS[self.match_format]
+        if self.match_format == "classic":
+            self._say(f"Match {self.match_no} starts in {LOBBY_TIME} seconds. "
+                      "Vote for the category: type 1 to 4!")
+        else:
+            self._push_event(f"NEXT: {label}. {rule}", color, "MODE")
+            self._say(f"Next up, match {self.match_no}: {label}! {rule}. Vote for the category: type 1 to 4!")
 
     def _enter_intro(self):
         self.q_index = 0
@@ -667,9 +691,20 @@ class QuizLogic:
         self._prev_weekly_positions = {
             p.username: i for i, p in enumerate(self.db.get_weekly_top(n=1_000_000), 1)
         }
+        teams = self.match_format == "teams"
+        self.team_points = {"gold": 0, "teal": 0} if teams else None
+        self.team_count = {"gold": 0, "teal": 0}
+        self._team_members = {}
+        self._team_leader = ""
         self.sound_queue.append("show_open")
-        self._say(f"Match {self.match_no}: {self.match_category}. "
-                  f"{MATCH_LENGTH} questions, fastest right answers score most. Good luck!")
+        if self.match_format == "classic":
+            self._say(f"Match {self.match_no}: {self.match_category}. "
+                      f"{MATCH_LENGTH} questions, fastest right answers score most. Good luck!")
+        else:
+            label, color, rule = FORMATS[self.match_format]
+            self._push_event(f"{label}: {rule}", color, "MODE")
+            self.sound_queue.append("round_sting")
+            self._say(f"Match {self.match_no}: {label}, {self.match_category}. {rule}!")
 
     def _prepare_question(self):
         """Serve the next question and its event: BUILDUP does it, so the build-up can talk about it."""
@@ -741,6 +776,8 @@ class QuizLogic:
             self._say(QUESTION_LINES[self._ask_turn % len(QUESTION_LINES)].format(
                 n=self.q_index, of=MATCH_LENGTH, cat=self.current_question.category, diff=diff))
 
+        if self.match_format == "speed":
+            self.state_duration = self.state_timer = LIGHTNING_TIME
         self.question_duration = self.state_duration
         self._schedule_bots()
 
@@ -881,7 +918,9 @@ class QuizLogic:
         self.last_result = self._resolve_question()
         self._announce_overtakes(before)
         res = self.last_result
+        survivors_before = len(self.perfect) if self.perfect is not None else -1
         self._track_perfect(res)
+        self._format_status(survivors_before)
         self.pips.append("done" if res.total_answers and res.correct_rate >= 0.5 else "miss")
         self._stinger_due = True
         self._say(host_line_for_result(res, self.round_count))
@@ -905,9 +944,68 @@ class QuizLogic:
             tally[1] += len(scored)
         self.perfect = scored if self.perfect is None else self.perfect & scored
 
+    def _format_status(self, survivors_before: int):
+        """After each reveal: the survivors or the team race; at halftime, the leader as well."""
+        status, color = "", COLOR_AMBER
+        if self.match_format == "survivors" and self.perfect is not None:
+            n = len(self.perfect)
+            if n == 0:
+                if survivors_before > 0:
+                    self._push_event("SURVIVORS wiped out! Nobody gets the pot", COLOR_EVENT_RED, "OUT")
+            else:
+                status = f"{n} SURVIVORS left for {SURVIVOR_POT} points"
+                color = FORMATS["survivors"][1]
+        elif self.team_points is not None:
+            s = self.team_scores()
+            status, color = f"TEAM GOLD {s['gold']} - {s['teal']} TEAM TEAL (average points)", TEAMS["gold"][1]
+            lead = "gold" if s["gold"] > s["teal"] else "teal" if s["teal"] > s["gold"] else ""
+            if lead and lead != self._team_leader:
+                if self._team_leader:
+                    self.sound_queue.append("crowd")      # the lead changed hands
+                self._team_leader = lead
+        if self.q_index == MATCH_LENGTH // 2:
+            real = [s for s in self.standings.values() if not is_bot(s.username) and s.points > 0]
+            top = max(real, key=lambda s: s.points, default=None)
+            head = f"HALFTIME: {top.username} leads with {top.points}" if top else "HALFTIME: all to play for"
+            self._push_event(head + (f". {status}" if status else ""), COLOR_TEXT_GOLD, "HALF")
+            self.sound_queue.append("halftime")
+        elif status:
+            self._push_event(status, color, "MODE")
+
+    def _format_payouts(self) -> dict:
+        """Podium: the survivors split the pot, the better team's members get their bonus."""
+        stats = {}
+        if self.match_format == "survivors":
+            alive = sorted(u for u in (self.perfect or ()) if not is_bot(u))
+            share = max(SURVIVOR_MIN, SURVIVOR_POT // len(alive)) if alive else 0
+            for u in alive:
+                self._award_bonus(u, share)
+            stats["survivors"] = (len(alive), share)
+            if alive:
+                self._push_event(f"{len(alive)} SURVIVORS split the pot: +{share} each!",
+                                 FORMATS["survivors"][1], "WIN")
+                self.sound_queue.append("jackpot")
+        elif self.team_points is not None:
+            s = self.team_scores()
+            win = "gold" if s["gold"] > s["teal"] else "teal" if s["teal"] > s["gold"] else ""
+            stats["team"] = (win, s["gold"], s["teal"])
+            if not self._team_members:
+                return stats
+            members = [u for u, t in self._team_members.items() if t == win]
+            for u in members:
+                self._award_bonus(u, TEAM_WIN_BONUS)
+            if win:
+                self._push_event(f"{TEAMS[win][0]} wins! +{TEAM_WIN_BONUS} for its {len(members)} players",
+                                 TEAMS[win][1], "TEAM")
+            else:
+                self._push_event(f"Gold and Teal tie at {s['gold']}!", COLOR_AMBER, "TEAM")
+            self.sound_queue.append("team_win")
+        return stats
+
     def _enter_podium(self):
         if self._tier_results:
             self._tier_last = self._tier_results
+        extra_stats = self._format_payouts()
         real = [s for s in self.standings.values() if not is_bot(s.username)]
         real.sort(key=lambda s: (-s.points, s.fastest or 999))
         self.podium = [s for s in real if s.points > 0][:3]
@@ -919,6 +1017,7 @@ class QuizLogic:
             "fastest": (fastest.username, fastest.fastest) if fastest else None,
             "best_streak": (streak.username, streak.best_streak) if streak and streak.best_streak else None,
             "crew": race[0][:2] if race and race[0][1] > 0 else None,
+            **extra_stats,   # "survivors": (count, share each), "team": (winner or "", gold avg, teal avg)
         }
         self._resolve_duels()
         winner = self.podium[0] if self.podium else None
@@ -1040,7 +1139,23 @@ class QuizLogic:
     def _award_bonus(self, username: str, points: int):
         self.db.get_or_create_player(username).add_points(points)
         self._standing(username).points += points
+        self._team_add(username, points)
         self.db.mark_dirty(username)
+
+    def _team_add(self, username: str, points: int):
+        """Teams format: a real player's match points also go to their team (O(1))."""
+        if self.team_points is None or is_bot(username):
+            return
+        team = self._team_members.get(username)
+        if team is None:
+            team = self._team_members[username] = team_of(username)
+            self.team_count[team] += 1
+        self.team_points[team] += points
+
+    def team_scores(self) -> dict[str, int]:
+        """Teams format: each team's average match points per member who answered."""
+        pts = self.team_points or {"gold": 0, "teal": 0}
+        return {t: round(pts[t] / self.team_count[t]) if self.team_count[t] else 0 for t in ("gold", "teal")}
 
     def _resolve_question(self) -> RoundResult:
         q = self.current_question
@@ -1068,6 +1183,7 @@ class QuizLogic:
             old_rank = player.rank
             answer_time = max(0.0, timestamp - self.question_start_time)
             half = self.half_picks.get(username)
+            self._team_add(username, 0)   # answering makes you a team member for this match
 
             if choice in winners or (half and q.correct_index in half):
                 pts = int(self._calculate_points(timestamp, player.streak) * self.question_mult(q))
@@ -1079,6 +1195,7 @@ class QuizLogic:
                     self.sound_queue.append("streak")
                 player.record_correct(pts)
                 st.points += pts
+                self._team_add(username, pts)
                 st.correct += 1
                 st.streak += 1
                 st.best_streak = max(st.best_streak, st.streak)
@@ -1136,10 +1253,10 @@ class QuizLogic:
 
     def question_mult(self, q: Question | None = None) -> float:
         """This question's multiplier on every right answer: difficulty (not on crowd rounds),
-        lightning, final double."""
+        lightning (every question of a speed match), final double."""
         q = q or self.current_question
         mult = 1.0 if q.kind in CROWD_KINDS else DIFFICULTY_MULT.get(q.difficulty, 1.0)
-        if self.mini_event == "lightning":
+        if self.mini_event == "lightning" or self.match_format == "speed":
             mult *= LIGHTNING_MULT
         if self.is_double_points:
             mult *= FINAL_QUESTION_MULT
@@ -1416,6 +1533,11 @@ class QuizLogic:
             return
         if cmd in ("half", "5050"):
             self._cmd_half(username, _rest_after_command(msg), at)
+            return
+        if msg == "team":
+            if not is_bot(username) and self._check_command_cooldown(username):
+                team = team_of(username)
+                self._push_event(f"{username} plays for Team {team.capitalize()}", TEAMS[team][1], "TEAM")
             return
         if msg == "card":
             if self._check_command_cooldown(username) and not is_bot(username):

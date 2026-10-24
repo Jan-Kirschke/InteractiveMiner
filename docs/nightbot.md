@@ -24,7 +24,16 @@ post, so a quiet chat is not spammed.
 
 ## Commands
 
-Do not create `!rank` or `!card`: the game answers those itself.
+Do not create these: the game answers them itself, on screen. Each answer is a toast; nothing is posted to chat.
+
+| Game command | What it does | Limit |
+|---|---|---|
+| `!rank` | your weekly place, points, level and day streak | once per 30 s per player |
+| `!card` | your player card | once per 30 s per player |
+| `!team` | which team your name puts you in (Gold or Teal, for good) | once per 30 s per player |
+| `!half 1 3` | the 50:50 joker: two options, half the points | once per match, from a 3-answer streak |
+
+Nightbot commands:
 
 | Command | Message |
 |---|---|

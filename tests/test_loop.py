@@ -391,6 +391,154 @@ def test_combo_steps_share_one_toast_and_one_sound(game):
     assert game.sound_queue.count("combo") == 1 and "streak" not in game.sound_queue
 
 
+# ------------------------------------------
+# 4. ROTATING FORMATS: classic, speed, survivors, teams; halftime
+# ------------------------------------------
+def lobby_for(game, fmt):
+    """Enter a lobby whose match number plays this format."""
+    n = next(n for n in range(1, 9) if logic_mod.format_for(n) == fmt)
+    game.db.next_match_number = lambda: n
+    game.sound_queue.clear()
+    game._enter_lobby()
+    game._enter_intro()
+
+
+def test_no_two_matches_in_a_row_share_a_format():
+    fmts = [logic_mod.format_for(n) for n in range(1, 50)]
+    assert all(a != b for a, b in zip(fmts, fmts[1:]))
+    assert set(fmts[:4]) == {"classic", "speed", "survivors", "teams"}
+
+
+def test_the_format_is_announced_at_match_open(game):
+    from quiz.special import FORMATS
+    lobby_for(game, "survivors")
+    assert game.match_format == "survivors"
+    assert "SURVIVORS" in game.host_line.upper() and "round_sting" in game.sound_queue
+    assert any(FORMATS["survivors"][0] in e.text for e in game.event_feed)
+    lobby_for(game, "classic")
+    assert "round_sting" not in game.sound_queue
+
+
+def test_speed_match_makes_every_question_a_lightning_question(game):
+    lobby_for(game, "speed")
+    game._pop_question = served(["easy"] * 10)(game)
+    for n in (1, 2, 6):
+        assert buildup_at(game, n)["stakes"] == 30           # 20 x1.5
+        game._transition_to(GameState.ASKING)
+        assert game.question_duration == logic_mod.LIGHTNING_TIME
+        answer_at(game, "alice", 1, 1)
+        assert points(game._resolve_question())["alice"] == 30
+
+
+def test_classic_match_keeps_the_normal_clock(game):
+    lobby_for(game, "classic")
+    ask(game, 2)
+    assert game.question_duration == logic_mod.QUESTION_DISPLAY_TIME
+
+
+def reveal(game, right=(), wrong=()):
+    classic(game)
+    for u in right:
+        answer_at(game, u, 1)
+    for u in wrong:
+        answer_at(game, u, 0)
+    game._enter_revealing()
+
+
+def test_survivors_split_the_pot(game):
+    lobby_for(game, "survivors")
+    reveal(game, right=("alice", "bob", "carol", "dave", BOT))
+    reveal(game, right=("alice", "bob", "carol", BOT), wrong=("dave",))
+    assert game.perfect == {"alice", "bob", "carol"}
+    assert any("3 SURVIVORS" in e.text for e in game.event_feed)
+    before = game.standings["alice"].points
+    game._enter_podium()
+    assert game.standings["alice"].points == before + 66      # 200 // 3
+    assert game.standings["dave"].points == 20 and game.match_stats["survivors"] == (3, 66)   # out: no share
+    assert "jackpot" in game.sound_queue
+
+
+def test_many_survivors_get_at_least_the_minimum(game):
+    lobby_for(game, "survivors")
+    reveal(game, right=[f"p{i}" for i in range(25)])
+    game._enter_podium()
+    assert game.match_stats["survivors"] == (25, 20)
+
+
+def test_survivors_wiped_out_pays_nobody(game):
+    lobby_for(game, "survivors")
+    reveal(game, right=("alice",))
+    reveal(game, wrong=("alice",))
+    assert any("wiped out" in e.text.lower() for e in game.event_feed)
+    game._enter_podium()
+    assert game.match_stats["survivors"] == (0, 0) and "jackpot" not in game.sound_queue
+
+
+def test_no_survivor_pot_outside_survivors(game):
+    lobby_for(game, "classic")
+    reveal(game, right=("alice",))
+    game._enter_podium()
+    assert game.standings["alice"].points == 20 and "survivors" not in game.match_stats
+
+
+def names_on(team, n=2):
+    out, i = [], 0
+    while len(out) < n:
+        if logic_mod.team_of(f"u{i}") == team:
+            out.append(f"u{i}")
+        i += 1
+    return out
+
+
+def test_teams_come_from_the_name_and_never_change():
+    assert logic_mod.team_of("Alice") == logic_mod.team_of("alice") in ("gold", "teal")
+    assert {logic_mod.team_of(f"u{i}") for i in range(20)} == {"gold", "teal"}
+    # recorded 2026-10-24: a player keeps the team across restarts (Python's hash() would not)
+    assert [logic_mod.team_of(n) for n in ("alice", "bob", "Deklarator")] == ["teal", "gold", "teal"]
+
+
+def test_the_team_with_the_higher_average_wins_a_bonus_for_every_member(game):
+    lobby_for(game, "teams")
+    g1, g2, g3 = names_on("gold", 3)
+    t1, = names_on("teal", 1)
+    reveal(game, right=(g1, t1), wrong=(g2, g3))           # gold 20 / 3 players, teal 20 / 1
+    reveal(game, right=(BOT,) * 1, wrong=())               # a bot scores, but for no team
+    assert game.team_scores() == {"gold": 7, "teal": 20}
+    game._enter_podium()
+    assert game.standings[t1].points == 20 + logic_mod.TEAM_WIN_BONUS
+    assert game.standings[g1].points == 20
+    assert game.match_stats["team"] == ("teal", 7, 20) and "team_win" in game.sound_queue
+
+
+def test_a_team_tie_pays_nobody(game):
+    lobby_for(game, "teams")
+    g1, = names_on("gold", 1)
+    t1, = names_on("teal", 1)
+    reveal(game, right=(g1, t1))
+    game._enter_podium()
+    assert game.standings[g1].points == 20 and game.match_stats["team"] == ("", 20, 20)
+
+
+def test_team_command_names_your_team_with_a_cooldown(game):
+    game.process_message("alice", "team")
+    game.process_message("alice", "team")
+    game.process_message(BOT, "team")
+    said = [e.text for e in game.event_feed if "Team" in e.text]
+    assert said == [f"alice plays for Team {logic_mod.team_of('alice').capitalize()}"]
+
+
+def test_halftime_after_question_five(game):
+    lobby_for(game, "teams")
+    for n in range(1, 6):
+        game.q_index = n - 1
+        game.sound_queue.clear()
+        game._prepare_question()
+        game.current_answers = {"alice": (game.current_question.correct_index, game.question_start_time)}
+        game._enter_revealing()
+        assert ("halftime" in game.sound_queue) == (n == 5)
+    assert any(e.text.startswith("HALFTIME") and "alice" in e.text for e in game.event_feed)
+
+
 def test_question_lines_vary(game):
     import re
     lines = []
