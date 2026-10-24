@@ -13,6 +13,9 @@ from quiz.config import DB_PATH
 from quiz.models import Player, utc_week
 
 BOT_PREFIX = "[Bot] "
+FRIENDS_MAX = 20          # friends per player
+REQUESTS_OUT_MAX = 10     # pending !friend requests one player may have sent (the oldest go)
+REQUESTS_IN_MAX = 20      # pending requests waiting for one player (the oldest go)
 
 
 def is_bot(username: str) -> bool:
@@ -56,9 +59,16 @@ class QuizDatabase:
         self._weekly: list[Player] = []
         self._weekly_pos: dict[str, int] | None = None
         self._lifetime: list[Player] | None = None
+        self._lifetime_pos: dict[str, int] | None = None
         self._names: dict[str, str] = {}   # find_player: lower-case name without "@" -> username
         self._names_key = None
+        # Friends, in memory; changes reach sqlite through the writer thread (_friend_ops)
+        self._friends: dict[str, dict[str, float]] = {}        # username -> {friend: since}
+        self._requests_in: dict[str, dict[str, float]] = {}    # target -> {sender: at}
+        self._requests_out: dict[str, dict[str, float]] = {}   # sender -> {target: at}
+        self._friend_ops: list[tuple[str, tuple]] = []
         self._load_all()
+        self._load_friends()
 
     def _create_tables(self):
         self._conn.execute("""
@@ -106,6 +116,19 @@ class QuizDatabase:
                 players     INTEGER,
                 winner      TEXT,
                 winner_points INTEGER
+            )
+        """)
+        # Friends (additive: older databases just gain the two empty tables). A pair is stored once, a < b.
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS friends (
+                a TEXT NOT NULL, b TEXT NOT NULL, since REAL,
+                PRIMARY KEY (a, b)
+            )
+        """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS friend_requests (
+                sender TEXT NOT NULL, target TEXT NOT NULL, at REAL,
+                PRIMARY KEY (sender, target)
             )
         """)
         self._conn.commit()
@@ -172,6 +195,7 @@ class QuizDatabase:
         """Lifetime ladder (lifetime points = level)."""
         self._ladders()
         if self._lifetime is None:
+            self._lifetime_pos = None
             self._lifetime = sorted(
                 (p for p in self._players.values() if not is_bot(p.username)),
                 key=lambda p: p.score,
@@ -204,6 +228,81 @@ class QuizDatabase:
 
     def crew_members(self, crew: str) -> list[str]:
         return [u for u, p in self._players.items() if p.crew == crew]
+
+    # ------------------------------------------
+    # FRIENDS: mutual. "!friend x" from both sides makes a friendship; one side is a pending request.
+    def _load_friends(self):
+        for row in self._conn.execute("SELECT a, b, since FROM friends ORDER BY since"):
+            self._friends.setdefault(row["a"], {})[row["b"]] = row["since"] or 0.0
+            self._friends.setdefault(row["b"], {})[row["a"]] = row["since"] or 0.0
+        for row in self._conn.execute("SELECT sender, target, at FROM friend_requests ORDER BY at"):
+            self._requests_in.setdefault(row["target"], {})[row["sender"]] = row["at"] or 0.0
+            self._requests_out.setdefault(row["sender"], {})[row["target"]] = row["at"] or 0.0
+
+    def friends_of(self, username: str) -> list[str]:
+        """Friends in the order they became friends."""
+        mine = self._friends.get(username, {})
+        return sorted(mine, key=mine.get)
+
+    def are_friends(self, a: str, b: str) -> bool:
+        return b in self._friends.get(a, {})
+
+    def _drop_request(self, sender: str, target: str) -> bool:
+        if target not in self._requests_out.get(sender, {}):
+            return False
+        del self._requests_out[sender][target]
+        del self._requests_in[target][sender]
+        self._friend_ops.append(("DELETE FROM friend_requests WHERE sender = ? AND target = ?", (sender, target)))
+        return True
+
+    def request_friend(self, sender: str, target: str, now: float | None = None) -> str:
+        """sender typed "!friend target". Returns "friends" (target had asked: now friends),
+        "requested", "pending" (asked before), "already" or "full" (FRIENDS_MAX reached)."""
+        now = time.time() if now is None else now
+        if target in self._friends.get(sender, {}):
+            return "already"
+        if len(self._friends.get(sender, {})) >= FRIENDS_MAX:
+            return "full"
+        if sender in self._requests_out.get(target, {}):
+            if len(self._friends.get(target, {})) >= FRIENDS_MAX:
+                return "full"
+            self._drop_request(target, sender)
+            self._drop_request(sender, target)
+            self._friends.setdefault(sender, {})[target] = now
+            self._friends.setdefault(target, {})[sender] = now
+            a, b = sorted((sender, target))
+            self._friend_ops.append(("INSERT OR REPLACE INTO friends (a, b, since) VALUES (?, ?, ?)", (a, b, now)))
+            return "friends"
+        if target in self._requests_out.get(sender, {}):
+            return "pending"
+        out = self._requests_out.setdefault(sender, {})
+        while len(out) >= REQUESTS_OUT_MAX:
+            self._drop_request(sender, min(out, key=out.get))
+        waiting = self._requests_in.setdefault(target, {})
+        while len(waiting) >= REQUESTS_IN_MAX:
+            self._drop_request(min(waiting, key=waiting.get), target)
+        out[target] = waiting[sender] = now
+        self._friend_ops.append(("INSERT OR REPLACE INTO friend_requests (sender, target, at) VALUES (?, ?, ?)",
+                                 (sender, target, now)))
+        return "requested"
+
+    def unfriend(self, username: str, other: str) -> bool:
+        """End a friendship or withdraw a request, either way round. True if anything changed."""
+        changed = self._drop_request(username, other) | self._drop_request(other, username)
+        if other in self._friends.get(username, {}):
+            del self._friends[username][other]
+            del self._friends[other][username]
+            a, b = sorted((username, other))
+            self._friend_ops.append(("DELETE FROM friends WHERE a = ? AND b = ?", (a, b)))
+            changed = True
+        return changed
+
+    def lifetime_rank(self, username: str) -> int:
+        """1-based place on the lifetime ladder, 0 if not on it."""
+        self.get_top_players(0)
+        if self._lifetime_pos is None:
+            self._lifetime_pos = {p.username: i for i, p in enumerate(self._lifetime, 1)}
+        return self._lifetime_pos.get(username, 0)
 
     def next_match_number(self) -> int:
         row = self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM matches").fetchone()
@@ -266,15 +365,16 @@ class QuizDatabase:
     def save_in_background(self) -> bool:
         """Start writing the dirty players; returns at once. False if nothing to do or a save is
         still running (the dirty set keeps growing and goes with the next call)."""
-        if not self._dirty or not self._save_idle.is_set():
+        if not (self._dirty or self._friend_ops) or not self._save_idle.is_set():
             return False
         with self._lock:
             to_save, self._dirty = self._dirty, set()
+            ops, self._friend_ops = self._friend_ops, []
         self._save_idle.clear()
         if self._writer is None:
             self._writer = threading.Thread(target=self._writer_loop, name="db-writer", daemon=True)
             self._writer.start()
-        self._save_queue.put(to_save)
+        self._save_queue.put((to_save, ops))
         return True
 
     def wait_saved(self, timeout: float | None = None) -> bool:
@@ -290,17 +390,28 @@ class QuizDatabase:
         conn = sqlite3.connect(self._db_path, timeout=30)  # its own: the game's queries never wait on it
         conn.execute("PRAGMA synchronous=NORMAL")          # per connection; WAL is a property of the file
         while True:
-            batch = self._save_queue.get()
-            if batch is None:
+            item = self._save_queue.get()
+            if item is None:
                 break
+            batch, ops = item
             try:
                 rows = self._rows(batch)
                 if rows:
                     self._write_rows(conn, rows)
                     print(f"[DB] Saved {len(rows)} players")
+                if ops:
+                    for sql, params in ops:   # in order: a request, then its acceptance
+                        conn.execute(sql, params)
+                    conn.commit()
+                    ops = []
             except Exception as e:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
                 with self._lock:
                     self._dirty.update(batch)  # keep them for the next save instead of losing them
+                    self._friend_ops[:0] = ops  # idempotent statements: replaying them is safe
                 print(f"[DB] Save error: {e}")
             finally:
                 self._save_idle.set()

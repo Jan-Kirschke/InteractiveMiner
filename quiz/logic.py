@@ -45,7 +45,7 @@ from quiz.config import (
 from quiz.models import (
     GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding, Duel,
 )
-from quiz.db import QuizDatabase
+from quiz.db import QuizDatabase, FRIENDS_MAX
 from quiz.bank import QuestionBank, REPEAT_WINDOWS, MEASURE_AFTER, tier_rank, nearest_tier
 from quiz.import_questions import load_items
 from quiz.special import SpecialDecks, FORMATS, TEAMS
@@ -289,6 +289,22 @@ def _rest_after_command(raw: str) -> str:
     return parts[1].strip() if len(parts) > 1 else ""
 
 
+def _pack(head: str, items: list[str], tail: str, limit: int) -> str:
+    """head + as many items as fit in `limit` characters, then "+N more" for the rest."""
+    for k in range(len(items), -1, -1):
+        end = tail if k == len(items) else f" +{len(items) - k} more"
+        line = head + ", ".join(items[:k]) + end
+        if len(line) <= limit:
+            return line
+    return line[:limit]
+
+
+# A match is running (its standings are current) from the intro to the end of the podium
+MATCH_STATES = (GameState.INTRO, GameState.BUILDUP, GameState.ASKING, GameState.LOCKING,
+                GameState.REVEALING, GameState.PODIUM)
+FRIENDS_TOP = 5   # two friends both finishing in this many places get a line at the podium
+
+
 STATE_DURATIONS = {
     GameState.LOBBY: LOBBY_TIME,
     GameState.INTRO: INTRO_TIME,
@@ -395,6 +411,7 @@ class QuizLogic:
         self.new_players_this_round: list[str] = []
         self._known_players: set[str] = set(db._players.keys())
         self._command_cooldowns: dict[str, float] = {}
+        self.chat_reply = None   # set by the controller when the show can post in chat: chat_reply(username)
 
         # Filler bots (in memory only, never ranked)
         self._scheduled_bots: list[tuple[str, int, float]] = []
@@ -1064,6 +1081,11 @@ class QuizLogic:
                       "Next match starts soon.")
         else:
             self._say("No winner this time. Next match starts soon: type 1 to 4 to play!")
+        top = [s.username for s in real[:FRIENDS_TOP] if s.points > 0]
+        pair = next(((a, b) for i, a in enumerate(top) for b in top[i + 1:] if self.db.are_friends(a, b)), None)
+        if pair:
+            self._push_event(f"Friends {pair[0]} and {pair[1]} both finished in the top {FRIENDS_TOP}!",
+                             COLOR_CORRECT, "FRND")
 
     def _announce_overtakes(self, before: dict[str, int]):
         """Rivals: "Lena_K passed owlbert on the weekly ladder!" (at most two per round)."""
@@ -1525,6 +1547,71 @@ class QuizLogic:
                 self.sound_queue.append("rank_up")
                 return
 
+    # ---- friends: mutual, "!friend name" from both sides (quiz/db.py keeps them) ----
+    def _friend_target(self, username: str, rest: str) -> str | None:
+        """The known, real, other player named first in `rest`, like !duel; else None (ignored quietly)."""
+        if is_bot(username) or not rest:
+            return None
+        target = self.db.find_player(rest.split()[0].strip(".,!?:;"))
+        if not target or target == username or is_bot(target):
+            return None
+        return target
+
+    def _cmd_friend(self, username: str, rest: str):
+        target = self._friend_target(username, rest)
+        if not target:
+            return
+        self.db.get_or_create_player(username)
+        result = self.db.request_friend(username, target)
+        if result == "friends":
+            self._push_event(f"{target} and {username} are now friends!", COLOR_CORRECT, "FRND")
+            self.sound_queue.append("rank_up")
+        elif result == "requested":
+            self._push_event(f"{username} wants to be friends. {target}: type !friend {username} to accept",
+                             COLOR_EVENT_BLUE, "FRND")
+            self.sound_queue.append("vote")
+        elif result == "full":
+            self._push_event(f"{username}: friend list is full ({FRIENDS_MAX})", (150, 140, 130), "FRND")
+
+    def _cmd_unfriend(self, username: str, rest: str):
+        target = self._friend_target(username, rest)
+        if target and self.db.unfriend(username, target):
+            self._push_event(f"{username} updated their friends list", (150, 140, 130), "FRND")
+
+    def _cmd_friends(self, username: str):
+        """The show answers in chat when it can post there (chat_reply batches and rate-limits);
+        otherwise the same line is a toast, at most once per COMMAND_COOLDOWN."""
+        if is_bot(username):
+            return
+        if self.chat_reply is not None:
+            self.chat_reply(username)
+        elif self._check_command_cooldown(username):
+            self._push_event(self.friends_line(username, limit=120), COLOR_EVENT_BLUE, "FRND")
+
+    def friends_line(self, username: str, limit: int = 200) -> str:
+        """One compact line, at most `limit` characters: the friends' points and places in the running
+        match (podium included), else their all-time points and lifetime places. Best first."""
+        friends = self.db.friends_of(username)
+        if not friends:
+            return f"@{username} no friends yet: type !friend @name, they type !friend @{username} back"[:limit]
+        items, tail = [], ""
+        if self.state in MATCH_STATES and self.standings:
+            real = sorted((s for s in self.standings.values() if not is_bot(s.username)),
+                          key=lambda s: (-s.points, s.fastest or 999))
+            place = {s.username: (i, s.points) for i, s in enumerate(real, 1)}
+            playing = sorted((u for u in friends if u in place), key=lambda u: place[u][0])
+            if playing:
+                head = f"@{username} friends this match: "
+                items = [f"{u} {place[u][1]:,} pts #{place[u][0]}" for u in playing]
+                away = len(friends) - len(playing)
+                tail = f" (+{away} not playing)" if away else ""
+        if not items:
+            head = f"@{username} friends all-time: "
+            ranked = sorted(friends, key=lambda u: self.db.lifetime_rank(u) or 1e9)
+            items = [f"{u} {self.db._players[u].score:,} pts #{self.db.lifetime_rank(u)}"
+                     if u in self.db._players else u for u in ranked]
+        return _pack(head, items, tail, limit)
+
     def _cmd_half(self, username: str, rest: str, at: float | None = None):
         """50:50 joker: "!half 1 3" answers with two options; right if either is, for half the points.
         Once per match, from a HALF_STREAK answer streak in this match; not on crowd or two-option rounds."""
@@ -1593,6 +1680,15 @@ class QuizLogic:
             return
         if msg == "accept":
             self._cmd_accept(username)
+            return
+        if cmd == "friend":
+            self._cmd_friend(username, _rest_after_command(raw or msg))
+            return
+        if cmd == "unfriend":
+            self._cmd_unfriend(username, _rest_after_command(raw or msg))
+            return
+        if msg == "friends":
+            self._cmd_friends(username)
             return
         if cmd in ("half", "5050"):
             self._cmd_half(username, _rest_after_command(msg), at)
