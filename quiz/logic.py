@@ -25,7 +25,7 @@ from quiz.config import (
     MATCH_LENGTH, LOBBY_TIME, INTRO_TIME, BUILDUP_TIME, BUILDUP_TIME_BIG, QUESTION_DISPLAY_TIME,
     LATE_ANSWER_GRACE, REVEAL_DISPLAY_TIME, PODIUM_TIME,
     LIGHTNING_QUESTION, BONUS_QUESTIONS, FINAL_QUESTION_MULT, DIFFICULTY_RAMP,
-    DIFFICULTY_TIERS, DIFFICULTY_MULT,
+    DIFFICULTY_TIERS, DIFFICULTY_MULT, EXPERT_FINAL,
     FORMAT_ROTATION, SURVIVOR_POT, SURVIVOR_MIN, TEAM_WIN_BONUS,
     COMMUNITY_GOAL_PER_PLAYER, COMMUNITY_GOAL_MIN,
     BASE_POINTS, SPEED_BONUS_TIER1_THRESHOLD, SPEED_BONUS_TIER2_THRESHOLD,
@@ -46,7 +46,7 @@ from quiz.models import (
     GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding, Duel,
 )
 from quiz.db import QuizDatabase
-from quiz.bank import QuestionBank, REPEAT_WINDOWS, MEASURE_AFTER
+from quiz.bank import QuestionBank, REPEAT_WINDOWS, MEASURE_AFTER, tier_rank, nearest_tier
 from quiz.import_questions import load_items
 from quiz.special import SpecialDecks, FORMATS, TEAMS
 
@@ -223,19 +223,9 @@ def combo_mult(streak: int) -> float:
     return next((m for at, m in reversed(COMBO_STEPS) if streak >= at), 1.0)
 
 
-def tier_rank(difficulty: str) -> int:
-    """easy 0, medium 1, hard 2 (an unknown label counts as medium)."""
-    return DIFFICULTY_TIERS.index(difficulty) if difficulty in DIFFICULTY_TIERS else 1
-
-
-def nearest_tier(questions: list, difficulty: str) -> list:
-    """The questions of the wanted tier, or else of the nearest tier (the lower one on a tie)."""
-    if not questions:
-        return []
-    want = tier_rank(difficulty)
-    best = min((abs(tier_rank(q.difficulty) - want), tier_rank(q.difficulty) > want) for q in questions)
-    return [q for q in questions
-            if (abs(tier_rank(q.difficulty) - want), tier_rank(q.difficulty) > want) == best]
+def ramp_tier(n: int) -> str:
+    """The tier question n asks for: DIFFICULTY_RAMP, and expert for the final (EXPERT_FINAL)."""
+    return "expert" if EXPERT_FINAL and n == MATCH_LENGTH else DIFFICULTY_RAMP.get(n, "medium")
 
 
 # Tension build-up (GameState.BUILDUP): "QUESTION 8 · THE HARD ROUND", then one fact from the match
@@ -728,7 +718,7 @@ class QuizLogic:
         self.q_index += 1
         self._ensure_cache()
         self.current_question = (self._special_question(self.special_slots.get(self.q_index, ""))
-                                 or self._pop_question(DIFFICULTY_RAMP.get(self.q_index, "medium")))
+                                 or self._pop_question(ramp_tier(self.q_index)))
         self.current_answers = {}
         self.lock_order = []
         self.half_picks = {}
@@ -797,14 +787,15 @@ class QuizLogic:
         self._schedule_bots()
 
     def _check_level_up(self):
-        """LEVEL UP once per ramp step, when a question of the new tier is really served."""
+        """LEVEL UP when the match reaches a higher tier: the lower of the tier asked for and the
+        tier really served (so a dry tier never claims more than the question is)."""
         q, self.level_up = self.current_question, ""
-        ramp = DIFFICULTY_RAMP.get(self.q_index, "medium")
-        if q.kind in CROWD_KINDS or tier_rank(ramp) <= self.tier_reached or tier_rank(q.difficulty) < tier_rank(ramp):
+        new = min(tier_rank(ramp_tier(self.q_index)), tier_rank(q.difficulty))
+        if q.kind in CROWD_KINDS or new <= self.tier_reached:
             return
-        self.tier_reached = tier_rank(ramp)
-        self.level_up = ramp
-        self._push_event(f"LEVEL UP: {ramp.upper()} questions, {DIFFICULTY_MULT[ramp]:g}x points",
+        self.tier_reached = new
+        tier = self.level_up = DIFFICULTY_TIERS[new]
+        self._push_event(f"LEVEL UP: {tier.upper()} questions, {DIFFICULTY_MULT[tier]:g}x points",
                          COLOR_TEXT_GOLD, "LVL")
         self.sound_queue.append("level_up")
 

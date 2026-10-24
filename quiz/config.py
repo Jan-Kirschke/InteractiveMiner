@@ -107,8 +107,12 @@ TEAM_WIN_BONUS = 15        # Teams: every member who played on the team with the
 # (at least the minimum), and every right answer on Q10 earns JACKPOT_BONUS on top
 COMMUNITY_GOAL_PER_PLAYER = 5
 COMMUNITY_GOAL_MIN = 10
-DIFFICULTY_TIERS = ("easy", "medium", "hard")   # a dry tier falls back to its nearest neighbour, lower first
-DIFFICULTY_MULT = {"easy": 1.0, "medium": 1.25, "hard": 1.5}   # on the question's shown difficulty
+DIFFICULTY_TIERS = ("easy", "medium", "hard", "expert")   # a dry tier serves its nearest neighbour, lower first
+DIFFICULTY_MULT = {"easy": 1.0, "medium": 1.25, "hard": 1.5, "expert": 2.0}   # on the question's shown difficulty
+# The final asks for an "expert" question (packs label them so; quiz/bank.py), falling back to hard.
+# Not in DIFFICULTY_RAMP: transitions.py's question bumper reads the ramp and would announce EXPERT
+# while no pack has any.
+EXPERT_FINAL = True
 
 # ==========================================
 # SCORING

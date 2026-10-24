@@ -61,7 +61,14 @@ Every question now opens with `GameState.BUILDUP`: `... REVEALING -> BUILDUP -> 
 **Not built, and why:**
 - Category Gauntlet: the lobby vote already makes every non-mixed match one category.
 - `!shield`: `Player.streak_shield` already halves the streak once, earned at a 5-streak.
-- Expert tier: the bank knows only easy, medium and hard (`bank.measured_difficulty`) and no pack labels "expert". It needs a bank change first.
+- Expert in `DIFFICULTY_RAMP`: the question bumper (`transitions.py`) reads the ramp, and would announce EXPERT while no pack has any. The final asks for expert through `EXPERT_FINAL` instead (see below).
+
+**Expert tier (BUILT 2026-10-24, late):**
+- A pack may label a question `"difficulty": "expert"`. It pays x2.
+- The final asks for expert (`config.EXPERT_FINAL`, `logic.ramp_tier`). The bank serves hard when it has no expert question.
+- Once measured (15 real answers), an expert question stays expert only while it measures hard. A hard label never becomes expert.
+- `bank.pick` serves the nearest tier when the wanted one is dry (lower first). It reads up to 20 rows of the wanted label first, so a rare tier is found in a big bank.
+- LEVEL UP fires for the lower of the tier asked for and the tier served, whenever that is above the match's highest so far.
 - Harder late-show matches: the question bumper (`transitions.py`) reads the static `DIFFICULTY_RAMP`, so a shifted ramp would show the wrong tier. It waits for the visual pass.
 - A hype meter per question: the community goal covers the group moment, and two meters would compete for the screen.
 

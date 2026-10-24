@@ -14,6 +14,7 @@ import sqlite3
 import threading
 import time
 
+from quiz.config import DIFFICULTY_TIERS
 from quiz.models import Question
 
 # Open Trivia DB's fixed category list, so stored questions can be filtered by the voted id
@@ -36,7 +37,26 @@ def measured_difficulty(label: str, asked: int, correct: int) -> str:
     if asked < MEASURE_AFTER:
         return label
     rate = correct / asked
-    return "easy" if rate >= 0.6 else "medium" if rate >= 0.35 else "hard"
+    measured = "easy" if rate >= 0.6 else "medium" if rate >= 0.35 else "hard"
+    return "expert" if label == "expert" and measured == "hard" else measured   # expert: hard, and labelled so
+
+
+def tier_rank(difficulty: str) -> int:
+    """easy 0, medium 1, hard 2, expert 3 (an unknown label counts as medium)."""
+    return DIFFICULTY_TIERS.index(difficulty) if difficulty in DIFFICULTY_TIERS else 1
+
+
+def nearest_tier(items: list, difficulty: str, tier=lambda q: q.difficulty) -> list:
+    """The items of the wanted tier, or else of the nearest tier (the lower one on a tie)."""
+    if not items:
+        return []
+    want = tier_rank(difficulty)
+
+    def distance(it):
+        r = tier_rank(tier(it))
+        return abs(r - want), r > want
+    best = min(distance(it) for it in items)
+    return [it for it in items if distance(it) == best]
 
 
 class QuestionBank:
@@ -103,7 +123,11 @@ class QuestionBank:
         return n
 
     def pick(self, cat_id=None, difficulty: str = "") -> Question | None:
-        """A question for this category (None = any) not asked for as long as possible, shuffled options."""
+        """A question for this category (None = any) not asked for as long as possible, shuffled options.
+        Of the wanted difficulty if it has one; else of the nearest tier (lower first)."""
+        def measured(r):
+            return measured_difficulty(r["difficulty"], r["asked"], r["correct_n"])
+
         for window in REPEAT_WINDOWS:
             q = "SELECT * FROM questions WHERE last_asked <= ?"
             args: list = [time.time() - window]
@@ -111,11 +135,13 @@ class QuestionBank:
                 q += " AND cat_id = ?"
                 args.append(cat_id)
             with self._lock:
+                labelled = (self._conn.execute(q + " AND difficulty = ? ORDER BY RANDOM() LIMIT 20",
+                                               args + [difficulty]).fetchall() if difficulty else [])
                 rows = self._conn.execute(q + " ORDER BY RANDOM() LIMIT 60", args).fetchall()
             if not rows:
                 continue
-            want = [r for r in rows if measured_difficulty(r["difficulty"], r["asked"], r["correct_n"]) == difficulty]
-            r = (want or rows)[0]
+            # the labelled ones first, so a rare tier is found; measured difficulty still decides
+            r = nearest_tier(labelled + rows, difficulty, measured)[0] if difficulty else rows[0]
             self.mark_asked(r["text"])
             options = json.loads(r["wrong"]) + [r["correct"]]
             random.shuffle(options)
