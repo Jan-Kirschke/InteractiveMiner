@@ -219,7 +219,7 @@ def host_line_for_result(res: RoundResult) -> str:
     return f"Chat went with {picks}! {pct}% read the crowd."
 
 
-CREW_TEAM_SIZE = 3         # a crew scores its best 3 members, so small friend groups can win
+CREW_TEAM_SIZE = 3          # a crew scores its best 3 members, so small friend groups can win
 CREW_NAME_MAX = 20
 _CREW_CLEAN_RE = re.compile(r"[^\w &'.-]+")
 

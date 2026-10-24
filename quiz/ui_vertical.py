@@ -16,7 +16,8 @@ from quiz.logic import is_bot
 from quiz.models import GameState
 from quiz.ui import (
     UIManager, ACCENT, BAD, DARK_INK, DIFF_COLORS, DIM, EVENT_STYLE, FAINT, GOOD, INK, OPTION_COLORS, TRACK,
-    reveal_lines, round_style, winners_title, clamp01, ease_in_out, ease_out_back, ease_out_cubic, heartbeat, lerp, mix, progress,
+    reveal_lines, round_style, winners_title,
+    clamp01, ease_in_out, ease_out_back, ease_out_cubic, heartbeat, lerp, mix, progress,
 )
 
 M = 56                 # side margin
