@@ -112,8 +112,8 @@ class VerticalUI(UIManager):
         rng = random.Random(7)
         self._bokeh = [_Bokeh(rng, i) for i in range(15)]
         self.dust = self.dust[:22]
-        self._uc = {}            # UI surfaces that live across questions (chips, banners, rows)
-        self._qcache = {}        # surfaces of the current question (buttons, its text lines)
+        self._uc = gfx.SurfCache(64)       # UI surfaces that live across questions (chips, banners, rows)
+        self._qcache = gfx.SurfCache(32)   # surfaces of the current question (buttons, its text lines)
         self._pre_points = {}    # match points before this question was scored
         self._lock_shown = 0.0   # rolling "N LOCKED IN"
         self._kick = -99.0       # last stage energy kick (bokeh speeds up)
@@ -213,7 +213,7 @@ class VerticalUI(UIManager):
         if state == GameState.LOBBY:
             self._vote_bars = {}
         elif state == GameState.ASKING:
-            self._qcache = {}
+            self._qcache.clear()
             self._lock_shown = 0.0
             self._pre_points = {u: s.points for u, s in logic.standings.items()}
         elif state == GameState.INTRO:

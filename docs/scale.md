@@ -96,6 +96,19 @@ Once per question start, `_update_participation_streaks` walks every player: 0.4
    in the UI caches filling towards their entry caps, and it is flattening. In a 200 s run the
    new `quiz/gfx.py` cache already held 145 MB and the text cache 115 MB. The server should
    level out near 900 MB to 1 GB over a 3 h show, so watch it against the 1 GB trigger below.
+   **Since then, the caches have byte budgets** (`gfx.SurfCache`):
+
+   | Cache | Budget |
+   |---|---|
+   | gfx | 96 MB |
+   | vertical UI | 64 MB |
+   | per-question | 32 MB |
+   | text | 48 MB |
+   | surface | 48 MB |
+
+   With those budgets, the same load (1k players, 50 msgs/s) for 30 min of show time ended at
+   401 MB RSS (was 743 MB after 4 min), with every cache inside its budget. Game-thread CPU
+   was unchanged at 6.8 ms per frame.
 5. **One YouTube chat's message rate.** Not measured (no source read). The chat reader logs
    `[Chat] Status: connected, N messages received total` every 60 s. The difference per minute
    is the real rate. At 2,000 msgs/s the reader costs 3-7% of a core and the game thread 1-3%.
@@ -108,13 +121,13 @@ Line numbers are those of `feature/matches` at 40556ff (merged).
 |---|---|
 | Players in the DB > 10k, or `!crew` bursts in the log | Crew index in `quiz/db.py` plus two lines in `_cmd_crew` (`quiz/logic.py:1065`, the scan at `:1083`) |
 | Players > 30k | Track the players who have a participation streak instead of walking all of them (`quiz/logic.py:773`) |
-| python RSS > 1 GB | Byte-bounded UI caches: text cache cap at `quiz/ui.py:302` and `:318`, surface cache at `:289`, the new `quiz/gfx.py:31` cache (900 entries) |
+| python RSS > 700 MB | Lower the `SurfCache` budgets (`quiz/ui.py`, `quiz/ui_vertical.py`, `quiz/gfx.py`), or give `transitions.py` its own budget |
 | Health line under 29 fps from the game | Profile the UI (`tools/loadtest.py --profile`): it is now the largest game-thread cost |
 | One save takes longer than 8 s | Write only changed columns, or save the players of one question at its reveal |
 | Sustained > 5,000 msgs/s (several chats merged) | Chat intake (poll, parse, keep `1`-`4` and commands) in its own process |
 
 Not built now, because no measurement needs it today: a separate intake process, a second
-database, byte budgets for the UI caches.
+database.
 
 ## Measure it yourself
 

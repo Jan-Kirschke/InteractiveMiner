@@ -16,6 +16,7 @@ import pygame
 
 from quiz.config import SCREEN_WIDTH, SCREEN_HEIGHT, FONT_DIR, MATCH_LENGTH, REVEAL_AT
 from quiz.models import GameState
+from quiz.gfx import SurfCache
 from quiz.logic import is_bot
 from quiz.motion import clamp01, heartbeat, lerp, out_back, out_cubic, progress, smoothstep
 from quiz.transitions import Transitions
@@ -230,8 +231,8 @@ class UIManager:
         self.screen = screen
         self.fonts = Fonts()
         self.fx = Transitions(self.fonts)   # cutscenes between questions, into the match and the podium
-        self._text_cache = {}
-        self._surf_cache = {}
+        self._text_cache = SurfCache(48)
+        self._surf_cache = SurfCache(48)
         self._bg = self._make_background()
         self._spot = self._make_spotlight(820)
         self._shine = self._make_shine()

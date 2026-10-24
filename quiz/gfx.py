@@ -19,7 +19,44 @@ RING_COLORS = (PINK, BLUE, ORANGE, TEAL)       # clockwise from 12 o'clock, as o
 GOLD_HI, GOLD, GOLD_LO = (255, 241, 176), (255, 210, 63), (224, 154, 0)
 RING_TRACK = (11, 13, 51)
 
-_cache = {}
+def surface_bytes(s):
+    return s.get_pitch() * s.get_height() if isinstance(s, pygame.Surface) else 0
+
+
+class SurfCache(dict):
+    """A cache that empties itself past a byte budget. Entry counts alone let a few hundred
+    full-screen surfaces grow a 3-hour show past 900 MB."""
+
+    def __init__(self, max_mb):
+        super().__init__()
+        self.budget = max_mb << 20
+        self.nbytes = 0
+
+    def __setitem__(self, key, s):
+        old = self.get(key)
+        if old is not None:
+            self.nbytes -= surface_bytes(old)
+        n = surface_bytes(s)
+        if self and self.nbytes + n > self.budget:
+            self.clear()
+        super().__setitem__(key, s)
+        self.nbytes += n
+
+    def __delitem__(self, key):
+        self.nbytes -= surface_bytes(self[key])
+        super().__delitem__(key)
+
+    def pop(self, key, *default):
+        if key in self:
+            self.nbytes -= surface_bytes(self[key])
+        return super().pop(key, *default)
+
+    def clear(self):
+        super().clear()
+        self.nbytes = 0
+
+
+_cache = SurfCache(96)
 
 
 def cached(key, make, store=None):
