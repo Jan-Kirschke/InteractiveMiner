@@ -9,6 +9,7 @@
 #   .\scripts\quiz-server.ps1 shell           (open a terminal on the server)
 #   .\scripts\quiz-server.ps1 youtube-client <downloaded client JSON>   (sent over ssh stdin)
 #   .\scripts\quiz-server.ps1 youtube-auth    (shows a URL and a code to approve)
+#   .\scripts\quiz-server.ps1 youtube-login <Desktop app client JSON>   (browser sign-in, picks a brand channel)
 #   .\scripts\quiz-server.ps1 youtube-status
 #   Setup: docs/youtube-api.md
 #
@@ -56,6 +57,38 @@ if ($cmd[0] -eq "youtube-client") {
     $p = Start-Process -FilePath "ssh" -NoNewWindow -Wait -PassThru -RedirectStandardInput $file `
         -ArgumentList @("-i", "`"$sshKey`"", "root@$server", "quizctl youtube-client")
     exit $p.ExitCode
+}
+
+if ($cmd[0] -eq "youtube-login") {
+    # Browser sign-in on this PC with a "Desktop app" client: Google's web consent lets you pick a
+    # brand-account channel, which the device code flow does not. Client and token then go to the
+    # server over ssh stdin; the temporary token file is deleted afterwards.
+    if ($cmd.Count -ne 2 -or -not (Test-Path -LiteralPath $cmd[1] -PathType Leaf)) {
+        Write-Host "Usage: .\scripts\quiz-server.ps1 youtube-login <path to the Desktop app client JSON>"
+        exit 1
+    }
+    $client = (Resolve-Path -LiteralPath $cmd[1]).Path
+    $repo = Split-Path -Parent $PSScriptRoot
+    $py = Join-Path $repo "venv\Scripts\python.exe"
+    $tmp = Join-Path $env:TEMP ("yt_token_" + [guid]::NewGuid().ToString("N") + ".json")
+    try {
+        $env:QUIZ_YT_CLIENT = $client
+        $env:QUIZ_YT_TOKEN = $tmp
+        Push-Location $repo
+        & $py -m quiz.ytapi browser-auth
+        $ok = $LASTEXITCODE
+        Pop-Location
+        if ($ok -ne 0 -or -not (Test-Path -LiteralPath $tmp)) { Write-Host "Sign-in did not finish."; exit 1 }
+        $p = Start-Process -FilePath "ssh" -NoNewWindow -Wait -PassThru -RedirectStandardInput $client `
+            -ArgumentList @("-i", "`"$sshKey`"", "root@$server", "quizctl youtube-client")
+        if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+        $p = Start-Process -FilePath "ssh" -NoNewWindow -Wait -PassThru -RedirectStandardInput $tmp `
+            -ArgumentList @("-i", "`"$sshKey`"", "root@$server", "quizctl youtube-token")
+        exit $p.ExitCode
+    } finally {
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
+        Remove-Item Env:QUIZ_YT_CLIENT, Env:QUIZ_YT_TOKEN -ErrorAction SilentlyContinue
+    }
 }
 
 if ($cmd[0] -eq "shell") {

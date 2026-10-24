@@ -248,6 +248,37 @@ def test_without_a_broadcast_one_is_created_bound_and_categorised(yt, monkeypatc
 
 
 # ---- tokens --------------------------------------------------------------------------------
+def test_browser_flow_takes_only_its_own_redirect_and_saves_the_token(tmp_path):
+    """The brand-account path: Google redirects to our loopback port; a stray request with the wrong
+    state is ignored, the right one is exchanged with PKCE and saved privately."""
+    import urllib.parse
+    import urllib.request
+    (tmp_path / "client.json").write_text(json.dumps({"installed": {"client_id": "cid", "client_secret": "cs"}}))
+    posted = []
+
+    class Http:
+        def request(self, method, url, data=None, **kw):
+            posted.append((url, data))
+            return _Resp(200, {"access_token": "at-web", "refresh_token": "rt-web", "expires_in": 3600})
+
+    api = ytapi.YouTubeAPI("", client_file=tmp_path / "client.json", token_file=tmp_path / "token.json", http=Http())
+
+    def browser(url):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        redirect, state = q["redirect_uri"][0], q["state"][0]
+        assert "select_account" in q["prompt"][0] and q["code_challenge_method"] == ["S256"]
+
+        def hit():
+            urllib.request.urlopen(f"{redirect}/?state=forged&code=evil", timeout=5).read()
+            urllib.request.urlopen(f"{redirect}/?state={state}&code=good", timeout=5).read()
+        threading.Thread(target=hit, daemon=True).start()
+
+    api.browser_auth(open_url=browser, timeout=20)
+    url, data = posted[-1]
+    assert url == ytapi.TOKEN_URL and data["code"] == "good" and data["code_verifier"]
+    assert json.loads((tmp_path / "token.json").read_text())["refresh_token"] == "rt-web"
+
+
 def test_device_flow_shows_the_code_waits_for_approval_and_saves_the_token(yt):
     api, fake, logs, clock = yt
     api.token_file.unlink()

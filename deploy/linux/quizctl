@@ -26,6 +26,7 @@ quizctl unset NAME            remove a setting (back to the default)
 quizctl update                pull the latest code and restart a running show
 quizctl youtube-client        store the Google OAuth client JSON (read from stdin)
 quizctl youtube-auth          authorise the show to manage the channel's broadcasts (device code)
+quizctl youtube-token         store a token made by the browser flow on a PC (read from stdin)
 quizctl youtube-status        stream health and broadcast state, via the YouTube API
 EOF
 }
@@ -174,6 +175,16 @@ case "$cmd" in
         [ -f "$SECRETS/youtube_client.json" ] || { echo "No OAuth client yet: run quizctl youtube-client first." >&2; exit 1; }
         install -d -m 700 -o quiz -g quiz "$SECRETS"
         ytapi auth
+        restart_if_running ;;
+    youtube-token)   # a token made on the operator's PC by the browser flow (picks a brand-account channel)
+        need_root
+        install -d -m 700 -o quiz -g quiz "$SECRETS"
+        tmp=$(mktemp); chmod 600 "$tmp"
+        cat > "$tmp"
+        grep -q '"refresh_token": *"[^"]' "$tmp" || { rm -f "$tmp"; echo "That is not a token JSON with a refresh token." >&2; exit 1; }
+        install -m 600 -o quiz -g quiz "$tmp" "$SECRETS/youtube_token.json"; rm -f "$tmp"
+        echo "YouTube token saved."
+        ytapi status || true
         restart_if_running ;;
     youtube-status) need_root; ytapi status ;;
     help|-h|--help) usage ;;

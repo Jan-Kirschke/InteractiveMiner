@@ -197,6 +197,65 @@ class YouTubeAPI:
             raise YouTubeError(resp.status_code, err or "token_error", body.get("error_description", ""))
         raise YouTubeError(400, "expired_token", "the code expired before it was approved: run auth again")
 
+    def browser_auth(self, open_url=None, timeout: float = 600) -> dict:
+        """The loopback browser flow for a "Desktop app" client. Unlike the device flow, Google's web
+        consent offers the brand-account chooser, so a channel without its own Google login can be
+        picked. Runs on the operator's PC; the token then goes to the server (quizctl youtube-token)."""
+        import base64
+        import hashlib
+        import http.server
+        import secrets as _secrets
+        import urllib.parse
+        import webbrowser
+        cid, secret = self._client()
+        verifier = _secrets.token_urlsafe(64)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        state = _secrets.token_urlsafe(16)
+        got: dict = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                if q.get("state", [""])[0] == state and ("code" in q or "error" in q):
+                    got.update({k: v[0] for k, v in q.items()})
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write("<h2>Done - you can close this tab.</h2>".encode())
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        server.timeout = 1
+        redirect = f"http://127.0.0.1:{server.server_port}"
+        url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
+            "client_id": cid, "redirect_uri": redirect, "response_type": "code", "scope": SCOPE,
+            "access_type": "offline", "prompt": "consent select_account", "state": state,
+            "code_challenge": challenge, "code_challenge_method": "S256"})
+        print("Opening the browser. If it does not open, paste this URL:\n" + url)
+        (open_url or webbrowser.open)(url)
+        deadline = self._clock() + timeout
+        try:
+            while not got and self._clock() < deadline:
+                server.handle_request()
+        finally:
+            server.server_close()
+        if "code" not in got:
+            raise YouTubeError(400, got.get("error", "expired_token"), "no approval received from the browser")
+        resp = self._http.request("POST", TOKEN_URL, data={
+            "client_id": cid, "client_secret": secret, "code": got["code"], "code_verifier": verifier,
+            "redirect_uri": redirect, "grant_type": "authorization_code"}, timeout=15)
+        body = _json(resp)
+        if resp.status_code != 200:
+            raise YouTubeError(resp.status_code, body.get("error", "token_error"), body.get("error_description", ""))
+        token = {"access_token": body["access_token"], "refresh_token": body.get("refresh_token", ""),
+                 "expiry": self._clock() + float(body.get("expires_in", 3600)), "scope": body.get("scope", SCOPE)}
+        _write_private(self.token_file, token)
+        with self._lock:
+            self._token = token
+        return token
+
     # ---- REST --------------------------------------------------------------------------------
     def call(self, method: str, path: str, params: dict | None = None, body: dict | None = None,
              timeout: float = 15) -> dict:
@@ -432,6 +491,7 @@ class BroadcastKeeper:
 # ---- CLI ------------------------------------------------------------------------------------
 USAGE = """usage: python -m quiz.ytapi auth|status|ensure|end
   auth     one-time OAuth device flow (prints a URL and a code)
+  browser-auth  OAuth in the local browser with a "Desktop app" client (offers the brand-account chooser)
   status   stream health and broadcast state (never the stream key)
   ensure   find or create the broadcast and make it live
   end      end our live broadcast"""
@@ -468,9 +528,20 @@ def _status(api: YouTubeAPI) -> int:
 
 def main(argv: list[str]) -> int:
     cmd = argv[0] if argv else ""
-    if cmd not in ("auth", "status", "ensure", "end"):
+    if cmd not in ("auth", "browser-auth", "status", "ensure", "end"):
         print(USAGE)
         return 2
+    if cmd == "browser-auth":   # on the operator's PC: QUIZ_YT_CLIENT / QUIZ_YT_TOKEN point at local files
+        api = YouTubeAPI("")
+        try:
+            api.browser_auth()
+            ch = api.call("GET", "channels", {"part": "snippet", "mine": "true"}).get("items", [])
+            print(f"Authorised channel: {ch[0]['snippet']['title']} ({ch[0]['id']})" if ch
+                  else "Authorised, but this login has no YouTube channel")
+            return 0
+        except YouTubeError as e:
+            print(f"YouTube: {e}")
+            return 1
     api = _api()
     try:
         if cmd == "auth":
