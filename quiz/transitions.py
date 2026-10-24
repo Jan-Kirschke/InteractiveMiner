@@ -51,7 +51,10 @@ SHAPE_COLORS = (PINK, BLUE, ORANGE, TEAL, ACCENT, VIOLET)
 DIFF_COLORS = {"easy": GOOD, "medium": ORANGE, "hard": BAD}
 BAND_COLORS = (PINK, BLUE, ORANGE, TEAL)   # answer 1-4 order, front band first
 # Special-round slots (QuizLogic.special_slots): bumper label, colour, sub line
-SPECIAL_BUMPERS = {}
+CROWD_PINK = (255, 140, 200)
+SPECIAL_BUMPERS = {
+    "majority": ("CROWD MIND", CROWD_PINK, [("NO RIGHT ANSWER", INK), ("  ·  MATCH THE CROWD", LILAC)]),
+}
 
 # YouTube Shorts covers the top and bottom of a 1080x1920 frame with its own UI
 SHORTS_SAFE_TOP, SHORTS_SAFE_BOTTOM = 180, 320

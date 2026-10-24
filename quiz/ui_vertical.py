@@ -16,7 +16,7 @@ from quiz.logic import is_bot
 from quiz.models import GameState
 from quiz.ui import (
     UIManager, ACCENT, BAD, DARK_INK, DIFF_COLORS, DIM, EVENT_STYLE, FAINT, GOOD, INK, OPTION_COLORS, TRACK,
-    round_style, clamp01, ease_in_out, ease_out_back, ease_out_cubic, heartbeat, lerp, mix, progress,
+    reveal_lines, round_style, winners_title, clamp01, ease_in_out, ease_out_back, ease_out_cubic, heartbeat, lerp, mix, progress,
 )
 
 M = 56                 # side margin
@@ -171,6 +171,13 @@ class VerticalUI(UIManager):
         q_age = now - logic.question_start_time
         self._chips(logic, q, 236)
         bottom = self._question_text(q, 326, q_age, (88, 78, 68, 60), 4)
+        rs = round_style(q)
+        if rs:   # the special round's rule, in its colour
+            lines, size = self._fit_wrap(rs[2].upper(), "black", (38, 34), CW, 2)
+            p = ease_out_cubic(progress(q_age, 0.3, 0.4))
+            for j, line in enumerate(lines):
+                self._text("black", size, line, rs[1], (W // 2, bottom + 22 + j * int(size * 1.2)), "midtop", alpha=255 * p)
+            bottom += 22 + len(lines) * int(size * 1.2)
 
         tcx, tcy = W // 2, max(bottom + 110, 720)
         if not locking:
@@ -237,7 +244,7 @@ class VerticalUI(UIManager):
         rects = self._v_option_rects(top, h, g=18)
         for i, (opt, rect) in enumerate(zip(q.options, rects)):
             correct = i in res.winners
-            x, y, w, hh = self._v_option(i, opt, rect, dim=(0.55 * k if reveal and not correct else 0.0),
+            x, y, w, hh = self._v_option(i, opt, rect, dim=(0.55 * k if reveal and not correct and res.winners else 0.0),
                                          outline=INK if reveal and correct else None,
                                          lift=int(8 * k) if reveal and correct else 0, right_pad=170)
             target = res.option_counts[i] / total if i < len(res.option_counts) else 0
@@ -260,18 +267,17 @@ class VerticalUI(UIManager):
         # How many knew it, and the fact
         p = ease_out_cubic(progress(age, 1.5, 0.4))
         y = rects[len(q.options) - 1][1] + h + 36 + int((1 - p) * 30)
-        knew = int(round(res.correct_rate * 100))
-        self._text("display", 64, f"{knew}% KNEW IT", GOOD if knew >= 50 else ACCENT, (W // 2, y), "midtop", alpha=255 * p)
+        head, hcol, line = reveal_lines(res)
+        self._text("display", 64, head, hcol, (W // 2, y), "midtop", alpha=255 * p)
         y += 86
-        line = q.fact or f"The answer: {q.correct_answer}"
         lines, size = self._fit_wrap(line, "semi", (36, 32, 28), CW, 3)
         for j, part in enumerate(lines):
             self._blit(self._render_name(part, size, INK, kind="semi"), (W // 2, y + j * int(size * 1.2)), "midtop", alpha=255 * p)
         y += len(lines) * int(size * 1.2) + 28
 
         # Fastest right answers
-        if y + 150 < SAFE_BOTTOM:
-            self._text("black", 28, "FASTEST RIGHT", DIM, (W // 2, y), "midtop", alpha=255 * p)
+        if y + 150 < SAFE_BOTTOM and not res.void:
+            self._text("black", 28, winners_title(q), DIM, (W // 2, y), "midtop", alpha=255 * p)
             y += 48
             players = res.correct_players[:3]
             for i, (name, pts, t) in enumerate(players):

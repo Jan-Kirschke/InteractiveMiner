@@ -96,6 +96,7 @@ def expire(game):
 
 
 def test_full_match_cycle_records_winner_and_ladders(game):
+    game.special_slots = {}   # classic questions only: every round has a right answer (specials: test_special.py)
     game.state = GameState.WAITING
     game.update(0)
     assert game.state == GameState.LOBBY

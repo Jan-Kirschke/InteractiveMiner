@@ -40,13 +40,32 @@ EVENT_STYLE = {
     "jackpot": ("JACKPOT ROUND", (190, 120, 255)),
 }
 DIFF_COLORS = {"easy": GOOD, "medium": (255, 159, 28), "hard": BAD}
-# Special rounds (quiz/special.py): kind -> (chip label, colour, one-line rule under the question)
-ROUND_STYLE = {}
+# Special rounds (quiz/special.py): kind -> (chip label, colour, rule under the question, tag on the winner)
+ROUND_STYLE = {
+    "majority": ("CROWD MIND", (255, 140, 200), "No right answer: pick what most of chat picks", "CROWD PICK"),
+}
 
 
 def round_style(q, revealed=False):
-    """(label, colour, rule) for a special round's chip, or None for a classic question."""
+    """(label, colour, rule, tag) for a special round, or None for a classic question."""
     return ROUND_STYLE.get(q.kind)
+
+
+def winners_title(q):
+    return "FASTEST CROWD READERS" if q.kind in ("majority", "minority") else "FASTEST RIGHT"
+
+
+def reveal_lines(res):
+    """(headline, colour, line) under the reveal's answers: how many knew it and the fact."""
+    q = res.question
+    if q.kind in ("majority", "minority"):
+        if res.void:
+            return "VOID", FAINT, "A crowd round needs 3 real players: nobody scores"
+        picks = " + ".join(q.options[i] for i in res.winners) or "-"
+        pct = int(round(res.correct_rate * 100))
+        return f"{pct}% READ THE CROWD", GOOD if pct >= 50 else ACCENT, f"Chat's pick: {picks}"
+    knew = int(round(res.correct_rate * 100))
+    return f"{knew}% KNEW IT", GOOD if knew >= 50 else ACCENT, q.fact or f"The answer: {q.correct_answer}"
 
 # ==========================================
 # LAYOUT
@@ -785,7 +804,12 @@ class UIManager:
             p = 1.0 if small else ease_out_cubic(progress(age, 0.05 + i * 0.08, 0.4))
             self._blit(self._render_name(line, size, DIM if small else INK, kind="display"),
                        (MAIN_X, ty + i * lh + (1 - p) * 26), alpha=255 * p)
-        return ty + len(lines) * lh
+        bottom = ty + len(lines) * lh
+        if rs and not small:   # the special round's rule, in its colour
+            p = ease_out_cubic(progress(age, 0.3, 0.4))
+            self._text("black", 30, rs[2].upper(), rs[1], (MAIN_X, bottom + 8), alpha=255 * p)
+            bottom += 52
+        return bottom
 
     def _option_rects(self, top, max_h=190):
         g = 24
@@ -793,7 +817,7 @@ class UIManager:
         h = min(max_h, (BODY_BOTTOM - top - g) // 2)
         return [(MAIN_X + (i % 2) * (w + g), top + (i // 2) * (h + g), w, h) for i in range(4)]
 
-    def _draw_option(self, i, text, rect, alpha=255, scale=1.0, dim=0.0, outline=None, lift=0):
+    def _draw_option(self, i, text, rect, alpha=255, scale=1.0, dim=0.0, outline=None, lift=0, right_pad=110):
         x, y, w, h = rect
         if scale != 1.0:
             cx, cy = x + w / 2, y + h / 2
@@ -816,7 +840,7 @@ class UIManager:
             self._text("display", int(r * 1.15), str(i + 1), DARK_INK, (kx, ky), "center", alpha=a)
             self._shape(i, kx + r + 34, ky, 15, knob)
         tx = kx + r + 66
-        lines, size = self._fit_wrap(text, "black", (46, 40, 34, 30), x + w - tx - 110, 2)
+        lines, size = self._fit_wrap(text, "black", (46, 40, 34, 30), x + w - tx - right_pad, 2)
         lh = int(size * 1.1)
         for j, line in enumerate(lines):
             self._blit(self._render_name(line, size, mix(INK, (190, 190, 210), dim), kind="black"),
@@ -987,13 +1011,14 @@ class UIManager:
         total = max(1, res.total_answers)
         reveal = age >= REVEAL_AT
         k = ease_out_cubic(progress(age, REVEAL_AT, 0.4))
+        rs = round_style(q, revealed=True)
         for i, (opt, rect) in enumerate(zip(q.options, rects)):
             correct = i in res.winners
             x, y, w, h = self._draw_option(
                 i, opt, rect,
-                dim=(0.55 * k if reveal and not correct else 0.0),
+                dim=(0.55 * k if reveal and not correct and res.winners else 0.0),
                 outline=INK if reveal and correct else None,
-                lift=int(8 * k) if reveal and correct else 0,
+                lift=int(8 * k) if reveal and correct else 0, right_pad=150,   # room for the percentage
             )
             # HQ-style answer split: a bar grows along the button while the percentage counts up
             target = res.option_counts[i] / total if i < len(res.option_counts) else 0
@@ -1009,7 +1034,7 @@ class UIManager:
                     ring = pygame.Surface((w + 2 * grow, h + 2 * grow), pygame.SRCALPHA)
                     pygame.draw.rect(ring, (*INK, int(230 * (1 - flash))), ring.get_rect(), width=6, border_radius=24 + grow // 2)
                     self.screen.blit(ring, (x - grow, y - grow))
-                tag = self._render("black", 18, "CORRECT", DARK_INK)
+                tag = self._render("black", 18, rs[3] if rs else "CORRECT", DARK_INK)
                 self.screen.blit(self._alpha_rect(tag.get_width() + 24, 30, (*INK, 255), 15), (x + w - tag.get_width() - 44, y + 12))
                 self._blit(tag, (x + w - 32, y + 27), "midright")
                 if "burst" not in self._burst_done and res.correct_players:
@@ -1021,19 +1046,19 @@ class UIManager:
         sy = last[1] + last[3] + 24 + int((1 - p) * 30)
         if sy + 66 <= BODY_BOTTOM + 30:
             self._panel(MAIN_X, sy, MAIN_W, 66, radius=18)
-            knew = int(round(res.correct_rate * 100))
-            self._text("display", 38, f"{knew}% KNEW IT", GOOD if knew >= 50 else ACCENT, (MAIN_X + 26, sy + 33), "midleft", alpha=255 * p)
-            line = q.fact or f"The answer: {q.correct_answer}"
-            lines, size = self._fit_wrap(line, "semi", (28, 24), MAIN_W - 380, 2)
+            head, hcol, line = reveal_lines(res)
+            hr = self._text("display", 38, head, hcol, (MAIN_X + 26, sy + 33), "midleft", alpha=255 * p)
+            lx = max(MAIN_X + 330, hr.right + 30)
+            lines, size = self._fit_wrap(line, "semi", (28, 24), MAIN_X + MAIN_W - 24 - lx, 2)
             lh = int(size * 1.1)
             for j, part in enumerate(lines):
                 self._blit(self._render_name(part, size, INK, kind="semi"),
-                           (MAIN_X + 330, sy + 33 - len(lines) * lh / 2 + j * lh + lh / 2), "midleft", alpha=255 * p)
+                           (lx, sy + 33 - len(lines) * lh / 2 + j * lh + lh / 2), "midleft", alpha=255 * p)
 
         x, y = RAIL_X, BODY_Y
         h = 230
         self._panel(x, y, RAIL_W, h)
-        self._panel_title(x, y, RAIL_W, "FASTEST RIGHT")
+        self._panel_title(x, y, RAIL_W, winners_title(q))
         for i, (name, pts, t) in enumerate(res.correct_players[:3]):
             ry = y + 84 + i * 46
             pp = ease_out_back(progress(age, 1.3 + i * 0.15, 0.35))
@@ -1043,7 +1068,7 @@ class UIManager:
             self._text("bold", 20, f"{t:.1f}s", DIM, (x + RAIL_W - 110, ry), "midright")
             self._text("black", 28, f"+{pts}", GOOD, (x + RAIL_W - 24, ry), "midright", scale=lerp(1.6, 1.0, clamp01(pp)))
         if not res.correct_players:
-            self._text("bold", 24, "Nobody got this one", FAINT, (x + 24, y + 84))
+            self._text("bold", 24, "Round void: nobody scores" if res.void else "Nobody got this one", FAINT, (x + 24, y + 84))
         y += h + 20
         h2 = 250
         self._panel(x, y, RAIL_W, h2)

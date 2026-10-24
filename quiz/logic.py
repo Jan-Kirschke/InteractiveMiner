@@ -36,7 +36,7 @@ from quiz.config import (
     COLOR_CORRECT, COLOR_TEXT_GOLD, COLOR_AMBER, COLOR_RANK_DIAMOND,
     LIGHTNING_TIME, LIGHTNING_MULT, JACKPOT_BONUS, FIRST_BLOOD_BONUS,
     PARTICIPATION_MILESTONES, PARTICIPATION_BONUS, STREAK_SHIELD_THRESHOLD,
-    COMMAND_COOLDOWN, SPECIAL_SLOTS,
+    COMMAND_COOLDOWN, SPECIAL_SLOTS, CROWD_MIN_REAL,
 )
 from quiz.models import (
     GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding, Duel,
@@ -187,7 +187,31 @@ def host_line_for_rate(rate: float, answers: int) -> str:
     return f"Too easy? {pct}% knew that."
 
 
-CREW_TEAM_SIZE = 3          # a crew scores its best 3 members, so small friend groups can win
+CROWD_KINDS = ("majority", "minority")
+
+
+def crowd_winners(counts: list[int], minority: bool = False) -> list[int]:
+    """Crowd Mind: the most-picked options win (ties all win). Lonely Answer: the least-picked
+    option that anyone picked."""
+    picked = [c for c in counts if c > 0]
+    if not picked:
+        return []
+    target = min(picked) if minority else max(picked)
+    return [i for i, c in enumerate(counts) if c == target]
+
+
+def host_line_for_result(res: RoundResult) -> str:
+    q = res.question
+    if q.kind not in CROWD_KINDS:
+        return host_line_for_rate(res.correct_rate, res.total_answers)
+    if res.void:
+        return f"Only {res.total_answers} real players: a crowd round needs {CROWD_MIN_REAL}, so this one does not count."
+    picks = " and ".join(q.options[i] for i in res.winners)
+    pct = round(res.correct_rate * 100)
+    return f"Chat went with {picks}! {pct}% read the crowd."
+
+
+CREW_TEAM_SIZE = 3         # a crew scores its best 3 members, so small friend groups can win
 CREW_NAME_MAX = 20
 _CREW_CLEAN_RE = re.compile(r"[^\w &'.-]+")
 
@@ -626,7 +650,7 @@ class QuizLogic:
         res = self.last_result
         self.pips.append("done" if res.total_answers and res.correct_rate >= 0.5 else "miss")
         self._stinger_due = True
-        self._say(host_line_for_rate(res.correct_rate, res.total_answers))
+        self._say(host_line_for_result(res))
 
     def _enter_podium(self):
         real = [s for s in self.standings.values() if not is_bot(s.username)]
@@ -769,14 +793,19 @@ class QuizLogic:
             return RoundResult(Question("?", "?", [], 0, "", ""), [], [], 0)
 
         correct_players, wrong_players = [], []
-        answers = self.current_answers
+        crowd = q.kind in CROWD_KINDS
+        # A crowd round is decided and scored by real players only: bots must never sway it
+        answers = {u: a for u, a in self.current_answers.items() if not is_bot(u)} if crowd else self.current_answers
         option_counts = [0] * len(q.options)
         for choice, _ in answers.values():
             if 0 <= choice < len(option_counts):
                 option_counts[choice] += 1
         winners, void = [q.correct_index], False
+        if crowd:
+            void = len(answers) < CROWD_MIN_REAL
+            winners = [] if void else crowd_winners(option_counts, q.kind == "minority")
 
-        for username, (choice, timestamp) in answers.items():
+        for username, (choice, timestamp) in ({} if void else answers).items():
             player = self.db.get_or_create_player(username)
             st = self._standing(username)
             old_rank = player.rank
@@ -802,6 +831,8 @@ class QuizLogic:
                 if not is_bot(username):
                     self._check_achievements(player, answer_time, old_rank)
                 correct_players.append((username, pts, answer_time))
+            elif crowd:
+                wrong_players.append((username, choice))  # no right answer to miss: the streak stays
             else:
                 player.record_wrong()
                 st.streak = 0
@@ -917,7 +948,9 @@ class QuizLogic:
         n = len(self.current_question.options)
         diff = BOT_DIFFICULTY["easy"]
         for bot_name in active_bots:
-            if random.random() < diff["accuracy"]:
+            if correct_idx < 0:  # crowd round: no right answer, and bot picks never count
+                choice = random.randrange(n)
+            elif random.random() < diff["accuracy"]:
                 choice = correct_idx
             else:
                 choice = random.choice([i for i in range(n) if i != correct_idx])
