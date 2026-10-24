@@ -1,0 +1,23 @@
+[Unit]
+Description=The Lifelong Quiz (headless YouTube show)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=quiz
+WorkingDirectory=/opt/quiz
+EnvironmentFile=/opt/quiz/.env
+Environment=PYTHONUNBUFFERED=1
+# Private PulseAudio with a null sink that carries only the game's sound.
+ExecStartPre=/usr/bin/pulseaudio --daemonize=yes --exit-idle-time=-1 --log-target=journal
+ExecStartPre=/usr/bin/pactl load-module module-null-sink sink_name=quiz_sink
+ExecStart=/opt/quiz/venv/bin/python -m quiz.game --headless
+ExecStopPost=-/usr/bin/pulseaudio --kill
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=10
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

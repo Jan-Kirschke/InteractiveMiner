@@ -1,0 +1,10 @@
+[Unit]
+Description=End each Lifelong Quiz show after 3 hours
+
+[Timer]
+OnCalendar=*-*-* 21:00:00 UTC
+OnCalendar=*-*-* 04:00:00 UTC
+Unit=quiz-stop.service
+
+[Install]
+WantedBy=timers.target

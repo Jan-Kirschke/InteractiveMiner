@@ -1,0 +1,6 @@
+[Unit]
+Description=End the current Lifelong Quiz show
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl stop quiz.service
