@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/Jan-Kirschke/InteractiveMiner.git}"
-BRANCH="${BRANCH:-main}"
+BRANCH="${BRANCH:-feature/matches}"  # switch to main once merged
 APP=/opt/quiz
 
 apt-get update

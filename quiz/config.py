@@ -272,5 +272,7 @@ STREAM_AUDIO_INPUT = _os.environ.get("QUIZ_AUDIO_INPUT", "")
 # Optional output override (e.g. a local .flv file for testing). Empty = YouTube RTMPS ingest.
 STREAM_OUTPUT = _os.environ.get("QUIZ_STREAM_OUTPUT", "")
 STREAM_FPS = 30                     # Stream output framerate (30fps is ideal for quiz content)
-STREAM_BITRATE = "6000k"            # Video bitrate for 1080p30
+# Output size and bitrate. 720p at 3000k needs about half the CPU and upload of 1080p at 6000k.
+STREAM_HEIGHT = int(_os.environ.get("QUIZ_STREAM_HEIGHT", "1080"))
+STREAM_BITRATE = _os.environ.get("QUIZ_STREAM_BITRATE", "6000k" if STREAM_HEIGHT >= 1080 else "3000k")
 FFMPEG_PATH = "ffmpeg"              # Path to ffmpeg binary (auto-downloaded to scripts/)
