@@ -17,6 +17,7 @@ process (only the in-loop frame conversion is measured), a throwaway SQLite file
 from __future__ import annotations
 
 import argparse
+import array
 import json
 import os
 import random
@@ -26,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+import tracemalloc
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -175,7 +177,7 @@ class Sampler(threading.Thread):
 
 def run_scenario(players: int, rate: float, seconds: float, render_every: int = 1, seed: int = 1,
                  profile: str = "", sample: bool = False, mem_every: float = 60.0,
-                 pace_real_time: bool = False) -> dict:
+                 pace_real_time: bool = False, trace: bool = False) -> dict:
     os.environ.update({"QUIZ_LAYOUT": "vertical", "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy",
                        "QUIZ_FPS": "30", "QUIZ_STREAM_HEIGHT": "720"})
     sys.path.insert(0, str(ROOT))
@@ -234,8 +236,9 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
     phases = ("chat", "logic", "save", "sounds", "wait", "render", "convert", "busy", "total")
     wait_frame = getattr(ctrl.broadcaster, "wait_frame", lambda *a: True)  # older code converts in-loop
     pace = 1 / fps if pace_real_time else 0.0
-    times = {p: [] for p in phases}
-    msgs_done, owed, chat_us = 0, 0.0, []
+    times = {p: array.array("f") for p in phases}   # 4 bytes a frame: a 3 h soak must not grow from its own log
+    msgs_done, owed, chat_us = 0, 0.0, array.array("f")
+    snap0 = None
     mem, next_mem, user_obj = [], 0.0, [_user_objects()]
     threads_start = threading.active_count()
     sampler = Sampler() if sample else None
@@ -307,7 +310,16 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
             mem.append((round(sim, 1), round(_rss_mb(), 1)))
             user_obj.append(_user_objects())
             next_mem += mem_every
+        if trace and snap0 is None and sim >= min(600.0, seconds / 4):  # after warm-up
+            tracemalloc.start(8)
+            snap0 = tracemalloc.take_snapshot()
     wall = real_time() - began_wall
+    growth = []
+    if snap0 is not None:
+        diff = tracemalloc.take_snapshot().compare_to(snap0, "traceback")
+        growth = [(round(d.size_diff / 1e6, 2), d.count_diff, [f"{Path(fr.filename).name}:{fr.lineno}" for fr in d.traceback][-4:])
+                  for d in diff[:15]]
+        tracemalloc.stop()
     wait_frame(5.0)
     cpu_ms = (time.process_time() - cpu0) * 1000 / frames
     main_cpu_ms = (time.thread_time() - main_cpu0) * 1000 / frames
@@ -387,6 +399,8 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
     }
     if sampler:
         result["sample"] = sampler.top()
+    if trace:
+        result["heap_growth_mb"] = growth   # Python allocations after warm-up, largest first
     ctrl.shutdown()
     time.time = real_time
     tmp.cleanup()
@@ -469,6 +483,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--profile", default="", help="write cProfile stats here")
     ap.add_argument("--sample", action="store_true", help="add a stack-sampling profile to the result")
+    ap.add_argument("--trace", action="store_true", help="tracemalloc after warm-up: where the Python heap grows")
     ap.add_argument("--json", default="", help="write the result here (matrix workers)")
     ap.add_argument("--matrix", action="store_true")
     ap.add_argument("--jobs", type=int, default=1, help="parallel workers (keep at most 2 Python processes)")
@@ -489,7 +504,7 @@ def main():
     if a.json:  # worker: keep the game's own log lines out of the way
         sys.stdout = open(os.devnull, "w")
     r = run_scenario(a.players, a.rate, a.seconds, a.render_every, a.seed, a.profile, a.sample,
-                     pace_real_time=a.pace)
+                     pace_real_time=a.pace, trace=a.trace)
     if a.json:
         with open(a.json, "w") as f:
             json.dump(r, f, indent=1)
