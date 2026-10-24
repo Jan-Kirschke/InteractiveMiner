@@ -169,17 +169,13 @@ VOTABLE_CATEGORIES = {
 # Leave empty to auto-detect from the channels below.
 VIDEO_ID = _os.environ.get("QUIZ_VIDEO_ID", "")
 
-# YouTube channels to search for livestreams (tried in order)
-# Auto-detection uses HTTP /live page + scrapetube as fallback.
+# YouTube channels whose /live chat is read (tried in order)
 CHANNEL_IDS = [
     "UCnv51D67E_oLPfHmQU_6prw",  # The Lifelong Quiz (primary)
     "UCmDgp2YS176ot2n7nFpLRzA",  # Chat vs Bedrock
 ]
 if _os.environ.get("QUIZ_CHANNEL_IDS"):  # comma-separated, e.g. only the channel the stream key belongs to
     CHANNEL_IDS = [c.strip() for c in _os.environ["QUIZ_CHANNEL_IDS"].split(",") if c.strip()]
-
-# How often to retry finding a livestream if none is active (seconds)
-STREAM_POLL_INTERVAL = 20
 
 # ==========================================
 # FILLER BOTS

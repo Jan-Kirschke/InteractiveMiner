@@ -1,0 +1,107 @@
+{
+ "responseContext": {},
+ "continuationContents": {
+  "liveChatContinuation": {
+   "continuations": [
+    {
+     "invalidationContinuationData": {
+      "invalidationId": {
+       "objectSource": 1056,
+       "objectId": "Y2hhdH5fbk5VQjB2QzdZdw==",
+       "topic": "chat~_nNUB0vC7Yw",
+       "subscribeToGcmTopics": true,
+       "protoCreationTimestampMs": "1792839896578"
+      },
+      "timeoutMs": 10000,
+      "continuation": "0ofMyAORAhpeQ2lrcUp3b1lWVU51ZGpVeFJEWTNSVjl2VEZCbVNHMVJWVjgyY0hKM0VndGZiazVWUWpCMlF6ZFpkeG9UNnFqZHVRRU5DZ3RmYms1VlFqQjJRemRaZHlBQk1BQSUzRCjO2erawNKXAzAAQAJKbwgAGAAgAEoIEAAYACAAMABQyJSxicHSlwNYA3gAogEAqgEMEAAaACIAKgQIABAAsAEAwAEAyAHIlLGJwdKXA-IBDAjYofLWBhDq9p6GAugBAPgBAIgCAJACAJoCDAjYofLWBhDq9p6GAtgCAIgDAFCup5LbwNKXA1jQ_7qBsdKXA4IBBggEGAEwAIgBAKAB2_SyicHSlwOyAQC6AQIICtABAA%3D%3D",
+      "clickTrackingParams": "CAEQl98BIhMI4PiwicHSlwMV1YZ8Bh1QfB-1ygEEaOqQ2Q=="
+     }
+    }
+   ],
+   "actions": [
+    {
+     "clickTrackingParams": "x",
+     "addChatItemAction": {
+      "item": {
+       "liveChatTextMessageRenderer": {
+        "message": {
+         "runs": [
+          {
+           "text": "1"
+          }
+         ]
+        },
+        "authorName": {
+         "simpleText": "@LifelongQuiz"
+        },
+        "id": "ChwKGkNJWEh0OXFfMHBjREZTdFhxd0lkVFhjcDZB",
+        "timestampUsec": "1792839529662564"
+       }
+      },
+      "clientId": "CIXHt9q_0pcDFStXqwIdTXcp6A"
+     }
+    },
+    {
+     "clickTrackingParams": "x",
+     "addChatItemAction": {
+      "item": {
+       "liveChatTextMessageRenderer": {
+        "message": {
+         "runs": [
+          {
+           "text": "1"
+          }
+         ]
+        },
+        "authorName": {
+         "simpleText": "@Viewer_1"
+        },
+        "id": "ChwKGkNLM2lqS3JBMHBjREZVdmdQd1FkbmJjQTlR",
+        "timestampUsec": "1792839696739484"
+       }
+      },
+      "clientId": "CK3ijKrA0pcDFUvgPwQdnbcA9Q"
+     }
+    },
+    {
+     "clickTrackingParams": "x",
+     "addChatItemAction": {
+      "item": {
+       "liveChatTextMessageRenderer": {
+        "message": {
+         "runs": [
+          {
+           "text": "!crew "
+          },
+          {
+           "emoji": {
+            "emojiId": "x",
+            "shortcuts": [
+             ":fire:"
+            ]
+           }
+          },
+          {
+           "text": " Night Owls"
+          }
+         ]
+        },
+        "authorName": {
+         "simpleText": "@Viewer_1"
+        },
+        "id": "ChwKGkNNbWFrN2JBMHBjREZXc2IxZ0FkSkRzaWRR",
+        "timestampUsec": "1792839722004531"
+       }
+      },
+      "clientId": "CMmak7bA0pcDFWsb1gAdJDsidQ"
+     }
+    },
+    {
+     "addLiveChatTickerItemAction": {
+      "item": {}
+     }
+    }
+   ]
+  }
+ }
+}

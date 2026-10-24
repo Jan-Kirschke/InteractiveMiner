@@ -2,14 +2,14 @@
 The Lifelong Quiz - YouTube Live Broadcaster
 Pipes pygame frames + system audio to FFmpeg -> RTMPS -> YouTube Live.
 
-The game loop captures frames into a queue (non-blocking).
-A writer thread drains the queue at exactly the target FPS,
-feeding FFmpeg at real-time speed so anullsrc audio stays in sync.
+The game loop hands over its newest frame (already scaled to the output size).
+A writer thread sends a frame to FFmpeg exactly FPS times per second, repeating the last one
+when the game is late, so the video clock never falls behind real time. If it did, YouTube
+would report "not receiving enough video" and viewers would buffer.
 """
 
 import subprocess
 import threading
-import queue
 import time
 import os
 import sys
@@ -82,7 +82,14 @@ class YouTubeBroadcaster:
         self._want = False      # operator wants the stream on
         self._active = False    # FFmpeg is running and accepting frames
         self._skip_ratio = max(1, game_fps // fps)
-        self._frame_queue = queue.Queue(maxsize=8)
+        if self._out_height:  # scale in pygame: a third of the bytes through the pipe, no FFmpeg scaler
+            self._out_size = (round(width * self._out_height / height) // 2 * 2, self._out_height)
+            self._scaled = pygame.Surface(self._out_size)
+        else:
+            self._out_size = (width, height)
+            self._scaled = None
+        self._latest = None     # newest frame bytes from the game loop
+        self._fresh = 0         # frames handed over since the last stats line
         self._stderr_lines = []
         self._force_cpu = False  # set True after GPU encoding fails
         self._thread = None
@@ -157,14 +164,13 @@ class YouTubeBroadcaster:
             # Video input: raw RGB from stdin
             "-f", "rawvideo",
             "-pix_fmt", "rgb24",
-            "-s", f"{self._width}x{self._height}",
+            "-s", f"{self._out_size[0]}x{self._out_size[1]}",
             "-r", str(self._fps),
             "-thread_queue_size", "1024",
             "-i", "pipe:0",
             *audio_input,
             "-map", "0:v:0",
             "-map", "1:a:0",
-            *(["-vf", f"scale=-2:{self._out_height}:flags=bilinear"] if self._out_height else []),
             *video_codec,
             "-b:v", self._bitrate,
             "-maxrate", self._bitrate,
@@ -194,7 +200,7 @@ class YouTubeBroadcaster:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-                bufsize=self._width * self._height * 3 * 4,  # ~24MB buffer (4 raw frames)
+                bufsize=self._out_size[0] * self._out_size[1] * 3 * 4,  # 4 raw frames
                 startupinfo=startupinfo,
             )
         except FileNotFoundError:
@@ -210,34 +216,49 @@ class YouTubeBroadcaster:
         return use_nvenc, True
 
     def send_frame(self, surface: pygame.Surface, frame_count: int):
-        """Capture a frame into the queue (non-blocking). Drops frames if behind."""
+        """Hand the newest frame to the writer thread (never blocks the game loop)."""
         if not self._active:
             return
         if frame_count % self._skip_ratio != 0:
             return
-        try:
-            self._frame_queue.put_nowait(pygame.image.tobytes(surface, "RGB"))
-        except queue.Full:
-            pass  # Drop frame - writer is behind
+        if self._scaled is not None:
+            pygame.transform.smoothscale(surface, self._out_size, self._scaled)
+            surface = self._scaled
+        self._latest = pygame.image.tobytes(surface, "RGB")
+        self._fresh += 1
+
+    STATS_EVERY = 60  # seconds between "[Broadcast] Health" lines
 
     def _writer_loop(self):
-        """Write queued frames to FFmpeg at real-time speed until it exits or stop() is called."""
-        frame_interval = 1.0 / self._fps
-        next_write = time.perf_counter()
+        """Write one frame every 1/fps seconds until FFmpeg exits or stop() is called."""
+        interval = 1.0 / self._fps
         proc = self._proc
+        next_write = time.perf_counter()
+        stats_at = next_write + self.STATS_EVERY
+        written = late = 0
+        self._fresh = 0
         while self._want and proc.poll() is None:
-            try:
-                raw = self._frame_queue.get(timeout=1.0)
-            except queue.Empty:
+            raw = self._latest
+            if raw is None:
+                time.sleep(0.01)
+                next_write = time.perf_counter()
                 continue
-            sleep_time = next_write - time.perf_counter()
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            next_write = time.perf_counter() + frame_interval
             try:
                 proc.stdin.write(raw)
             except (BrokenPipeError, OSError, ValueError):
                 break
+            written += 1
+            next_write += interval
+            now = time.perf_counter()
+            if now > next_write + 1.0:  # stalled over a second (pipe blocked): resync, do not burst
+                late += 1
+                next_write = now
+            elif next_write > now:
+                time.sleep(next_write - now)
+            if now >= stats_at:
+                print(f"[Broadcast] Health: {written / self.STATS_EVERY:.1f} fps sent, "
+                      f"{self._fresh / self.STATS_EVERY:.1f} fps from the game, {late} stalls")
+                stats_at, written, late, self._fresh = now + self.STATS_EVERY, 0, 0, 0
         self._active = False
 
     def _close_proc(self):
@@ -254,11 +275,7 @@ class YouTubeBroadcaster:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        while not self._frame_queue.empty():
-            try:
-                self._frame_queue.get_nowait()
-            except queue.Empty:
-                break
+        self._latest = None
 
     def stop(self):
         """Stop streaming and do not restart."""

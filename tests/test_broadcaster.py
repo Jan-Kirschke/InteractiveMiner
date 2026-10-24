@@ -33,3 +33,32 @@ def test_no_stream_key_does_not_start():
 def test_audio_is_silent_unless_configured():
     assert _audio_input_args("")[-1].startswith("anullsrc")
     assert _audio_input_args("pulse:quiz_sink.monitor")[-4:] == ["-f", "pulse", "-i", "quiz_sink.monitor"]
+
+
+class _Pipe:
+    def __init__(self):
+        self.frames = []
+
+    def write(self, raw):
+        self.frames.append(raw)
+
+
+class _Proc:
+    def __init__(self):
+        self.stdin = _Pipe()
+
+    def poll(self):
+        return None
+
+
+def test_writer_keeps_real_time_when_the_game_stalls():
+    # One game frame, then nothing: YouTube must still get 30 frames per second.
+    import threading
+    b = YouTubeBroadcaster(stream_key="k", fps=30)
+    b._proc, b._want, b._latest = _Proc(), True, b"frame"
+    t = threading.Thread(target=b._writer_loop)
+    t.start()
+    time.sleep(1.0)
+    b._want = False
+    t.join()
+    assert 27 <= len(b._proc.stdin.frames) <= 32

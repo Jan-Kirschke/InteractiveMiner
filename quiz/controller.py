@@ -22,7 +22,7 @@ from quiz.chat import ChatManager
 from quiz.logic import QuizLogic
 from quiz.ui import UIManager
 from quiz.sounds import SoundManager
-from quiz.stream import resolve_video_id, StreamWatcher
+from quiz.ytchat import page_url
 from quiz.broadcaster import YouTubeBroadcaster
 
 
@@ -34,42 +34,18 @@ class MainGameController:
         self.clock = pygame.time.Clock()
         self.running = True
 
-        # Resolve video ID: explicit arg > config VIDEO_ID > auto-detect from channels
-        effective_id = video_id or VIDEO_ID
-        if offline:
-            resolved = ""
-        else:
-            resolved = resolve_video_id(
-                video_id=effective_id,
-                channel_ids=CHANNEL_IDS,
-            )
+        # Chat source: an explicit video ID pins chat to that video, else each channel's /live page
+        pinned = video_id or VIDEO_ID
+        chat_urls = [] if offline else (
+            [page_url(video_id=pinned)] if pinned else [page_url(channel_id=c) for c in CHANNEL_IDS])
 
         # Subsystems
         self.msg_queue = queue.Queue()
         self.db = QuizDatabase(DB_PATH_OFFLINE if offline else DB_PATH)
         self.logic = QuizLogic(self.db)
-        self.chat = ChatManager(resolved, self.msg_queue, offline=offline)
+        self.chat = ChatManager(chat_urls, self.msg_queue, offline=offline)
         self.ui = UIManager(self.screen)
         self.sounds = SoundManager()
-
-        # Background stream watcher (polls for stream if none found yet)
-        self._stream_watcher = StreamWatcher(
-            on_stream_found=self._on_stream_found,
-            channel_ids=CHANNEL_IDS,
-            current_video_id=resolved,
-        )
-        # Keep watching even after a stream is found, so chat follows a new video ID.
-        # An explicit video ID pins chat to that video.
-        if not offline and not (video_id or VIDEO_ID):
-            self._stream_watcher.start()
-        if not resolved and not offline:
-            print("[Game] ============================================")
-            print("[Game] Chat not connected yet!")
-            print("[Game] Options to fix:")
-            print("[Game]   1. Pass video ID: python -m quiz.game VIDEO_ID")
-            print("[Game]   2. Set VIDEO_ID in quiz/config.py")
-            print("[Game]   3. Wait for auto-detect (polls every 20s)")
-            print("[Game] ============================================")
 
         # YouTube Live broadcaster (started in run() so frames are available immediately)
         self.broadcaster = YouTubeBroadcaster(
@@ -90,10 +66,6 @@ class MainGameController:
         self._last_tick_time = 0
         self._prev_logic_state = None
         self._music_started = False
-
-    def _on_stream_found(self, video_id: str):
-        """Callback from StreamWatcher when a live stream is detected."""
-        self.chat.connect_to(video_id)
 
     def _request_stop(self, signum, _frame):
         print(f"[Game] Signal {signum} received, shutting down")
@@ -215,7 +187,6 @@ class MainGameController:
         print("[Game] Shutting down...")
         self.sounds.stop_music()
         self.broadcaster.stop()
-        self._stream_watcher.stop()
         self.chat.stop()
         self.db.save_all()
         self.db.close()
