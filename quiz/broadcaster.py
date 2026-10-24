@@ -251,6 +251,7 @@ class YouTubeBroadcaster:
             return use_nvenc, False
 
         threading.Thread(target=self._monitor_stderr, args=(self._proc,), daemon=True).start()
+        self._last_write = time.monotonic()  # a new FFmpeg is not stalled; the writer loop takes over
         self._active = True
         print(f"[Broadcast] Streaming to YouTube at {self._fps}fps ({self._bitrate})")
         return use_nvenc, True

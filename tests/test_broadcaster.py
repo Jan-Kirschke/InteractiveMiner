@@ -196,6 +196,30 @@ def test_stalled_ffmpeg_is_killed_so_the_supervisor_restarts_it():
     assert not t.is_alive()
 
 
+def test_fresh_ffmpeg_is_not_taken_for_a_stalled_one(monkeypatch):
+    # After a long restart backoff the last write is old; a frame handed over before the writer
+    # loop starts must not kill the FFmpeg that was just launched.
+    import quiz.broadcaster as B
+
+    class Popen:
+        killed = False
+
+        def __init__(self, cmd, **kw):
+            self.stderr = iter(())
+
+        def kill(self):
+            Popen.killed = True
+
+    monkeypatch.setattr(B.subprocess, "Popen", Popen)
+    monkeypatch.setattr(B, "_detect_nvenc", lambda path: False)
+    b = _streaming()
+    b._last_write -= 2 * b.STALL_KILL   # the previous FFmpeg died long ago
+    b._launch()
+    b.send_frame(_picture(), 0)
+    b.wait_frame(2.0)
+    assert not Popen.killed
+
+
 def test_stop_returns_when_ffmpeg_hangs():
     # Shutdown (SIGTERM) must not wait on a writer stuck in a pipe FFmpeg no longer reads.
     import threading
