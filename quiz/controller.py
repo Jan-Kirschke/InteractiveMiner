@@ -15,7 +15,7 @@ from quiz.config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, FPS, WINDOW_TITLE,
     DB_SAVE_INTERVAL, DB_PATH, DB_PATH_OFFLINE,
     VIDEO_ID, CHANNEL_IDS, CHAT_BOTS,
-    STREAM_ENABLED, YOUTUBE_STREAM_KEY, STREAM_FPS, STREAM_BITRATE, STREAM_HEIGHT, STREAM_AUDIO_GAIN_DB, FFMPEG_PATH,
+    STREAM_ENABLED, YOUTUBE_STREAM_KEY, STREAM_FPS, STREAM_BITRATE, STREAM_OUT_HEIGHT, VERTICAL, STREAM_AUDIO_GAIN_DB, FFMPEG_PATH,
     STREAM_AUDIO_INPUT, STREAM_OUTPUT, LATE_ANSWER_GRACE, REVEAL_AT, MATCH_LENGTH,
 )
 from quiz.models import GameState
@@ -23,6 +23,7 @@ from quiz.db import QuizDatabase
 from quiz.chat import ChatManager
 from quiz.logic import QuizLogic
 from quiz.ui import UIManager
+from quiz.ui_vertical import VerticalUI
 from quiz.sounds import SoundManager
 from quiz.ytchat import page_url
 from quiz.broadcaster import YouTubeBroadcaster
@@ -46,7 +47,7 @@ class MainGameController:
         self.db = QuizDatabase(DB_PATH_OFFLINE if offline else DB_PATH)
         self.logic = QuizLogic(self.db)
         self.chat = ChatManager(chat_urls, self.msg_queue, offline=offline)
-        self.ui = UIManager(self.screen)
+        self.ui = (VerticalUI if VERTICAL else UIManager)(self.screen)
         self.sounds = SoundManager(drumroll_seconds=LATE_ANSWER_GRACE + REVEAL_AT)
 
         # YouTube Live broadcaster (started in run() so frames are available immediately)
@@ -56,7 +57,7 @@ class MainGameController:
             fps=STREAM_FPS, bitrate=STREAM_BITRATE,
             ffmpeg_path=FFMPEG_PATH,
             game_fps=FPS, audio_input=STREAM_AUDIO_INPUT, output=STREAM_OUTPUT,
-            out_height=STREAM_HEIGHT, audio_gain_db=STREAM_AUDIO_GAIN_DB,
+            out_height=STREAM_OUT_HEIGHT, audio_gain_db=STREAM_AUDIO_GAIN_DB,
         )
 
         # Periodic save timer

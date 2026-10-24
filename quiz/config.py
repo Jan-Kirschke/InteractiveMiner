@@ -26,8 +26,10 @@ _load_dotenv(_Path(__file__).resolve().parent.parent / ".env")
 # ==========================================
 # WINDOW
 # ==========================================
-SCREEN_WIDTH = 1920
-SCREEN_HEIGHT = 1080
+# QUIZ_LAYOUT=vertical renders a 9:16 phone/Shorts show (quiz/ui_vertical.py); default is 16:9 TV
+LAYOUT = _os.environ.get("QUIZ_LAYOUT", "horizontal").strip().lower()
+VERTICAL = LAYOUT == "vertical"
+SCREEN_WIDTH, SCREEN_HEIGHT = (1080, 1920) if VERTICAL else (1920, 1080)
 FPS = int(_os.environ.get("QUIZ_FPS", "60"))  # headless servers render at the stream rate (30)
 WINDOW_TITLE = "The Lifelong Quiz"
 
@@ -285,6 +287,7 @@ STREAM_FPS = 30                     # Stream output framerate (30fps is ideal fo
 # Moderator bots that post in chat (Nightbot timers) are never players
 CHAT_BOTS = {"nightbot", "streamelements", "moobot", "streamlabs"}
 STREAM_AUDIO_GAIN_DB = float(_os.environ.get("QUIZ_AUDIO_GAIN_DB", "0"))
-STREAM_HEIGHT = int(_os.environ.get("QUIZ_STREAM_HEIGHT", "1080"))
+STREAM_HEIGHT = int(_os.environ.get("QUIZ_STREAM_HEIGHT", "1080"))   # the short side: 720 = 1280x720 or 720x1280
+STREAM_OUT_HEIGHT = STREAM_HEIGHT * 16 // 9 // 2 * 2 if VERTICAL else STREAM_HEIGHT
 STREAM_BITRATE = _os.environ.get("QUIZ_STREAM_BITRATE", "6000k" if STREAM_HEIGHT >= 1080 else "3000k")
 FFMPEG_PATH = "ffmpeg"              # Path to ffmpeg binary (auto-downloaded to scripts/)
