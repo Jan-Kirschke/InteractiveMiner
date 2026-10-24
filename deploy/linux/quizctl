@@ -67,7 +67,7 @@ show_schedule() {
     fi
     echo "Starts: $(calendar_of quiz-start.timer)"
     echo "Ends:   $(calendar_of quiz-stop.timer)"
-    systemctl list-timers 'quiz-*' --no-pager | head -n 3 | tail -n 2
+    systemctl list-timers 'quiz-*' --no-pager --no-legend
 }
 
 cmd=${1:-help}; shift || true
@@ -104,15 +104,21 @@ case "$cmd" in
             *)
                 times=$1; mins=$(to_minutes "${2:-3h}")
                 [ "$mins" -gt 0 ] || { echo "Duration must be like 3h, 90m or 2h30m" >&2; exit 1; }
-                mkdir -p "$(dirname "$START_DROPIN")" "$(dirname "$STOP_DROPIN")"
-                { echo "[Timer]"; echo "OnCalendar="; } > "$START_DROPIN"
-                { echo "[Timer]"; echo "OnCalendar="; } > "$STOP_DROPIN"
-                for t in $times; do
+                starts="[Timer]"$'
+'"OnCalendar="; ends=$starts
+                for t in $times; do  # check every time before touching the timers
                     [[ $t =~ ^([01]?[0-9]|2[0-3]):[0-5][0-9]$ ]] || { echo "Bad time '$t' (use HH:MM, UTC)" >&2; exit 1; }
                     end=$(date -u -d "1970-01-01 $t UTC + $mins minutes" +%H:%M)
-                    echo "OnCalendar=*-*-* $t:00 UTC" >> "$START_DROPIN"
-                    echo "OnCalendar=*-*-* $end:00 UTC" >> "$STOP_DROPIN"
+                    starts+=$'
+'"OnCalendar=*-*-* $t:00 UTC"
+                    ends+=$'
+'"OnCalendar=*-*-* $end:00 UTC"
                 done
+                mkdir -p "$(dirname "$START_DROPIN")" "$(dirname "$STOP_DROPIN")"
+                printf '%s
+' "$starts" > "$START_DROPIN"
+                printf '%s
+' "$ends" > "$STOP_DROPIN"
                 systemctl daemon-reload
                 systemctl enable --now quiz-start.timer quiz-stop.timer >/dev/null 2>&1
                 systemctl restart quiz-start.timer quiz-stop.timer
