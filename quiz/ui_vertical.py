@@ -39,13 +39,13 @@ import pygame
 import pygame.gfxdraw
 
 from quiz import gfx
-from quiz.config import (SCREEN_WIDTH as W, SCREEN_HEIGHT as H, MATCH_LENGTH, REVEAL_AT,
+from quiz.config import (SCREEN_WIDTH as W, SCREEN_HEIGHT as H, MATCH_LENGTH, REVEAL_AT, REVEAL_DISPLAY_TIME,
                          LIGHTNING_QUESTION, BONUS_QUESTIONS)
 from quiz.logic import is_bot
 from quiz.models import GameState
-from quiz.motion import (STAGGER, clamp01, heartbeat, in_expo, in_out_cubic, lerp, out_back, out_cubic,
+from quiz.motion import (STAGGER, clamp01, heartbeat, in_cubic, in_expo, in_out_cubic, lerp, out_back, out_cubic,
                          out_expo, progress, shake, smoothstep, spring)
-from quiz.transitions import BAND_COLORS, FLAT, LILAC
+from quiz.transitions import BUILDUP, FLAT, LILAC, STYLES, _shape
 from quiz.ui import (UIManager, ACCENT, BAD, BG_DEEP, BG_STAGE, DARK_INK, DIFF_COLORS, DIM, EVENT_STYLE, FAINT,
                      GOOD, INK, OPTION_COLORS, ROUND_STYLE, TRACK, mix, reveal_lines, round_style, winners_title)
 
@@ -78,6 +78,12 @@ T_PANEL = 1.85            # fastest players, points fly in
 T_STAND = 4.2             # match standings replace them ...
 T_REORDER = 4.85          # ... and re-order
 T_HALF = 3.9              # halftime card (after question 5) instead of the standings
+T_HALF_COVER = STYLES["ribbon"][0]   # the four-colour ribbon has covered the reveal by then
+
+# Event toasts: the badge each icon code gets (a flat glyph; anything else prints its code)
+BADGE_GLYPHS = {"ZAP": "bolt", "FAST": "bolt", "UP": "arrow", "ACH": "star", "WIN": "crown", "NEW": "star",
+                "DAY": "star", "BACK": "arrow"}
+TOAST_LIFE = 3.6
 
 
 class _Bokeh:
@@ -114,6 +120,7 @@ class VerticalUI(UIManager):
         self.dust = self.dust[:22]
         self._uc = gfx.SurfCache(64)       # UI surfaces that live across questions (chips, banners, rows)
         self._qcache = gfx.SurfCache(32)   # surfaces of the current question (buttons, its text lines)
+        self._rays = None                   # scratch for the podium sunburst
         self._pre_points = {}    # match points before this question was scored
         self._lock_shown = 0.0   # rolling "N LOCKED IN"
         self._kick = -99.0       # last stage energy kick (bokeh speeds up)
@@ -139,6 +146,10 @@ class VerticalUI(UIManager):
         self.screen.blit(padded, (r.x - 2 * spread, r.y - 2 * spread))
         padded.set_alpha(255)
         return r
+
+    def _label(self, text, pos, anchor="topleft", alpha=255, color=DIM):
+        """Section label: small tracked capitals (one look for every panel title)."""
+        return self._blit(gfx.tracked(self.fonts.get("black", TYPE["small"]), text, color, 3), pos, anchor, alpha)
 
     def _gold(self, size, text):
         return self._ucache(("gold", size, text), lambda: gfx.with_shadow(
@@ -179,7 +190,12 @@ class VerticalUI(UIManager):
         age = now - self._state_enter
         self.fx.cue(logic, now)
 
-        if not self.fx.covered(now):   # a cut-away hides everything: skip the frame underneath
+        # The reveal also sits under the build-up's cover while it closes
+        r_age = age if state == GameState.REVEALING else REVEAL_DISPLAY_TIME + age
+        if self._halftime_covered(logic, state, r_age):   # the ribbon has covered it: only the card
+            self.screen.fill(FLAT)
+            self._v_halftime(logic, r_age - T_HALF)
+        elif not self.fx.covered(now):   # a cut-away hides everything: skip the frame underneath
             self._v_stage(now, dt)
             if state == GameState.INTRO:
                 self._v_intro(logic, age)
@@ -189,11 +205,11 @@ class VerticalUI(UIManager):
                     self._v_lobby(logic, age, dt, now)
                 elif state in (GameState.ASKING, GameState.LOCKING):
                     self._v_question(logic, age, now, dt)
-                elif state == GameState.REVEALING:
-                    self._v_reveal(logic, age, now)
+                elif state == GameState.REVEALING or (state == BUILDUP and logic.last_result):
+                    self._v_reveal(logic, r_age, now)
                 elif state == GameState.PODIUM:
                     self._v_podium(logic, age, now)
-                else:
+                elif state != BUILDUP:
                     lq = gfx.lq_mark(self.fonts.get("display", 220))
                     self.screen.blit(lq, lq.get_rect(center=(W // 2, 900)))
                 self._v_toast(logic, now)
@@ -218,6 +234,12 @@ class VerticalUI(UIManager):
             self._pre_points = {u: s.points for u, s in logic.standings.items()}
         elif state == GameState.INTRO:
             self._pre_points = {}
+        elif state == BUILDUP:   # the reveal stays under the cover: its one-shot bursts already fired
+            self._burst_done = {"burst", "kick", "slam", "podium"}
+
+    def _halftime_covered(self, logic, state, r_age):
+        return (logic.q_index == MATCH_LENGTH // 2 and r_age >= T_HALF + T_HALF_COVER and logic.last_result is not None
+                and (state == GameState.REVEALING or (state == BUILDUP and not self.fx.covered(time.time()))))
 
     def _kick_stage(self, now):
         self._kick = now
@@ -241,7 +263,37 @@ class VerticalUI(UIManager):
         right = gfx.beam(sw, sh, sw - 270, 170, sw - 600, 300, 30)
         bg.blit(left, (40, -60), special_flags=pygame.BLEND_RGB_ADD)
         bg.blit(right, (W - 40 - sw, -60), special_flags=pygame.BLEND_RGB_ADD)
+        self._v_floor(bg)
         return bg
+
+    FLOOR_Y = 1536   # the studio floor's horizon, just under the safe zone
+
+    def _v_floor(self, bg):
+        """A studio floor in the band Shorts overlays (decoration only, baked into the stage):
+        a lit horizon with the four answer colours at its centre and perspective lines."""
+        y0 = self.FLOOR_Y
+        fh = H - y0
+        shade = gfx.vgradient(W, fh, [(150, 150, 170), (92, 92, 120), (60, 60, 84)])
+        bg.blit(shade, (0, y0), special_flags=pygame.BLEND_RGB_MULT)
+        lines = pygame.Surface((W, fh), pygame.SRCALPHA)
+        lines.fill((0, 0, 0, 0))
+        vx, vy = W / 2, -520                      # vanishing point, far above the horizon
+        for k in range(-9, 10):
+            xb = vx + k * 150 * (fh - vy) / (0 - vy)
+            x0 = vx + k * 150
+            pygame.draw.aaline(lines, (150, 160, 255, 34), (x0, 0), (xb, fh))
+        for i in range(1, 9):
+            y = int(fh * (i / 8) ** 1.8)
+            pygame.draw.line(lines, (150, 160, 255, 16 + i * 2), (0, y), (W, y))
+        bg.blit(lines, (0, y0))
+        haze = pygame.transform.smoothscale(gfx.add_light(300, (44, 48, 120), 1.6), (W + 200, 150))
+        bg.blit(haze, (-100, y0 - 75), special_flags=pygame.BLEND_RGB_ADD)
+        bg.fill((112, 120, 230), (0, y0, W, 2))
+        seg = 120
+        x = W // 2 - 2 * seg
+        for col in gfx.RING_COLORS:
+            bg.fill(col, (x, y0 - 1, seg - 6, 4))
+            x += seg
 
     def _v_stage(self, now, dt):
         self.screen.blit(self._stage, (0, 0))
@@ -304,8 +356,7 @@ class VerticalUI(UIManager):
                 self.screen.blit(self._alpha_rect(pw, ph, (*col, 255), ph // 2), (x, y))
             elif q == live:
                 pulse = 0.5 + 0.5 * math.sin(now * 5)
-                glow = gfx.glow(pw, ph, ph // 2, ACCENT, 14, 200)
-                glow.set_alpha(int(120 + 120 * pulse))
+                glow = gfx.faded(gfx.glow(pw, ph, ph // 2, ACCENT, 14, 200), 120 + 120 * pulse, ("pipglow",), self._uc, 8)
                 self.screen.blit(glow, (x - 14, y - 14))
                 self.screen.blit(self._alpha_rect(pw, ph, (*ACCENT, 255), ph // 2), (x, y))
             else:
@@ -444,6 +495,16 @@ class VerticalUI(UIManager):
         sh = gfx.shadow(w, h, R_BTN, 16, 150)
         sh.set_alpha(int(alpha))
         self.screen.blit(sh, (x - 16, y - 16 + 10))
+        sh.set_alpha(255)
+
+    def _btn_lit(self, i, text, w, h, pad=40):
+        """The answer button already composed over its shadow: one blit instead of two in every
+        frame where it stands still. Blit at (x - 16, y - 6)."""
+        def make():
+            s = gfx.shadow(w, h, R_BTN, 16, 150).copy()
+            s.blit(self._btn(i, text, w, h, pad=pad), (16, 6))
+            return s
+        return self._qc(("btnlit", i, text, w, h, pad), make)
 
     # ------------------------------------------
     # QUESTION (ASKING / LOCKING)
@@ -477,11 +538,14 @@ class VerticalUI(UIManager):
                 continue
             x = int(x + (1 - p) * 140)
             a = 255 * clamp01(p * 1.3)
-            self._btn_shadow(x, y, w, h, a)
-            b = self._btn(i, opt, w, h)
-            b.set_alpha(int(a))
-            self.screen.blit(b, (x, y))
-            b.set_alpha(255)
+            if a >= 255:
+                self.screen.blit(self._btn_lit(i, opt, w, h), (x - 16, y - 6))
+            else:
+                self._btn_shadow(x, y, w, h, a)
+                b = self._btn(i, opt, w, h)
+                b.set_alpha(int(a))
+                self.screen.blit(b, (x, y))
+                b.set_alpha(255)
             gfx.sweep(self.screen, gfx.mask(w, h, R_BTN), x, y, progress(q_age, 0.75 + i * 0.07, 0.6), 140)
             if locking:   # shutters close top-down, a lit edge riding each one
                 c = out_expo(progress(age, 0.1 + i * 0.05, 0.4))
@@ -500,16 +564,16 @@ class VerticalUI(UIManager):
         locked = logic.answer_count
         self._lock_shown += (locked - self._lock_shown) * min(1.0, dt * 8)
         shown = int(round(self._lock_shown))
-        y = L["floor"] + 34
+        y = L["floor"] + 32
         if locked:
             label = f"{shown} LOCKED IN"
         else:
             label = "TYPE 1 OR 2 IN CHAT" if n == 2 else "TYPE 1, 2, 3 OR 4 IN CHAT"
-        self._stext("black", TYPE["body"], label, ACCENT, (W // 2, y), "center")
+        self._stext("black", TYPE["label"], label, ACCENT, (W // 2, y), "center")
         names = [nm.replace("[Bot] ", "") + (" (50:50)" if nm in logic.half_picks else "")
                  for nm, _ in reversed(logic.lock_order[-3:])]
         if names:
-            self._blit(self._fit_name("  ·  ".join(names), TYPE["small"], DIM, CW, kind="semi"), (W // 2, y + 44), "center")
+            self._blit(self._fit_name("  ·  ".join(names), TYPE["label"] - 6, INK, CW, kind="semi"), (W // 2, y + 46), "center")
 
     def _v_timer(self, logic, cx, cy, R, q_age, now):
         rem = logic.time_remaining
@@ -519,8 +583,12 @@ class VerticalUI(UIManager):
         drawn = out_expo(progress(q_age, 0.3, 0.8))
         if drawn <= 0:
             return
+        # The build-up's intensity carries into the question: a stronger, breathing glow late in the match
+        k = clamp01(getattr(logic, "buildup_intensity", 0.0) or 0.0)
+        breathe = 0.5 + 0.5 * math.sin(now * 2.4)
         glow = gfx.radial(int(R * 2.1), BAD if urgent else ACCENT, 255, 2.4)
-        glow.set_alpha(int((60 + u * (90 + 105 * beat)) * drawn))
+        glow = gfx.faded(glow, (60 + 70 * k * (0.6 + 0.4 * breathe) + u * (90 + 105 * beat)) * drawn,
+                         ("tglow", R, urgent), levels=8)
         self.screen.blit(glow, glow.get_rect(center=(cx, cy)))
         jx = math.sin(now * 53) * 3 * u * beat
         jy = math.cos(now * 41) * 3 * u * beat
@@ -653,21 +721,21 @@ class VerticalUI(UIManager):
             if reveal and correct:
                 y -= int(10 * out_back(progress(age, REVEAL_AT, 0.4)))
                 self._v_flare_under(x, y, w, h, age, now)
-            self._btn_shadow(x, y, w, h, 255 * (1 - 0.6 * k) if loser else 255)
-            self.screen.blit(self._btn(i, opt, w, h, pad=170), (x, y))
+            if dim >= 0.99:   # sunk: the dimmed face covers the lit one completely
+                self._btn_shadow(x, y, w, h)
+            else:
+                self.screen.blit(self._btn_lit(i, opt, w, h, pad=170), (x - 16, y - 6))
             if dim > 0.01:
                 d = self._btn(i, opt, w, h, dim=True, pad=170)
-                d.set_alpha(int(255 * dim))
+                d.set_alpha(255 if dim >= 0.99 else int(255 * dim))   # transient fades only
                 self.screen.blit(d, (x, y))
                 d.set_alpha(255)
             # Answer split: a light fill grows along the button, the percentage counts up
             share = (res.option_counts[i] / total if i < len(res.option_counts) else 0) * split
             fw = int(w * share)
             if fw > 8:
-                fill = gfx.tinted(w, h, R_BTN, INK).subsurface((0, 0, fw, h))
-                fill.set_alpha(int(lerp(70, 34, dim)))
-                self.screen.blit(fill, (x, y))
-                fill.set_alpha(255)
+                fill = gfx.faded(gfx.tinted(w, h, R_BTN, INK), lerp(70, 34, dim), ("fill", w, h), levels=32)
+                self.screen.blit(fill, (x, y), (0, 0, fw, h))
             pct = f"{int(round(share * 100))}%"
             for col, a in ((DARK_INK, 1 - dim), (INK, dim)):
                 if a > 0.02:
@@ -686,7 +754,7 @@ class VerticalUI(UIManager):
             head = self._count_head(head, progress(age, T_HEAD, 0.7))
             self._stext("display", TYPE["head"], head, hcol, (W // 2, y + (1 - p) * 40), "midtop", alpha=255 * p)
         y += 82
-        lines, size = self._fit_wrap(line, "semi", (36, 32, 28), CW, 3)
+        lines, size = self._fit_wrap(line, "semi", (40, 36, 32), CW, 3)
         for j, part in enumerate(lines):
             pj = out_expo(progress(age, T_HEAD + 0.12 + j * 0.07, 0.5))
             if pj > 0:
@@ -711,7 +779,8 @@ class VerticalUI(UIManager):
     def _v_flare_under(self, x, y, w, h, age, now):
         k = progress(age, REVEAL_AT, 0.5)
         glow = gfx.glow(w, h, R_BTN, (255, 236, 170), 40, 230)
-        glow.set_alpha(int(255 * (1 - 0.55 * smoothstep(k)) * (0.85 + 0.15 * math.sin(now * 4))))
+        glow = gfx.faded(glow, 255 * (1 - 0.55 * smoothstep(k)) * (0.85 + 0.15 * math.sin(now * 4)), ("flare", w, h),
+                         levels=8)
         self.screen.blit(glow, (x - 40, y - 40))
         if "kick" not in self._burst_done:
             self._burst_done.add("kick")
@@ -756,7 +825,7 @@ class VerticalUI(UIManager):
     # ------------------------------------------
     def _v_result_panel(self, logic, res, y0, age, win_rect, standings=True):
         rh = 62
-        rows = max(0, min(4, (SAFE_BOTTOM - y0 - 48) // rh))
+        rows = max(0, min(5, (SAFE_BOTTOM - y0 - 48) // rh))
         if rows == 0:
             return
         q = res.question
@@ -764,7 +833,7 @@ class VerticalUI(UIManager):
         if a_out < 1:
             p = out_expo(progress(age, T_PANEL, 0.4)) * (1 - a_out)
             if p > 0:
-                self._text("black", TYPE["small"], winners_title(q), DIM, (M + 8 - a_out * 80, y0), alpha=255 * p)
+                self._label(winners_title(q), (M + 8 - a_out * 80, y0), alpha=255 * p)
             players = res.correct_players[:min(3, rows)]
             for i, (name, pts, t) in enumerate(players):
                 pp = out_expo(progress(age, T_PANEL + 0.1 + i * 0.1, 0.5))
@@ -819,7 +888,7 @@ class VerticalUI(UIManager):
         """Match standings: rows enter in the order before this question, then glide to the new
         order while totals count up; arrows show who climbed."""
         p_in = out_expo(progress(age, T_STAND + 0.1, 0.45))
-        self._text("black", TYPE["small"], f"MATCH {logic.match_no}  ·  STANDINGS", DIM, (M + 8 + (1 - p_in) * 80, y0), alpha=255 * p_in)
+        self._label(f"MATCH {logic.match_no}  ·  STANDINGS", (M + 8 + (1 - p_in) * 80, y0), alpha=255 * p_in)
         ranked = logic.match_ranking(n=rows)
         old = self._pre_points
         old_order = sorted(old, key=lambda u: (-old[u], logic.standings[u].fastest if u in logic.standings else 999))
@@ -866,20 +935,25 @@ class VerticalUI(UIManager):
     # ------------------------------------------
     # HALFTIME (after question 5): a card takes the reveal's tail; the bumper wipes over it
     # ------------------------------------------
+    def _halftime_ring(self):
+        """The logo ring as a quiet watermark behind HALFTIME (rendered once)."""
+        def make():
+            r = 250
+            s = pygame.Surface((2 * r + 20, 2 * r + 20), pygame.SRCALPHA)
+            s.fill((0, 0, 0, 0))
+            gfx.ring(s, r + 10, r + 10, r, 26, colors=tuple(mix(c, FLAT, 0.72) for c in gfx.RING_COLORS), track=False)
+            return s
+        return self._ucache(("htring",), make)
+
     def _v_halftime(self, logic, t):
-        cover = in_out_cubic(t / 0.5)
-        bw = 58
-        lean = 220
-        edge = int(lerp(W + 10, -(4 * bw + lean) - 10, cover))   # the leading band, right to left, slanted
-        if edge > -lean:
-            for k, col in enumerate(BAND_COLORS):
-                x = edge + k * bw
-                pygame.draw.polygon(self.screen, col, [(x, H), (x + bw, H), (x + bw + lean, 0), (x + lean, 0)])
-        x = edge + 4 * bw
-        pygame.draw.polygon(self.screen, FLAT, [(x, H), (W + lean + 400, H), (W + lean + 400, 0), (x + lean, 0)])
-        if cover < 0.98:
+        """Brand moment: the four-colour ribbon sweeps over the reveal, then the standings card."""
+        if t < T_HALF_COVER:
+            self.fx.cover(self.screen, "ribbon", t / T_HALF_COVER, bg=FLAT)
             return
-        h = t - 0.5
+        h = t - T_HALF_COVER
+        ring = self._halftime_ring()
+        spin = out_expo(progress(h, 0.0, 1.2))
+        self.screen.blit(ring, ring.get_rect(center=(W // 2, 330 - int((1 - spin) * 60))))
         p = out_expo(progress(h, 0.0, 0.5))
         s = self._gold(150, "HALFTIME")
         self._rise_blit(s, (W - s.get_width()) // 2, 200, s.get_height(), p)
@@ -921,8 +995,8 @@ class VerticalUI(UIManager):
         # Hero: the logo ring is the countdown; the time sits beside it
         rcx, rcy, R = M + 150, 362, 130
         drawn = out_expo(progress(age, 0.1, 1.0))
-        glow = gfx.radial(int(R * 1.9), ACCENT if secs > 5 else BAD, 255, 2.6)
-        glow.set_alpha(int(80 * drawn))
+        glow = gfx.faded(gfx.radial(int(R * 1.9), ACCENT if secs > 5 else BAD, 255, 2.6), 80 * drawn,
+                         ("lobbyglow", secs > 5), levels=8)
         self.screen.blit(glow, glow.get_rect(center=(rcx, rcy)))
         gfx.ring(self.screen, rcx, rcy, R, 22, remaining=logic.time_fraction, drawn=drawn)
         lq = gfx.lq_mark(self.fonts.get("display", 150))
@@ -960,8 +1034,7 @@ class VerticalUI(UIManager):
                 yy = y + i * (ch + g)
                 is_lead = opt == lead
                 if is_lead:
-                    gl = gfx.glow(CW, ch, 26, ACCENT, 26, 150)
-                    gl.set_alpha(int(150 + 70 * math.sin(now * 3)))
+                    gl = gfx.faded(gfx.glow(CW, ch, 26, ACCENT, 26, 150), 150 + 70 * math.sin(now * 3), ("leadglow",), levels=8)
                     self.screen.blit(gl, (x - 26, yy - 26))
                 panel = gfx.glass(CW, ch, 26, edge=ACCENT if is_lead else INK, edge_alpha=200 if is_lead else 40)
                 panel.set_alpha(int(255 * p))
@@ -997,8 +1070,8 @@ class VerticalUI(UIManager):
         rows = max(0, min(5, (SAFE_BOTTOM - y - 50) // 50))
         players = logic.leaderboard[:rows]
         if rows:
-            self._text("black", TYPE["small"], "THIS WEEK", DIM, (M + 8, y))
-            self._text("black", TYPE["small"], f"{logic.active_player_count} PLAYING", DIM, (W - M - 8, y), "topright")
+            self._label("THIS WEEK", (M + 8, y))
+            self._label(f"{logic.active_player_count} PLAYING", (W - M - 8, y), "topright")
             for i, pl in enumerate(players):
                 ry = y + 64 + i * 50
                 pp = out_expo(progress(age, 0.7 + i * STAGGER, 0.5))
@@ -1039,8 +1112,7 @@ class VerticalUI(UIManager):
         # The ring
         drawn = out_expo(progress(age, 0.2, 0.9))
         remaining = 1.0 if age < 1.0 else 1 - clamp01((age - 1.0) / 2.75)
-        glow = gfx.radial(int(R * 1.9), ACCENT, 255, 2.4)
-        glow.set_alpha(int(110 * drawn * fade))
+        glow = gfx.faded(gfx.radial(int(R * 1.9), ACCENT, 255, 2.4), 110 * drawn * fade, ("introglow",), levels=8)
         self.screen.blit(glow, glow.get_rect(center=(cx, cy)))
         rr = R * (1 + 7 * push)
         gfx.ring(self.screen, cx, cy, rr, int(30 * (1 + 3 * push)), remaining=max(0.02, remaining) if push == 0 else 1.0,
@@ -1129,12 +1201,21 @@ class VerticalUI(UIManager):
                 _, pcx, ph, _ = self.PODIUM[0]
                 cx, cy = X(pcx), Y(base - ph - 150)
                 rot = now * 0.18
-                for r_out, a in ((430, 12), (820, 7)):
+                # Opaque rays on a black scratch, ADDed: on this dark stage that matches the old
+                # alpha rays (alpha 7 long, alpha 12 more near the centre) at a third of the cost.
+                top, bot = max(0, int(cy - 820)), min(H, int(cy + 820))
+                if self._rays is None or self._rays.get_size() != (W, bot - top):
+                    self._rays = pygame.Surface((W, bot - top))
+                rays = self._rays
+                rays.fill((0, 0, 0))
+                for r_out, a in ((820, 7), (430, 19)):
+                    col = tuple(int(c * a * on / 255) for c in (255, 228, 150))
                     for j in range(12):
                         a0 = rot + j * math.pi / 6
-                        pts = [(cx, cy), (cx + math.cos(a0 - 0.1) * r_out, cy + math.sin(a0 - 0.1) * r_out),
-                               (cx + math.cos(a0 + 0.1) * r_out, cy + math.sin(a0 + 0.1) * r_out)]
-                        pygame.gfxdraw.filled_polygon(self.screen, pts, (255, 228, 150, int(a * on)))
+                        pts = [(cx, cy - top), (cx + math.cos(a0 - 0.1) * r_out, cy - top + math.sin(a0 - 0.1) * r_out),
+                               (cx + math.cos(a0 + 0.1) * r_out, cy - top + math.sin(a0 + 0.1) * r_out)]
+                        pygame.draw.polygon(rays, col, pts)
+                self.screen.blit(rays, (0, top), special_flags=pygame.BLEND_RGB_ADD)
         # Spotlights switch on with a flicker, 3rd -> 2nd -> 1st
         for place, pcx, ph, cue in self.PODIUM:
             if place >= len(podium):
@@ -1143,11 +1224,10 @@ class VerticalUI(UIManager):
             if t > 0:
                 flick = 0.0 if t < 0.05 else 0.6 if t < 0.09 else 0.15 if t < 0.13 else min(1.0, 0.7 + t)
                 cone, (cx0, cy0) = self._cone(place)
-                cone.set_alpha(int(255 * flick))
-                self.screen.blit(cone, (int(X(cx0)), int(Y(cy0))))
+                self.screen.blit(gfx.faded(cone, 255 * flick, ("cone", place), levels=8), (int(X(cx0)), int(Y(cy0))))
         # Floor glow and line
         glow = self._ucache(("floor",), lambda: pygame.transform.smoothscale(gfx.radial(300, (130, 140, 255), 150, 1.8), (1000, 170)))
-        glow.set_alpha(int(255 * smoothstep(progress(age, 0.6, 1.0))))
+        glow = gfx.faded(glow, 255 * smoothstep(progress(age, 0.6, 1.0)), ("podfloor",), levels=12)
         self.screen.blit(glow, glow.get_rect(center=(W // 2, int(Y(base)))))
         self.screen.blit(self._alpha_rect(CW, 6, (*TRACK, 255), 3), (M, int(Y(base))))
 
@@ -1210,7 +1290,7 @@ class VerticalUI(UIManager):
         y = base + 36
         pl = out_expo(progress(age, 4.4, 0.5))
         if pl > 0:
-            self._text("black", TYPE["small"], "THIS WEEK'S LADDER", DIM, (M + 10, y), alpha=255 * pl)
+            self._label("THIS WEEK'S LADDER", (M + 10, y), alpha=255 * pl)
         rows = max(1, min(6, (SAFE_BOTTOM - y - 40) // 50))
         for i, plr in enumerate(logic.leaderboard[:rows]):
             ry = y + 64 + i * 50
@@ -1222,7 +1302,7 @@ class VerticalUI(UIManager):
             col = PLACE_COLORS[i] if i < 3 else DIM
             self._text("display", 38, str(i + 1), col, (M + 30 + ox, ry), "center", alpha=255 * pp)
             if ch is None:
-                self._text("black", 22, "NEW", GOOD, (M + 100 + ox, ry), "center", alpha=255 * pp)
+                self._text("black", 26, "NEW", GOOD, (M + 100 + ox, ry), "center", alpha=255 * pp)
             elif ch:
                 self._rank_arrow(M + 112 + ox, ry, ch, pp)
             else:
@@ -1233,36 +1313,94 @@ class VerticalUI(UIManager):
     # ------------------------------------------
     # OVERLAYS
     # ------------------------------------------
+    # Announcements: every toast from logic._push_event(text, color, badge) gets the same
+    # broadcast tab: a badge block in the event colour (a glyph for known codes, else the code
+    # itself) and a dark panel that unrolls out of it, with a fuse that burns down its life.
+    # Text written "KICKER: rest" or "KICKER! rest" with an all-caps kicker prints the kicker in
+    # the event colour ("LIGHTNING ROUND! 22s, 1.5x points"), so new features get a headline
+    # just by how they word the event.
+    T_H = 76
+
+    @staticmethod
+    def _split_kicker(text):
+        for sep in ("! ", ": "):
+            head, s, rest = text.partition(sep)
+            if s and rest and head.isupper() and 2 <= len(head) <= 26:
+                return head + ("!" if sep == "! " else ""), rest
+        return "", text
+
+    def _toast_parts(self, e, col):
+        def make():
+            h = self.T_H
+            badge = gfx.face(h, h, 20, col, light=0.25, dark=0.12, rim=0.5).copy()
+            code = (e.icon or "!").upper()
+            glyph = BADGE_GLYPHS.get(code)
+            if glyph:
+                _shape(badge, glyph, h // 2, h // 2 + (2 if glyph != "arrow" else 0), 24, 0, DARK_INK, col)
+            else:
+                label = "x2" if code == "2X" else code[:4]
+                t = self._render("display", 34 if len(label) <= 2 else 26 if len(label) == 3 else 22, label, DARK_INK)
+                badge.blit(t, t.get_rect(center=(h // 2, h // 2 + 1)))
+            kicker, body = self._split_kicker(e.text)
+            ink_k = mix(col, INK, 0.2)
+            ks = gfx.tracked(self.fonts.get("black", 30), kicker, ink_k, 2) if kicker else None
+            room = CW - h - 70 - (ks.get_width() + 16 if ks else 0)
+            bs = self._fit_name(body, 32, INK, room, kind="black")
+            tw = (ks.get_width() + 16 if ks else 0) + bs.get_width()
+            pw = tw + 64
+            panel = gfx.glass(pw, h - 8, 18, tint=(22, 24, 84), alpha=238, edge=col, edge_alpha=110).copy()
+            x = 40
+            if ks:
+                panel.blit(ks, ks.get_rect(midleft=(x, (h - 8) // 2)))
+                x += ks.get_width() + 16
+            panel.blit(bs, bs.get_rect(midleft=(x, (h - 8) // 2 + 1)))
+            return badge, panel
+        return self._ucache(("toast2", e.text, col, e.icon), make)
+
+    def _announce(self, e, a, cy, leave=0.0):
+        """One toast at a seconds into its life; leave (0..1) forces its exit early."""
+        col = tuple(e.color[:3])
+        badge, panel = self._toast_parts(e, col)
+        h = self.T_H
+        pw = panel.get_width()
+        total = h - 22 + pw
+        x0 = W // 2 - total // 2
+        out = max(leave, progress(a, TOAST_LIFE - 0.45, 0.4))
+        unroll = out_expo(progress(a, 0.12, 0.45)) * (1 - in_cubic(clamp01(out * 1.6)))
+        drop = out_back(progress(a, 0.0, 0.35), 1.6)
+        lift = in_cubic(progress(out, 0.45, 0.55))
+        by = int(cy - h // 2 - (1 - drop) * 70 - lift * 90)
+        if unroll > 0.01:
+            vis = int(pw * unroll)
+            px, py = x0 + h - 22, cy - (h - 8) // 2
+            self.screen.blit(panel, (px, py), (0, 0, vis, panel.get_height()))
+            life = clamp01(1 - a / TOAST_LIFE)
+            if vis > 40 and life > 0:
+                self.screen.fill(col, (px + 22, py + panel.get_height() - 7, int((min(vis, pw) - 40) * life), 3))
+            if 0.45 < a < 1.2:
+                gfx.sweep(self.screen, gfx.silhouette(panel, ("toast", e.text)), px, py, progress(a, 0.45, 0.6), 110)
+        if lift < 1:
+            self.screen.blit(badge, (x0, by))
+
     def _v_toast(self, logic, now):
-        """Event toasts drop into the pip band (above the chips, never over the question)."""
+        """Event toasts drop into the pip band (above the chips, never over the question). A new
+        one sends the old one out first."""
         if logic.state not in (GameState.ASKING, GameState.LOCKING, GameState.REVEALING):
             return
-        events = [e for e in logic.get_recent_events() if now - e.timestamp < 3.6]
+        events = [e for e in logic.get_recent_events() if now - e.timestamp < TOAST_LIFE + 0.3]
         if not events:
             return
         e = events[-1]
-        a = now - e.timestamp
-        slide = out_expo(a / 0.4)
-        fade = 1 - progress(a, 3.1, 0.5)
-        col = tuple(e.color[:3])
-
-        def make():
-            txt = self._fit_name(e.text, 32, INK, CW - 150, kind="black")
-            w, h = txt.get_width() + 110, 62
-            s = pygame.Surface((w + 40, h + 40), pygame.SRCALPHA)
-            s.fill((0, 0, 0, 0))
-            s.blit(gfx.glow(w, h, h // 2, col, 20, 150), (0, 0))
-            s.blit(gfx.face(w, h, h // 2, (22, 26, 78), light=0.1, rim=0.25), (20, 20))
-            pygame.draw.rect(s, col, (20, 20, w, h), width=2, border_radius=h // 2)
-            gfx.disc(s, 20 + 31, 20 + 31, 23, col)
-            icon = self._render("black", 18 if len(e.icon) > 2 else 22, (e.icon or "!")[:4], DARK_INK)
-            s.blit(icon, icon.get_rect(center=(51, 52)))
-            s.blit(txt, txt.get_rect(midleft=(20 + 70, 20 + h // 2 + 1)))
-            return s
-        s = self._ucache(("toast", e.text, col, e.icon), make)
-        s.set_alpha(int(255 * fade))
-        self.screen.blit(s, s.get_rect(center=(W // 2, int(lerp(170, 213, slide)))))
-        s.set_alpha(255)
+        cy = 214
+        prev = events[-2] if len(events) > 1 else None
+        swap = 0.0
+        if prev is not None and 0 <= e.timestamp - prev.timestamp < TOAST_LIFE:
+            swap = 0.28   # the new tab waits until the old one has rolled up
+            if now - e.timestamp < swap:
+                self._announce(prev, now - prev.timestamp, cy, leave=progress(now - e.timestamp, 0, swap))
+        a = now - e.timestamp - swap
+        if 0 <= a < TOAST_LIFE:
+            self._announce(e, a, cy)
 
     def _draw_player_card(self, logic, now):
         """!card: a profile card rises over the lower screen for 6 s."""

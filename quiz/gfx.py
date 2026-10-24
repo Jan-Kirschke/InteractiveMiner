@@ -220,6 +220,64 @@ def sweep(screen, shape, x, y, t, strength=255):
     screen.blit(piece, (x + x0, y))
 
 
+def faded(surf, alpha, key, store=None, levels=16):
+    """surf at `alpha` with the alpha baked into its pixels, quantised to `levels` steps.
+    A per-pixel-alpha surface blitted with set_alpha() < 255 takes pygame's slow path (about
+    4x the cost); pulsing glows and steady fades use this instead."""
+    q = int(round(max(0, min(255, alpha)) / 255 * levels))
+    if q >= levels:
+        return surf
+    def make():
+        s = surf.copy()
+        s.fill((255, 255, 255, int(255 * q / levels)), special_flags=pygame.BLEND_RGBA_MULT)
+        return s
+    return cached(("fade", key, q, levels), make, store)
+
+
+def add_light(r, color, power=2.0):
+    """Opaque round light on black for BLEND_RGB_ADD: the cheapest soft light (no alpha)."""
+    def make():
+        s = pygame.Surface((2 * r, 2 * r))
+        s.fill((0, 0, 0))
+        s.blit(radial(r, color, 255, power), (0, 0))
+        return s
+    return cached(("addlight", r, color, power), make)
+
+
+_edges = {}
+
+
+def edge_glow(screen, color, strength, depth=100):
+    """Additive coloured glow on the four screen edges, in 8 strength steps: three opaque strip
+    sets at 4/8, 2/8 and 1/8 strength, ADDed by the bits of the step. BLEND_RGB_ADD blits are
+    SIMD-fast (about 0.1 ms per set at 1080x1920); the alpha strips this replaces cost 1.6 ms,
+    and fill() with a blend flag is slower still."""
+    q = int(round(max(0.0, min(1.0, strength)) * 8))
+    if q <= 0:
+        return
+    w, h = screen.get_size()
+    key = (w, h, tuple(color), depth)
+    sets = _edges.get(key)
+    if sets is None:
+        sets = []
+        for frac in (4 / 8, 2 / 8, 1 / 8):
+            top = pygame.Surface((w, depth))
+            side = pygame.Surface((depth, h))
+            for d in range(depth):
+                f = 0.62 * frac * (1 - d / depth) ** 2.2
+                c = (int(color[0] * f + 0.5), int(color[1] * f + 0.5), int(color[2] * f + 0.5))
+                top.fill(c, (0, d, w, 1))
+                side.fill(c, (d, 0, 1, h))
+            sets.append(((top, (0, 0)), (pygame.transform.flip(top, False, True), (0, h - depth)),
+                         (side, (0, 0)), (pygame.transform.flip(side, True, False), (w - depth, 0))))
+        _edges[key] = sets
+    for bit, strips in zip((4, 2, 1), sets):
+        n = 2 if q == 8 and bit == 4 else 1 if q & bit else 0
+        for _ in range(n):
+            for s, pos in strips:
+                screen.blit(s, pos, special_flags=pygame.BLEND_RGB_ADD)
+
+
 def tinted(w, h, radius, color):
     """Solid rounded rect in one colour (AA corners): dim overlays, flashes, share fills."""
     def make():
@@ -290,9 +348,10 @@ def disc(screen, cx, cy, r, color):
     pygame.gfxdraw.filled_circle(screen, cx, cy, r, color)
 
 
-def ring(screen, cx, cy, r, width, remaining=1.0, drawn=1.0, colors=RING_COLORS, gap=7.0, track=True):
+def ring(screen, cx, cy, r, width, remaining=1.0, drawn=1.0, colors=RING_COLORS, gap=7.0, track=True, rot=0.0):
     """The Spotlight LQ ring: four arcs in the answer colours, clockwise from 12 o'clock.
-    remaining < 1 empties it clockwise from the top (a timer); drawn < 1 draws each arc on."""
+    remaining < 1 empties it clockwise from the top (a timer); drawn < 1 draws each arc on;
+    rot turns the whole ring (degrees, clockwise)."""
     if track:
         pygame.draw.circle(screen, RING_TRACK, (int(cx), int(cy)), int(r + width * 0.35), int(width * 1.7))
     start = -90 + 360 * (1 - remaining)
@@ -301,7 +360,7 @@ def ring(screen, cx, cy, r, width, remaining=1.0, drawn=1.0, colors=RING_COLORS,
         a1 = a0 + (90 - 2 * gap) * drawn
         a0 = max(a0, start)
         if a1 > a0:
-            arc(screen, cx, cy, r, width, a0, a1, col)
+            arc(screen, cx, cy, r, width, a0 + rot, a1 + rot, col)
 
 
 # ==========================================
