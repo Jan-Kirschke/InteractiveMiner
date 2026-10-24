@@ -147,7 +147,8 @@ class Sampler(threading.Thread):
 
 
 def run_scenario(players: int, rate: float, seconds: float, render_every: int = 1, seed: int = 1,
-                 profile: str = "", sample: bool = False, mem_every: float = 60.0) -> dict:
+                 profile: str = "", sample: bool = False, mem_every: float = 60.0,
+                 pace_real_time: bool = False) -> dict:
     os.environ.update({"QUIZ_LAYOUT": "vertical", "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy",
                        "QUIZ_FPS": "30", "QUIZ_STREAM_HEIGHT": "720"})
     sys.path.insert(0, str(ROOT))
@@ -171,16 +172,27 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
     ctrl = C.MainGameController(offline=True)
     ctrl.broadcaster._active = True       # send_frame converts as when streaming; no FFmpeg, no writer thread
 
+    # DB saves: the commit itself, wherever it runs (writer thread now, the game thread before);
+    # the game thread's share shows in the "save" phase.
     saves = []
-    _save_all = ctrl.db.save_all
+    if hasattr(ctrl.db, "_write_rows"):
+        _write_rows = ctrl.db._write_rows
 
-    def timed_save():
-        rows = len(ctrl.db._dirty)
-        t0 = time.perf_counter()
-        _save_all()
-        if rows:
-            saves.append(((time.perf_counter() - t0) * 1000, rows))
-    ctrl.db.save_all = timed_save
+        def timed_write(conn, rows):
+            t0 = time.perf_counter()
+            _write_rows(conn, rows)
+            saves.append(((time.perf_counter() - t0) * 1000, len(rows)))
+        ctrl.db._write_rows = timed_write
+    else:
+        _save_all = ctrl.db.save_all
+
+        def timed_save():
+            rows = len(ctrl.db._dirty)
+            t0 = time.perf_counter()
+            _save_all()
+            if rows:
+                saves.append(((time.perf_counter() - t0) * 1000, rows))
+        ctrl.db.save_all = timed_save
 
     # Steady state only: the sounds render on a background thread at start-up (numpy, holds the GIL
     # in bursts), so wait for them; the clock stays frozen meanwhile, the game has not started yet.
@@ -191,7 +203,9 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
     names = [f"viewer_{i:05d}" for i in range(players)]
     fps = 30
     frames = int(seconds * fps)
-    phases = ("chat", "logic", "save", "sounds", "render", "convert", "total")
+    phases = ("chat", "logic", "save", "sounds", "wait", "render", "convert", "busy", "total")
+    wait_frame = getattr(ctrl.broadcaster, "wait_frame", lambda *a: True)  # older code converts in-loop
+    pace = 1 / fps if pace_real_time else 0.0
     times = {p: [] for p in phases}
     msgs_done, owed, chat_us = 0, 0.0, []
     mem, next_mem = [], 0.0
@@ -206,8 +220,17 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
     if prof:
         prof.enable()
     began_wall = real_time()
+    cpu0, main_cpu0 = time.process_time(), time.thread_time()
     pc = time.perf_counter
+    next_tick = pc()
     for f in range(frames):
+        if pace:  # like clock.tick(30): the converter and writer threads get the idle time
+            next_tick += pace
+            delay = next_tick - pc()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                next_tick = pc()
         clock[0] += 1 / fps
         owed += rate / fps
         while owed >= 1:
@@ -228,7 +251,11 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
         ctrl._start_music_when_ready()
         t4 = pc()
         if f % render_every == 0:
+            wait_frame()  # _render() does this first; timed apart so render is drawing only
+            tw = pc()
             ctrl._render()
+        else:
+            tw = pc()
         t5 = pc()
         ctrl._broadcast_frame() if f % render_every == 0 else None
         t6 = pc()
@@ -239,9 +266,11 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
         times["logic"].append((t2 - t1) * 1000)
         times["save"].append((t3 - t2 + t7 - t6) * 1000)
         times["sounds"].append((t4 - t3) * 1000)
-        times["render"].append((t5 - t4) * 1000)
+        times["wait"].append((tw - t4) * 1000)
+        times["render"].append((t5 - tw) * 1000)
         times["convert"].append((t6 - t5) * 1000)
         times["total"].append((t7 - t0) * 1000)
+        times["busy"].append((t7 - t0 - (tw - t4)) * 1000)  # the game thread working, not waiting
         if queued:
             msgs_done += queued
             chat_us.append((t1 - t0) * 1e6 / queued)
@@ -250,6 +279,9 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
             mem.append((round(sim, 1), round(_rss_mb(), 1)))
             next_mem += mem_every
     wall = real_time() - began_wall
+    wait_frame(5.0)
+    cpu_ms = (time.process_time() - cpu0) * 1000 / frames
+    main_cpu_ms = (time.thread_time() - main_cpu0) * 1000 / frames
     if prof:
         prof.disable()
         prof.dump_stats(profile)
@@ -287,7 +319,18 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
         slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den * 3600 if den else 0.0
 
     ui = ctrl.ui
+
+    def surf_mb(cache):
+        total = 0
+        for v in cache.values():
+            for s in (v if isinstance(v, tuple) else (v,)):
+                if hasattr(s, "get_bytesize"):
+                    total += s.get_width() * s.get_height() * s.get_bytesize()
+        return round(total / 1e6, 1)
     sizes = {
+        "text_cache_mb": surf_mb(getattr(ui, "_text_cache", {})),
+        "surf_cache_mb": surf_mb(getattr(ui, "_surf_cache", {})),
+        "fx_cache_mb": surf_mb(getattr(getattr(ui, "fx", None), "_cache", {})),
         "players_in_memory": len(db._players), "dirty_left": len(db._dirty),
         "text_cache": len(getattr(ui, "_text_cache", {})), "surf_cache": len(getattr(ui, "_surf_cache", {})),
         "event_feed": len(logic.event_feed), "seen_questions": len(logic._seen_questions),
@@ -296,9 +339,11 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
     }
     result = {
         "players": players, "rate": rate, "seconds": seconds, "render_every": render_every,
-        "frames": frames, "wall_s": round(wall, 1), "messages": msgs_done,
+        "frames": frames, "wall_s": round(wall, 1), "messages": msgs_done, "paced": bool(pace),
+        # CPU per frame: x 30 = percent of one core at 30 fps. Main = the game thread alone.
+        "cpu_ms_per_frame": round(cpu_ms, 2), "main_cpu_ms_per_frame": round(main_cpu_ms, 2),
         "frame_ms": {p: {k: round(v, 3) for k, v in _pct(times[p], 50, 95, 99).items()} for p in phases},
-        "over_budget_frames": sum(1 for t in times["total"] if t > BUDGET_MS),
+        "over_budget_frames": sum(1 for t in times["busy"] if t > BUDGET_MS),
         "msg_us": {k: round(v, 2) for k, v in _pct(chat_us, 50, 95, 99).items()},
         "saves": {"count": len(saves), "rows": sum(r for _, r in saves),
                   "ms": {k: round(v, 2) for k, v in _pct([s for s, _ in saves], 50, 95).items()},
@@ -319,19 +364,20 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
 
 
 def _row(r: dict) -> str:
-    fm = r["frame_ms"]["total"]
+    fm = r["frame_ms"]["busy"]
     return (f"| {r['players']:>6} | {r['rate']:>5} | {fm['p50']:6.2f} | {fm['p95']:6.2f} | {fm['p99']:7.2f} | "
-            f"{fm['max']:7.1f} | {r['over_budget_frames']:>5} | {r['msg_us']['p50']:6.1f} | "
+            f"{fm['max']:7.1f} | {r['over_budget_frames']:>5} | {r['cpu_ms_per_frame']:6.2f} | "
+            f"{r['main_cpu_ms_per_frame']:6.2f} | {r['msg_us']['p50']:6.1f} | "
             f"{r['saves']['ms']['max']:7.1f} ({r['saves']['worst_rows']}) | "
             f"{r['ranking_ms']['weekly_top10_ms']:6.2f} | {r['ranking_ms']['weekly_rank_ms']:6.2f} | "
             f"{r['rss_mb']['end']:6.0f} |")
 
 
-HEADER = ("| N | msg/s | p50 ms | p95 ms | p99 ms | max ms | >33ms | us/msg | worst save ms (rows) | "
-          "top10 ms | rank ms | RSS MB |\n|---|---|---|---|---|---|---|---|---|---|---|---|")
+HEADER = ("| N | msg/s | busy p50 ms | p95 | p99 | max | >33ms | CPU ms/frame | main CPU ms/frame | us/msg | "
+          "worst save ms (rows) | top10 ms | rank ms | RSS MB |\n" + "|---" * 14 + "|")
 
 
-def run_matrix(seconds: float, jobs: int, out: str, players=PLAYERS, rates=RATES):
+def run_matrix(seconds: float, jobs: int, out: str, players=PLAYERS, rates=RATES, pace=False):
     cells = [(n, m) for n in players for m in rates]
     tmp = tempfile.TemporaryDirectory()
     results, running = [], []
@@ -341,7 +387,7 @@ def run_matrix(seconds: float, jobs: int, out: str, players=PLAYERS, rates=RATES
             n, m = pending.pop(0)
             path = os.path.join(tmp.name, f"{n}_{m}.json")
             cmd = [sys.executable, __file__, "--players", str(n), "--rate", str(m),
-                   "--seconds", str(seconds), "--json", path]
+                   "--seconds", str(seconds), "--json", path] + (["--pace"] if pace else [])
             running.append((subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE), path, n, m))
         for item in list(running):
             proc, path, n, m = item
@@ -354,7 +400,7 @@ def run_matrix(seconds: float, jobs: int, out: str, players=PLAYERS, rates=RATES
                     results.append(json.load(f))
                 print(_row(results[-1]), flush=True)
             else:
-                print(f"| {n} | {m} | FAILED rc={proc.returncode}: {err.strip().splitlines()[-1:] } |", flush=True)
+                print(f"| {n} | {m} | FAILED rc={proc.returncode}: {err.strip().splitlines()[-1:]} |", flush=True)
         time.sleep(0.2)
     results.sort(key=lambda r: (r["players"], r["rate"]))
     if out:
@@ -369,17 +415,19 @@ def compare(before_path: str, after_path: str):
         before = {(r["players"], r["rate"]): r for r in json.load(f)}
     with open(after_path) as f:
         after = {(r["players"], r["rate"]): r for r in json.load(f)}
-    print("| N | msg/s | p50 ms | p95 ms | p99 ms | max ms | >33ms frames | worst save ms | us/msg p50 |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("| N | msg/s | busy p50 ms | busy p95 ms | busy p99 ms | busy max ms | >33ms frames | "
+          "CPU ms/frame | worst save ms | us/msg p50 |")
+    print("|---" * 10 + "|")
     for key in sorted(before.keys() & after.keys()):
         b, a = before[key], after[key]
-        bf, af = b["frame_ms"]["total"], a["frame_ms"]["total"]
-        cell = lambda x, y, fmt="{:.2f}": f"{fmt.format(x)} -> {fmt.format(y)}"
+        bf, af = b["frame_ms"]["busy"], a["frame_ms"]["busy"]
+        cell = lambda x, y, fmt="{:.1f}": f"{fmt.format(x)} -> {fmt.format(y)}"
         print(f"| {key[0]} | {key[1]} | {cell(bf['p50'], af['p50'])} | {cell(bf['p95'], af['p95'])} | "
               f"{cell(bf['p99'], af['p99'])} | {cell(bf['max'], af['max'], '{:.0f}')} | "
               f"{b['over_budget_frames']} -> {a['over_budget_frames']} | "
+              f"{cell(b['cpu_ms_per_frame'], a['cpu_ms_per_frame'])} | "
               f"{cell(b['saves']['ms']['max'], a['saves']['ms']['max'], '{:.0f}')} | "
-              f"{cell(b['msg_us']['p50'], a['msg_us']['p50'], '{:.1f}')} |")
+              f"{cell(b['msg_us']['p50'], a['msg_us']['p50'])} |")
 
 
 def main():
@@ -396,17 +444,22 @@ def main():
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--out", default="")
     ap.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"))
+    ap.add_argument("--pace", action="store_true", help="real-time 30 fps like clock.tick (CPU %% like production)")
+    ap.add_argument("--grid-players", default=",".join(map(str, PLAYERS)))
+    ap.add_argument("--grid-rates", default=",".join(map(str, RATES)))
     a = ap.parse_args()
     if a.compare:
         compare(*a.compare)
         return
     if a.matrix:
         print(HEADER, flush=True)
-        run_matrix(a.seconds, a.jobs, a.out)
+        run_matrix(a.seconds, a.jobs, a.out, [int(x) for x in a.grid_players.split(",")],
+                   [float(x) for x in a.grid_rates.split(",")], a.pace)
         return
     if a.json:  # worker: keep the game's own log lines out of the way
         sys.stdout = open(os.devnull, "w")
-    r = run_scenario(a.players, a.rate, a.seconds, a.render_every, a.seed, a.profile, a.sample)
+    r = run_scenario(a.players, a.rate, a.seconds, a.render_every, a.seed, a.profile, a.sample,
+                     pace_real_time=a.pace)
     if a.json:
         with open(a.json, "w") as f:
             json.dump(r, f, indent=1)

@@ -40,6 +40,22 @@ def test_measured_difficulty_overrides_label_after_enough_answers():
     assert bank.pick(22, "hard").difficulty == "hard"
 
 
+def test_count_is_cached_between_frames_but_follows_every_change():
+    # logic.update() asks for the count every frame; the table changes only on add/pick.
+    bank = make_bank(5)
+    queries = []
+    bank._conn.set_trace_callback(lambda sql: queries.append(sql) if "COUNT" in sql else None)
+    for _ in range(90):  # three seconds of frames inside one TTL window
+        assert bank.count(22, unseen_for=3600) == 5
+    assert len(queries) == 1
+    assert bank.count(9, unseen_for=3600) == 0                   # another category, same window
+    bank.pick(22, "easy")                                        # marks one asked
+    assert bank.count(22, unseen_for=3600) == 4
+    bank.add([{"text": "Q9?", "correct": "A", "wrong": ["B"], "cat_id": 22}], "test")
+    assert bank.count(22, unseen_for=3600) == 5
+    assert bank.count(None) == 6
+
+
 def test_duplicate_text_is_ignored():
     bank = make_bank(2)
     assert bank.add([{"text": "Q0?", "correct": "X", "wrong": ["Y"]}], "test") == 0

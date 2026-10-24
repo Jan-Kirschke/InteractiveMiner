@@ -43,6 +43,7 @@ class QuestionBank:
     def __init__(self, conn: sqlite3.Connection, lock: threading.Lock | None = None):
         self._conn = conn
         self._lock = lock or threading.Lock()
+        self._counts: dict = {}  # (cat_id, unseen_for) -> (monotonic time, count)
         with self._lock:
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS questions (
@@ -75,6 +76,7 @@ class QuestionBank:
                 it.get("cat_id") or OTDB_CATEGORY_IDS.get(cat), (it.get("difficulty") or "medium").lower(),
                 it.get("fact", "") or "", source,
             ))
+        self._counts.clear()
         with self._lock:
             before = self._conn.total_changes
             self._conn.executemany(
@@ -83,14 +85,22 @@ class QuestionBank:
             self._conn.commit()
             return self._conn.total_changes - before
 
+    COUNT_TTL = 1.0  # count() runs every frame (QuizLogic._ensure_cache); the table changes on add/pick
+
     def count(self, cat_id=None, unseen_for: float = 0) -> int:
+        key, now = (cat_id, unseen_for), time.monotonic()
+        hit = self._counts.get(key)
+        if hit and now - hit[0] < self.COUNT_TTL:
+            return hit[1]
         q = "SELECT COUNT(*) FROM questions WHERE last_asked <= ?"
         args = [time.time() - unseen_for]
         if cat_id:
             q += " AND cat_id = ?"
             args.append(cat_id)
         with self._lock:
-            return self._conn.execute(q, args).fetchone()[0]
+            n = self._conn.execute(q, args).fetchone()[0]
+        self._counts[key] = (now, n)
+        return n
 
     def pick(self, cat_id=None, difficulty: str = "") -> Question | None:
         """A question for this category (None = any) not asked for as long as possible, shuffled options."""
@@ -118,6 +128,7 @@ class QuestionBank:
         return None
 
     def mark_asked(self, text: str):
+        self._counts.clear()
         with self._lock:
             self._conn.execute("UPDATE questions SET last_asked = ? WHERE text = ?", (time.time(), text))
             self._conn.commit()
