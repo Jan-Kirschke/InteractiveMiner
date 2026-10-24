@@ -79,6 +79,7 @@ LOBBY_TIME = _env_num("QUIZ_LOBBY_SECONDS", 30)          # category vote, !ready
 INTRO_TIME = 4             # "MATCH 15" title sting
 QUESTION_DISPLAY_TIME = _env_num("QUIZ_QUESTION_SECONDS", 20)
 LATE_ANSWER_GRACE = _env_num("QUIZ_LATE_SECONDS", 4)     # "time's up" while late chat messages still arrive
+REVEAL_AT = 1.1   # seconds into the reveal before the right answer lights up (answer split counts up first)
 REVEAL_DISPLAY_TIME = _env_num("QUIZ_REVEAL_SECONDS", 8)
 PODIUM_TIME = _env_num("QUIZ_PODIUM_SECONDS", 14)
 LIGHTNING_QUESTION = 5     # fixed event slots inside a match

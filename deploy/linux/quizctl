@@ -147,6 +147,8 @@ case "$cmd" in
             install -m 644 "$APP/deploy/linux/$u" "/etc/systemd/system/$u"
         done
         systemctl daemon-reload
+        echo "Preparing the show's sounds (up to a minute after a sound change)..."
+        sudo -u quiz bash -c "cd $APP && set -a && . ./.env && set +a && venv/bin/python -m quiz.sounds"             || echo "Sound pre-render failed; the show renders them at start instead."
         echo "Updated to $(sudo -u quiz git -C "$APP" log --oneline -1)."
         restart_if_running ;;
     help|-h|--help) usage ;;

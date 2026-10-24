@@ -14,7 +14,7 @@ from quiz.config import (
     DB_SAVE_INTERVAL, DB_PATH, DB_PATH_OFFLINE,
     VIDEO_ID, CHANNEL_IDS,
     STREAM_ENABLED, YOUTUBE_STREAM_KEY, STREAM_FPS, STREAM_BITRATE, STREAM_HEIGHT, STREAM_AUDIO_GAIN_DB, FFMPEG_PATH,
-    STREAM_AUDIO_INPUT, STREAM_OUTPUT,
+    STREAM_AUDIO_INPUT, STREAM_OUTPUT, LATE_ANSWER_GRACE, REVEAL_AT,
 )
 from quiz.models import GameState
 from quiz.db import QuizDatabase
@@ -45,7 +45,7 @@ class MainGameController:
         self.logic = QuizLogic(self.db)
         self.chat = ChatManager(chat_urls, self.msg_queue, offline=offline)
         self.ui = UIManager(self.screen)
-        self.sounds = SoundManager()
+        self.sounds = SoundManager(drumroll_seconds=LATE_ANSWER_GRACE + REVEAL_AT)
 
         # YouTube Live broadcaster (started in run() so frames are available immediately)
         self.broadcaster = YouTubeBroadcaster(
@@ -129,10 +129,7 @@ class MainGameController:
     def _play_sounds(self):
         """Play all queued sounds from logic with appropriate rate limiting."""
         for sound_name in self.logic.sound_queue:
-            if sound_name in ("tick", "tick_urgent", "countdown"):
-                cooldown = 0.4 if sound_name in ("tick_urgent", "countdown") else 0.8
-                self.sounds.play_throttled(sound_name, cooldown)
-            elif sound_name == "answer_lock":
+            if sound_name == "answer_lock":
                 self.sounds.play_throttled(sound_name, 0.15)
             elif sound_name == "vote":
                 self.sounds.play_throttled(sound_name, 0.3)
@@ -171,6 +168,7 @@ class MainGameController:
         current = self.logic.state
         if current != self._prev_logic_state:
             self._prev_logic_state = current
+            self.sounds.set_scene(current.name)
             if current in (GameState.REVEALING, GameState.PODIUM):
                 self.db.save_all()
 

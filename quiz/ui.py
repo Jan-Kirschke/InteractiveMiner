@@ -14,7 +14,7 @@ import time
 
 import pygame
 
-from quiz.config import SCREEN_WIDTH, SCREEN_HEIGHT, FONT_DIR, MATCH_LENGTH
+from quiz.config import SCREEN_WIDTH, SCREEN_HEIGHT, FONT_DIR, MATCH_LENGTH, REVEAL_AT
 from quiz.models import GameState
 from quiz.logic import is_bot
 
@@ -84,6 +84,13 @@ def progress(age, delay, dur):
 
 def lerp(a, b, t):
     return a + (b - a) * t
+
+
+def heartbeat(since):
+    """0..1 pulse for a lub-dub: 'since' = seconds since the beat started (matches sounds.final_countdown)."""
+    lub = math.exp(-since * 10)
+    dub = 0.6 * math.exp(-(since - 0.22) * 10) if since >= 0.22 else 0.0
+    return min(1.0, lub + dub)
 
 
 def mix(c1, c2, t):
@@ -213,6 +220,7 @@ class UIManager:
         self._vote_bars = {}
         self._burst_done = set()
         self._t = time.time()
+        self._vignettes = {}
 
     # ------------------------------------------
     # PRE-RENDERED SURFACES
@@ -793,22 +801,31 @@ class UIManager:
         if not locking:
             rem = logic.time_remaining
             urgent = rem <= 5
-            pulse = 1.0 + (0.06 * math.sin(now * 10) if urgent else 0)
-            self._ring(tcx, tcy, int(80 * pulse), 14, logic.time_fraction, BAD if urgent else ACCENT)
-            self._text("display", 70, str(int(math.ceil(rem))), INK, (tcx, tcy), "center")
-            if urgent:  # red glow on the screen edges for the last 5 seconds
-                glow = self._alpha_rect(SCREEN_WIDTH, 18, (*BAD, int(60 + 50 * math.sin(now * 10)) // 8 * 8), 0)
-                self.screen.blit(glow, (0, 0))
-                self.screen.blit(glow, (0, SCREEN_HEIGHT - 18))
-        else:  # suspense: stamp slams in while late chat answers still count
+            # Last 5 s: everything beats with the heartbeat in the audio (lub on the second, dub 0.22 s later)
+            beat = heartbeat(math.ceil(rem) - rem) if urgent else 0.0
+            self._ring(tcx, tcy, int(80 * (1 + 0.08 * beat)), 14, logic.time_fraction, BAD if urgent else ACCENT)
+            self._text("display", 70, str(int(math.ceil(rem))), INK, (tcx, tcy), "center",
+                       scale=1 + 0.4 * beat if urgent else 1.0)
+            if urgent:
+                self._draw_vignette(BAD, 0.35 + 0.65 * beat)
+        else:  # suspense: stamp slams in while late chat answers still count, drumroll builds
             p = ease_out_back(age / 0.35)
+            build = clamp01(age / max(0.1, logic.state_duration))
             stamp = self._render("display", 46, "TIME'S UP", INK)
             sw, sh = stamp.get_width() + 40, stamp.get_height() + 16
             base = pygame.Surface((sw, sh), pygame.SRCALPHA)
             pygame.draw.rect(base, BAD, (0, 0, sw, sh), border_radius=14)
             base.blit(stamp, (20, 8))
             rot = pygame.transform.rotozoom(base, 8, max(0.05, lerp(2.0, 1.0, p)))
-            self.screen.blit(rot, rot.get_rect(center=(tcx - 20, tcy)))
+            jitter = 5 * build ** 2
+            self.screen.blit(rot, rot.get_rect(center=(tcx - 20 + random.uniform(-jitter, jitter),
+                                                       tcy + random.uniform(-jitter, jitter))))
+            self._draw_vignette(ACCENT, 0.25 + 0.6 * build * (0.7 + 0.3 * math.sin(now * 30)))
+            bar_w, bx, by = 240, tcx - 140, tcy + 96   # under the stamp: fills while answers lock in
+            self.screen.blit(self._alpha_rect(bar_w, 10, (255, 255, 255, 40), 5), (bx, by))
+            if build > 0.04:
+                self.screen.blit(self._alpha_rect(int(bar_w * build), 10, (*ACCENT, 255), 5), (bx, by))
+            self._text("black", 18, f"LOCKING IN  {logic.answer_count}", INK, (bx + bar_w // 2, by + 30), "center")
 
         top = max(bottom + 30, BODY_Y + 330)
         for i, (opt, rect) in enumerate(zip(q.options, self._option_rects(top))):
@@ -817,6 +834,26 @@ class UIManager:
                 continue
             self._draw_option(i, opt, rect, alpha=255 * clamp01(p * 1.4), scale=lerp(0.85, 1.0, p),
                               dim=0.35 if locking else 0.0)
+
+    def _draw_vignette(self, color, strength):
+        """Coloured glow on the four screen edges (pre-rendered strips: cheap enough for the server)."""
+        key = tuple(color)
+        if key not in self._vignettes:
+            depth = 110
+            top = pygame.Surface((SCREEN_WIDTH, depth), pygame.SRCALPHA)
+            side = pygame.Surface((depth, SCREEN_HEIGHT), pygame.SRCALPHA)
+            for d in range(depth):
+                a = int(150 * (1 - d / depth) ** 2.2)
+                top.fill((*color, a), (0, d, SCREEN_WIDTH, 1))
+                side.fill((*color, a), (d, 0, 1, SCREEN_HEIGHT))
+            self._vignettes[key] = (top, pygame.transform.flip(top, False, True),
+                                    side, pygame.transform.flip(side, True, False))
+        top, bottom, left, right = self._vignettes[key]
+        alpha = int(255 * clamp01(strength))
+        for surf, pos in ((top, (0, 0)), (bottom, (0, SCREEN_HEIGHT - bottom.get_height())),
+                          (left, (0, 0)), (right, (SCREEN_WIDTH - right.get_width(), 0))):
+            surf.set_alpha(alpha)
+            self.screen.blit(surf, pos)
 
     def _draw_rail_live(self, logic, now):
         x, y = RAIL_X, BODY_Y
@@ -892,8 +929,8 @@ class UIManager:
         top = max(bottom + 26, BODY_Y + 230)
         rects = self._option_rects(top, max_h=160)
         total = max(1, res.total_answers)
-        reveal = age >= 1.1
-        k = ease_out_cubic(progress(age, 1.1, 0.4))
+        reveal = age >= REVEAL_AT
+        k = ease_out_cubic(progress(age, REVEAL_AT, 0.4))
         for i, (opt, rect) in enumerate(zip(q.options, rects)):
             correct = i == q.correct_index
             x, y, w, h = self._draw_option(
@@ -910,6 +947,12 @@ class UIManager:
                 self.screen.blit(self._alpha_rect(bw, 14, (0, 0, 0, 110), 7), (x, y + h - 14))
             self._text("display", 50, f"{int(round(shown * 100))}%", INK, (x + w - 28, y + h // 2), "midright")
             if reveal and correct:
+                flash = progress(age, REVEAL_AT, 0.6)
+                if flash < 1:  # light ring bursts out of the right answer, in time with the stinger
+                    grow = int(40 * ease_out_cubic(flash))
+                    ring = pygame.Surface((w + 2 * grow, h + 2 * grow), pygame.SRCALPHA)
+                    pygame.draw.rect(ring, (*INK, int(230 * (1 - flash))), ring.get_rect(), width=6, border_radius=24 + grow // 2)
+                    self.screen.blit(ring, (x - grow, y - grow))
                 tag = self._render("black", 18, "CORRECT", DARK_INK)
                 self.screen.blit(self._alpha_rect(tag.get_width() + 24, 30, (*INK, 255), 15), (x + w - tag.get_width() - 44, y + 12))
                 self._blit(tag, (x + w - 32, y + 27), "midright")

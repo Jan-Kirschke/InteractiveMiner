@@ -57,7 +57,7 @@ A change restarts a running show (viewers see a short interruption), or applies 
 |---|---|---|
 | `QUIZ_STREAM_HEIGHT` | `720` | Output resolution: `720` or `1080`. 1080 needs about twice the CPU; on this server, check `status` and the log for dropped frames after switching. |
 | `QUIZ_STREAM_BITRATE` | `3000k` | Video bitrate. YouTube's guidance is roughly 1500k–4000k for 720p30 and 3000k–6000k for 1080p30. Unset it to use 3000k at 720p or 6000k at 1080p. |
-| `QUIZ_AUDIO_GAIN_DB` | `12` | Makes the game sounds louder on stream, in dB. `0` = untouched. |
+| `QUIZ_AUDIO_GAIN_DB` | `6` | Makes the game sound louder on stream, in dB, with a limiter so it never clips. `0` = untouched. |
 | `QUIZ_CHANNEL_IDS` | Lifelong Quiz | Which YouTube channel's live chat to read (comma separated channel IDs). Must be the channel the stream key belongs to. |
 | `QUIZ_VIDEO_ID` | (empty) | Read chat from this exact live video instead of finding it automatically. |
 | `QUIZ_LOBBY_SECONDS` | `30` | Lobby length (category vote, `!ready`). |

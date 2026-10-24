@@ -177,7 +177,9 @@ class YouTubeBroadcaster:
             "-bufsize", f"{bufsize_val}k",
             "-g", str(self._fps * 2),
             "-pix_fmt", "yuv420p",
-            *(["-af", f"volume={self._audio_gain_db}dB"] if self._audio_gain_db else []),
+            # Gain for the stream, with a limiter so overlapping effects never clip
+            *(["-af", f"volume={self._audio_gain_db}dB,alimiter=limit=0.89:level=false"]
+              if self._audio_gain_db else []),
             "-c:a", "aac",
             "-b:a", "128k",
             "-ar", "44100",

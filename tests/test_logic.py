@@ -218,3 +218,15 @@ def test_true_false_rejects_options_3_and_4(game):
     assert "alice" not in game.current_answers
     game.process_message("alice", "1")
     assert game.current_answers["alice"][0] == 0
+
+
+def test_last_five_seconds_beep_once_per_second_with_one_riser(game):
+    game.state_timer = 7.0
+    played = []
+    for _ in range(int(6.9 / 0.033)):
+        game.update(0.033)
+        played += game.sound_queue
+        if game.state != GameState.ASKING:
+            break
+    assert played.count("countdown") == 5
+    assert played.count("final_countdown") == 1

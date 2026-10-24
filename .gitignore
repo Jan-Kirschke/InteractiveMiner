@@ -24,3 +24,4 @@ assets/images/desktop.ini
 secrets/
 data/quiz_offline.db
 data/backups/
+data/sounds_*.npz

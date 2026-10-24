@@ -5,6 +5,7 @@ LOBBY (vote, !ready) -> INTRO -> 10 x (ASKING -> LOCKING -> REVEALING) -> PODIUM
 Match points reset every match; weekly and lifetime points keep growing.
 """
 
+import math
 import time
 import html
 import random
@@ -18,6 +19,7 @@ except ImportError:
     requests = None
 
 from quiz.config import (
+    REVEAL_AT,
     MATCH_LENGTH, LOBBY_TIME, INTRO_TIME, QUESTION_DISPLAY_TIME,
     LATE_ANSWER_GRACE, REVEAL_DISPLAY_TIME, PODIUM_TIME,
     LIGHTNING_QUESTION, BONUS_QUESTIONS, FINAL_QUESTION_MULT, DIFFICULTY_RAMP,
@@ -268,6 +270,8 @@ class QuizLogic:
         self.mini_event = ""            # "lightning", "jackpot", "first_blood", ""
         self.event_feed: list[GameEvent] = []
         self.sound_queue: list[str] = []
+        self._last_countdown_second = None
+        self._stinger_due = False
         self.host_line = ""
         self.host_line_time = 0.0
         self.new_players_this_round: list[str] = []
@@ -472,14 +476,18 @@ class QuizLogic:
             self._process_bot_answers()
 
         if self.state == GameState.ASKING:
-            remaining = self.time_remaining
-            frac = self.time_fraction
-            if remaining <= 5:
+            # Last five seconds: one beep per second, the heartbeat riser on the first
+            second = math.ceil(self.state_timer)
+            if second <= 5 and second != self._last_countdown_second and self.state_timer > 0:
+                if self._last_countdown_second is None or second == 5:
+                    self.sound_queue.append("final_countdown")
+                self._last_countdown_second = second
                 self.sound_queue.append("countdown")
-            elif frac < 0.25:
-                self.sound_queue.append("tick_urgent")
-            elif frac < 0.5:
-                self.sound_queue.append("tick")
+
+        if (self.state == GameState.REVEALING and self._stinger_due
+                and self.state_duration - self.state_timer >= REVEAL_AT):
+            self._stinger_due = False
+            self.sound_queue.append("correct" if self.last_result.correct_players else "wrong")
 
         if self.state_timer <= 0:
             self._on_state_expired()
@@ -538,7 +546,7 @@ class QuizLogic:
         self._prev_weekly_positions = {
             p.username: i for i, p in enumerate(self.db.get_weekly_top(n=1_000_000), 1)
         }
-        self.sound_queue.append("new_question")
+        self.sound_queue.append("show_open")
         self._say(f"Match {self.match_no}: {self.match_category}. "
                   f"{MATCH_LENGTH} questions, fastest right answers score most. Good luck!")
 
@@ -552,6 +560,7 @@ class QuizLogic:
         self.current_answers = {}
         self.lock_order = []
         self.question_start_time = time.time()
+        self._last_countdown_second = None
         self.new_players_this_round = []
         self.sound_queue.append("new_question")
 
@@ -590,7 +599,7 @@ class QuizLogic:
         self._schedule_bots()
 
     def _enter_locking(self):
-        self.sound_queue.append("tick_urgent")
+        self.sound_queue += ["times_up", "drumroll"]
         self._say("Time's up! Locking in the last answers...")
 
     def _enter_revealing(self):
@@ -604,7 +613,7 @@ class QuizLogic:
         self._announce_overtakes(before)
         res = self.last_result
         self.pips.append("done" if res.total_answers and res.correct_rate >= 0.5 else "miss")
-        self.sound_queue.append("correct" if res.correct_players else "wrong")
+        self._stinger_due = True
         self._say(host_line_for_rate(res.correct_rate, res.total_answers))
 
     def _enter_podium(self):
