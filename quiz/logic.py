@@ -30,7 +30,7 @@ from quiz.config import (
     STREAK_BONUS_PER, MAX_STREAK_MULT,
     OTDB_BASE_URL, OTDB_TOKEN_URL, OTDB_BATCH_SIZE,
     OTDB_MIN_CACHE, OTDB_REQUEST_COOLDOWN, OTDB_SEEN_EXPIRY,
-    VOTABLE_CATEGORIES,
+    VOTABLE_CATEGORIES, RECENT_CATEGORIES,
     COMEBACK_BONUS, COMEBACK_STREAK_THRESHOLD,
     STREAK_MILESTONES,
     CHAT_FEED_MAX, CHAT_FEED_DURATION,
@@ -173,20 +173,34 @@ BOT_PROFILES = [
 
 
 
-def host_line_for_rate(rate: float, answers: int) -> str:
+REVEAL_LINES = {   # several wordings per outcome; turn picks one, so a run of similar reveals never repeats
+    "none": ("Nobody answered that one. Type 1 to 4 in chat to play!",
+             "Silence in chat! Type 1 to 4 to play along.",
+             "No answers that time. Jump in: just type 1 to 4!"),
+    "zero": ("Ouch! Nobody got that one.", "Nobody! That one beat the whole chat.",
+             "Zero right answers. That was a tough one."),
+    "brutal": ("Brutal! Only {pct}% knew it.", "Only {pct}% got that. Respect to them!",
+               "That one hurt: just {pct}% right."),
+    "tricky": ("Tricky one: {pct}% got it right.", "{pct}% got it. Chat is split!",
+               "Not easy: {pct}% right."),
+    "good": ("Nice work, chat: {pct}% got it.", "{pct}% right. Chat is warming up!",
+             "Solid: {pct}% knew that one."),
+    "easy": ("Too easy? {pct}% knew that.", "{pct}% right! Chat knows its stuff.",
+             "Chat cruised through that one: {pct}% right."),
+}
+
+
+def host_line_for_rate(rate: float, answers: int, turn: int = 0) -> str:
     """The AI host's one-liner after a reveal, by how many players got it right."""
-    if answers == 0:
-        return "Nobody answered that one. Type 1 to 4 in chat to play!"
     pct = round(rate * 100)
-    if pct == 0:
-        return "Ouch! Nobody got that one."
-    if pct < 25:
-        return f"Brutal! Only {pct}% knew it."
-    if pct < 50:
-        return f"Tricky one: {pct}% got it right."
-    if pct < 80:
-        return f"Nice work, chat: {pct}% got it."
-    return f"Too easy? {pct}% knew that."
+    bucket = ("none" if answers == 0 else "zero" if pct == 0 else "brutal" if pct < 25
+              else "tricky" if pct < 50 else "good" if pct < 80 else "easy")
+    lines = REVEAL_LINES[bucket]
+    return lines[turn % len(lines)].format(pct=pct)
+
+
+QUESTION_LINES = ("Question {n} of {of}. {cat}, {diff}.", "Here it is: {cat}, {diff}. Question {n} of {of}.",
+                  "{cat}, {diff}: question {n} of {of}.", "Question {n}! {cat}, {diff}.")
 
 
 def tier_rank(difficulty: str) -> int:
@@ -235,10 +249,10 @@ def crowd_winners(counts: list[int], minority: bool = False) -> list[int]:
     return [i for i, c in enumerate(counts) if c == target]
 
 
-def host_line_for_result(res: RoundResult) -> str:
+def host_line_for_result(res: RoundResult, turn: int = 0) -> str:
     q = res.question
     if q.kind not in CROWD_KINDS:
-        return host_line_for_rate(res.correct_rate, res.total_answers)
+        return host_line_for_rate(res.correct_rate, res.total_answers, turn)
     if res.void:
         return f"Only {res.total_answers} real players: a crowd round needs {CROWD_MIN_REAL}, so this one does not count."
     picks = " and ".join(q.options[i] for i in res.winners)
@@ -343,6 +357,8 @@ class QuizLogic:
         self._hardest_rate = 1.0           # lowest all-time right rate of a question served this match
         self._last_fact = ""               # the build-up fact kind used last, never twice in a row
         self._line_turn = 0                # rotates the build-up wordings
+        self._ask_turn = 0                 # rotates the question wordings
+        self._recent_categories: list = []   # the last voted categories: the vote does not offer them again
         self._tier_results: dict[str, list[int]] = {}   # this match: tier -> [real answers, right]
         self._tier_last: dict[str, list[int]] = {}      # the same for the last match
         self.event_feed: list[GameEvent] = []
@@ -622,9 +638,7 @@ class QuizLogic:
         self.is_double_points = False
         self.buildup = None
         self.buildup_intensity = 0.0
-        available = list(VOTABLE_CATEGORIES.items())
-        if self._current_category_id:
-            available = [(c, n) for c, n in available if c != self._current_category_id]
+        available = [(c, n) for c, n in VOTABLE_CATEGORIES.items() if c not in self._recent_categories]
         chosen = random.sample(available, 3) + [(None, "Mixed bag")]
         self.vote_state = ThemeVoteState(options={i: opt for i, opt in enumerate(chosen, 1)})
         self._say(f"Match {self.match_no} starts in {LOBBY_TIME} seconds. "
@@ -715,8 +729,9 @@ class QuizLogic:
                       f"worth {DIFFICULTY_MULT[self.level_up]:g}x points.")
         else:
             diff = self.current_question.difficulty
-            self._say(f"Question {self.q_index} of {MATCH_LENGTH}. "
-                      f"{self.current_question.category}, {diff}.")
+            self._ask_turn += 1
+            self._say(QUESTION_LINES[self._ask_turn % len(QUESTION_LINES)].format(
+                n=self.q_index, of=MATCH_LENGTH, cat=self.current_question.category, diff=diff))
 
         self.question_duration = self.state_duration
         self._schedule_bots()
@@ -861,7 +876,7 @@ class QuizLogic:
         self._track_perfect(res)
         self.pips.append("done" if res.total_answers and res.correct_rate >= 0.5 else "miss")
         self._stinger_due = True
-        self._say(host_line_for_result(res))
+        self._say(host_line_for_result(res, self.round_count))
         if res.question.kind == "minority" and not res.void:
             self._push_event("TWIST! Lonely Answer: the least picked answer wins", COLOR_AMBER, "TWST")
             self.sound_queue.append("double_points")
@@ -1263,6 +1278,8 @@ class QuizLogic:
         else:
             winner = random.choice([o for o, c in counts.items() if c == top])
         cid, name = self.vote_state.options[winner]
+        if cid:
+            self._recent_categories = (self._recent_categories + [cid])[-RECENT_CATEGORIES:]
         self._set_category(cid)
         self.match_category = name
         self._push_event(f"Category: {name}!", COLOR_TEXT_GOLD, "VOTE")

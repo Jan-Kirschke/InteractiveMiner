@@ -316,3 +316,56 @@ def test_lonely_answer_buildup_still_looks_like_crowd_mind(game):
     b = buildup_at(game, 4)
     assert game.current_question.kind == "minority" and b["kind"] == "majority"
     assert "lonely" not in (b["headline"] + b["subline"] + game.host_line).lower()
+
+
+# ------------------------------------------
+# 2. FRESH CATEGORIES, HOST-LINE VARIETY
+# ------------------------------------------
+def test_the_vote_never_offers_the_last_three_voted_categories(game, monkeypatch):
+    won = []
+    for _ in range(40):
+        game._enter_lobby()
+        offered = {cid for cid, _ in game.vote_state.options.values() if cid}
+        assert not offered & set(won[-3:]), (offered, won[-3:])
+        game.vote_state.votes = {"alice": 1}             # option 1 is always a real category
+        game._resolve_vote()
+        won.append(game.vote_state.options[1][0])
+
+
+def test_mixed_bag_does_not_use_up_a_recent_slot(game):
+    game._enter_lobby()
+    first = game.vote_state.options[1][0]
+    game.vote_state.votes = {"alice": 1}
+    game._resolve_vote()
+    for _ in range(3):
+        game._enter_lobby()
+        game.vote_state.votes = {"alice": 4}             # Mixed bag
+        game._resolve_vote()
+    for _ in range(60):                                  # 3 of 24 offered each time: it would show up
+        game._enter_lobby()
+        assert first not in {cid for cid, _ in game.vote_state.options.values()}
+
+
+def reveal_line(game, right, of):
+    classic(game)
+    for i in range(of):
+        answer_at(game, f"p{i}", 1 if i < right else 0)
+    game._enter_revealing()
+    return game.host_line
+
+
+@pytest.mark.parametrize("right,of", [(0, 0), (0, 4), (1, 10), (3, 10), (6, 10), (9, 10)])
+def test_reveal_lines_never_repeat_twice_in_a_row(game, right, of):
+    lines = [reveal_line(game, right, of) for _ in range(6)]
+    assert all(a != b for a, b in zip(lines, lines[1:])), lines
+    if of:
+        assert all(f"{round(100 * right / of)}%" in line for line in lines if right)
+
+
+def test_question_lines_vary(game):
+    import re
+    lines = []
+    for n in (1, 2, 6, 9):                                   # no event on these
+        ask(game, n)
+        lines.append(re.sub(r"\d+", "#", game.host_line).split(".")[0])   # the wording, not the category
+    assert all(a != b for a, b in zip(lines, lines[1:])), lines

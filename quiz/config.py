@@ -145,6 +145,7 @@ NUM_ANSWER_OPTIONS = 4
 # ==========================================
 # VOTABLE CATEGORIES
 # ==========================================
+RECENT_CATEGORIES = 3   # the vote never offers the last 3 voted categories
 VOTABLE_CATEGORIES = {
     9: "General Knowledge",
     10: "Books",
