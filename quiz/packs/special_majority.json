@@ -1,0 +1,17 @@
+[
+  {"type": "majority", "question": "Crowd Mind: which superpower would most of chat pick?", "options": ["Flying", "Invisibility", "Teleporting", "Reading minds"], "category": "General Knowledge", "difficulty": "easy", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: which pizza topping will most of chat choose?", "options": ["Mushrooms", "Pepperoni", "Pineapple", "Just cheese"], "category": "General Knowledge", "difficulty": "easy", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: which pet would most of chat rather have?", "options": ["Dog", "Cat", "Fish", "Parrot"], "category": "Animals", "difficulty": "easy", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: which time of day does chat love most?", "options": ["Morning", "Afternoon", "Evening", "Late night"], "category": "General Knowledge", "difficulty": "easy", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: where would most of chat rather live?", "options": ["By the beach", "In the mountains", "In a big city", "In the countryside"], "category": "Geography", "difficulty": "easy", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: which season will most of chat call the best?", "options": ["Spring", "Summer", "Autumn", "Winter"], "category": "General Knowledge", "difficulty": "easy", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: which would most of chat give up for a whole year?", "options": ["Music", "Films and TV", "Video games", "Social media"], "category": "General Knowledge", "difficulty": "medium", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: which city would most of chat visit first?", "options": ["Tokyo", "New York", "Paris", "Rio de Janeiro"], "category": "Geography", "difficulty": "easy", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: what does most of chat drink first in the morning?", "options": ["Coffee", "Tea", "Juice", "Water"], "category": "General Knowledge", "difficulty": "easy", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: which dinosaur will most of chat call the coolest?", "options": ["T. rex", "Triceratops", "Velociraptor", "Brachiosaurus"], "category": "Science & Nature", "difficulty": "easy", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: which sport would most of chat like to master instantly?", "options": ["Football", "Basketball", "Tennis", "Skateboarding"], "category": "Sports", "difficulty": "easy", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: which snack wins most of chat over while gaming?", "options": ["Crisps", "Chocolate", "Fruit", "Popcorn"], "category": "General Knowledge", "difficulty": "easy", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: with a time machine, where would most of chat go?", "options": ["The dinosaurs", "Ancient Egypt", "Medieval castles", "The year 3000"], "category": "History", "difficulty": "medium", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: which game genre does most of chat play most?", "options": ["Shooters", "Role-playing", "Puzzle", "Racing and sports"], "category": "Entertainment: Video Games", "difficulty": "medium", "fact": ""},
+  {"type": "majority", "question": "Crowd Mind: which would most of chat rather be?", "options": ["Rich", "Famous", "Very smart", "Always lucky"], "category": "General Knowledge", "difficulty": "medium", "fact": ""}
+]
