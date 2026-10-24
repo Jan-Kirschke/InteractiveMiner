@@ -47,6 +47,7 @@ def test_loader_skips_items_a_round_cannot_play(tmp_path):
         {"type": "higher_lower", "question": "Higher or lower: x?", "options": ["More", "Less"], "answer": 0},
         {"type": "higher_lower", "question": "No answer?", "options": ["More", "Less"]},
         {"type": "higher_lower", "question": "Answer out of range?", "options": ["More", "Less"], "answer": 2},
+        {"type": "higher_lower", "question": "Four options?", "options": ["A", "B", "C", "D"], "answer": 0},
         {"type": "odd_one_out", "question": "Two options?", "options": ["A", "B"], "answer": 0},
         {"type": "majority", "question": "Duplicate options?", "options": ["A", "A", "B"]},
         {"type": "number", "question": "Year?", "answer": 1889},
@@ -265,6 +266,26 @@ def test_lonely_twist_stays_hidden_until_the_reveal(game, monkeypatch):
         game.current_answers[u] = (c, time.time())
     game._transition_to(GameState.REVEALING)
     assert "lonely" in game.host_line.lower()
+
+
+# ------------------------------------------
+# HIGHER OR LOWER: two options, classic scoring
+# ------------------------------------------
+def test_higher_lower_takes_only_1_or_2_and_scores_like_classic(game, monkeypatch):
+    monkeypatch.setattr(logic_mod, "MIN_PLAYERS", 4)
+    game._last_round_real_players = set()
+    q = ask(game, 2)
+    assert q.kind == "higher_lower" and len(q.options) == 2
+    assert "type 1 or 2" in game.host_line.lower()
+    assert all(0 <= c < 2 for _, c, _ in game._scheduled_bots)
+    game.process_message("bob", "3")
+    assert "bob" not in game.current_answers
+    right, wrong = q.correct_index, 1 - q.correct_index
+    answer_at(game, "alice", right, 1)
+    answer_at(game, "bob", wrong, 1)
+    res = game._resolve_question()
+    assert [(u, p) for u, p, _ in res.correct_players] == [("alice", 20)]
+    assert res.winners == [right] and game.db.get_or_create_player("bob").wrong_answers == 1
 
 
 def test_empty_deck_falls_back_to_a_classic_question(game, tmp_path):

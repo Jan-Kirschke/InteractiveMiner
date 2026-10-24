@@ -189,7 +189,10 @@ def host_line_for_rate(rate: float, answers: int) -> str:
 
 CROWD_KINDS = ("majority", "minority")
 _CROWD_INTRO = "Crowd Mind! No right answer: pick what you think most of chat will pick."
-SPECIAL_INTROS = {"majority": _CROWD_INTRO, "minority": _CROWD_INTRO}   # Lonely Answer hides as Crowd Mind
+SPECIAL_INTROS = {
+    "majority": _CROWD_INTRO, "minority": _CROWD_INTRO,   # Lonely Answer hides as Crowd Mind
+    "higher_lower": "Higher or lower! Just two choices: type 1 or 2.",
+}
 
 
 def crowd_winners(counts: list[int], minority: bool = False) -> list[int]:

@@ -44,6 +44,7 @@ DIFF_COLORS = {"easy": GOOD, "medium": (255, 159, 28), "hard": BAD}
 ROUND_STYLE = {
     "majority": ("CROWD MIND", (255, 140, 200), "No right answer: pick what most of chat picks", "CROWD PICK"),
     "minority": ("TWIST: LONELY ANSWER", (255, 128, 64), "The least picked answer wins", "LONELY PICK"),
+    "higher_lower": ("HIGHER OR LOWER", (150, 230, 90), "Two choices: type 1 or 2", "CORRECT"),
 }
 
 

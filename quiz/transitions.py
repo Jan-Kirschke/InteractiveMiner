@@ -54,6 +54,7 @@ BAND_COLORS = (PINK, BLUE, ORANGE, TEAL)   # answer 1-4 order, front band first
 CROWD_PINK = (255, 140, 200)
 SPECIAL_BUMPERS = {
     "majority": ("CROWD MIND", CROWD_PINK, [("NO RIGHT ANSWER", INK), ("  ·  MATCH THE CROWD", LILAC)]),
+    "higher_lower": ("HIGHER OR LOWER", (150, 230, 90), [("TWO CHOICES", INK), ("  ·  TYPE 1 OR 2", LILAC)]),
 }
 SPECIAL_BUMPERS["minority"] = SPECIAL_BUMPERS["majority"]   # Lonely Answer's twist waits for the reveal
 

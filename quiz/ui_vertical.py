@@ -209,7 +209,8 @@ class VerticalUI(UIManager):
                 self.screen.blit(self._alpha_rect(int(bar_w * build), 12, (*ACCENT, 255), 6), (bx, by))
 
         top = tcy + 116
-        h = min(150, (SAFE_BOTTOM - 70 - top - 3 * 22) // 4)
+        n = len(q.options)   # two (true/false, higher or lower) get taller buttons
+        h = min(150 if n > 2 else 200, (SAFE_BOTTOM - 70 - top - (n - 1) * 22) // max(1, n))
         for i, (opt, rect) in enumerate(zip(q.options, self._v_option_rects(top, h))):
             p = ease_out_back(progress(q_age, 0.25 + i * 0.07, 0.45))
             if p <= 0:
@@ -218,9 +219,10 @@ class VerticalUI(UIManager):
                            dim=0.35 if locking else 0.0)
 
         # Who just locked in (newest first) under the buttons
-        ly = top + 4 * h + 3 * 22 + 44
-        n = logic.answer_count
-        label = f"{n} LOCKED IN" if n else "TYPE 1, 2, 3 OR 4 IN CHAT"
+        ly = top + n * h + (n - 1) * 22 + 44
+        locked = logic.answer_count
+        hint = "TYPE 1 OR 2 IN CHAT" if n == 2 else "TYPE 1, 2, 3 OR 4 IN CHAT"
+        label = f"{locked} LOCKED IN" if locked else hint
         r = self._text("black", 34, label, ACCENT, (W // 2, ly), "center")
         names = [nm.replace("[Bot] ", "") for nm, _ in reversed(logic.lock_order[-3:])]
         if names:
