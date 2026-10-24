@@ -372,6 +372,7 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
         "text_cache_mb": surf_mb(getattr(ui, "_text_cache", {})),
         "surf_cache_mb": surf_mb(getattr(ui, "_surf_cache", {})),
         "fx_cache_mb": surf_mb(getattr(getattr(ui, "fx", None), "_cache", {})),
+        "gfx_cache_mb": surf_mb(getattr(sys.modules.get("quiz.gfx"), "_cache", {})),
         "players_in_memory": len(db._players), "dirty_left": len(db._dirty),
         "text_cache": len(getattr(ui, "_text_cache", {})), "surf_cache": len(getattr(ui, "_surf_cache", {})),
         "event_feed": len(logic.event_feed), "seen_questions": len(logic._seen_questions),
