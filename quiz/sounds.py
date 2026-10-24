@@ -794,8 +794,11 @@ STAKES_AT = 1.2                            # seconds into BUILDUP when the stake
 
 
 def _sfx_buildup(v=0):
-    """BUILDUP before a question: a riser into the stakes hit at 1.2 s, then a tension pulse
-    that swells into the question. Intensity adds layers (Q1 light, Q10 full); still warm."""
+    """The BUILDUP bed, one per state length and intensity: a riser and a timpani roll into the
+    stakes hit at 1.2 s, then the question bed's own bass on an E pedal (the dominant) under an
+    E chord that swells, so ASKING's A minor lands as the resolution. Its beat grid counts back
+    from the end of the state, so the question bed's first downbeat falls on the grid. Intensity
+    adds the marimba pulse, a heartbeat, E7 and a low string (Q1 light, Q10 full)."""
     dur = BUILDUP_LENGTHS[v // len(BUILDUP_STEPS)]
     k = BUILDUP_STEPS[v % len(BUILDUP_STEPS)]
     parts = [(0, _air(STAKES_AT, 150, 1000 + 400 * k, rise=True), 0.35 + 0.2 * k),
@@ -804,19 +807,27 @@ def _sfx_buildup(v=0):
     for i in range(roll):
         tt = STAKES_AT * (1 - (1 - i / roll) ** 1.6)
         parts.append((tt, _mallet(hz("A2" if i % 2 else "E3"), 0.3), 0.15 + 0.3 * i / roll))
-    pulse_t = np.arange(STAKES_AT + BEAT / 2, dur - 0.05, BEAT / (2 if k < 0.5 else 4))
-    for i, tt in enumerate(pulse_t):      # the pulse after the stakes: A and E, growing
-        g = (tt - STAKES_AT) / (dur - STAKES_AT)
-        parts.append((tt, _marimba(hz("A4" if i % 2 == 0 else "E5"), 0.15, 16), (0.12 + 0.15 * g) * (0.7 + 0.3 * k)))
-    if k > 0:                               # a heartbeat on the beat
-        for tt in np.arange(STAKES_AT + BEAT, dur - 0.1, BEAT):
-            parts.append((tt, _thump(0.35, 60), 0.3 * k))
+    grid = [dur - j * BEAT / 4 for j in range(1, int((dur - STAKES_AT) / (BEAT / 4)) + 1)][::-1]
+    bass = _voice(hz("E1") * 2, 0.2, harmonics=6, bright=2.0, decay=10)   # the question bed's bass voice
+    for j, tt in enumerate(grid):
+        g = (tt - STAKES_AT) / (dur - STAKES_AT)          # 0 -> 1 towards the question
+        step = len(grid) - 1 - j                          # sixteenths before the end
+        if step % 2 == 1:                                 # eighths
+            parts.append((tt, bass, (0.2 + 0.15 * g) * (1.0 if step % 4 == 3 else 0.7)))
+            if k > 0:
+                parts.append((tt, _marimba(hz("B4" if step % 4 == 3 else "E5"), 0.15, 16), (0.08 + 0.12 * g) * k))
+        elif k >= 1.0:                                    # full intensity: sixteenths
+            parts.append((tt, _marimba(hz("E5"), 0.1, 22), 0.05 + 0.08 * g))
+        if k > 0 and step % 4 == 3:                       # a heartbeat on the beat
+            parts.append((tt, _thump(0.35, 60), (0.15 + 0.2 * g) * k))
+    chord = ["E3", "G#3", "B3"] + (["D4"] if k >= 0.5 else [])
+    parts.append((STAKES_AT, _pad(chord, dur - STAKES_AT, attack=dur - STAKES_AT - 0.3), 0.3 + 0.1 * k))
     if k >= 0.5:                            # a low string swelling to the question
-        swell = _voice(hz("A2"), dur - STAKES_AT, harmonics=6, bright=0.4, decay=0.1, attack=dur - STAKES_AT - 0.2,
+        swell = _voice(hz("E2"), dur - STAKES_AT, harmonics=6, bright=0.4, decay=0.1, attack=dur - STAKES_AT - 0.2,
                        detune=0.004)
         parts.append((STAKES_AT, swell, 0.3 * k))
     parts.append((dur - 0.9, _air(0.9, 150, 1200, rise=True), 0.25 + 0.2 * k))
-    return _fade_st(_finish(parts, 1.2, 0.18, length=int(dur * SR))[:int(dur * SR)], 0.1)   # ends with the state
+    return _fade_st(_finish(parts, 1.2, 0.18, length=int(dur * SR))[:int(dur * SR)], 0.05)   # ends with the state
 
 
 def _sfx_stakes(v=0):
@@ -880,7 +891,8 @@ def variant_key(name: str, v: int) -> str:
     return name if v == 0 else f"{name}~{v}"
 
 
-# Which bed plays in which game state (None = music out, the moment belongs to the effects)
+# Which bed plays in which game state (None = music out, the moment belongs to the effects;
+# BUILDUP's bed is the "buildup" cue, cut to the state length, on its own channel)
 SCENE_MUSIC = {"WAITING": "lobby", "LOBBY": "lobby", "INTRO": None, "BUILDUP": None, "ASKING": "question",
                "LOCKING": None, "REVEALING": None, "PODIUM": "lobby"}
 STINGERS = ("correct", "wrong")   # the reveal: drumroll ends, the results bed comes in under the stinger
@@ -889,7 +901,10 @@ DUCK = {**{n: 0.5 for n in ("correct", "show_open", "fanfare", "podium_1", "jack
         **{n: 0.7 for n in ("halftime", "wrong", "double_points", "round_sting", "level_up", "podium_2", "podium_3",
                             "event_sweep", "rank_up", "crowd")}}
 # Minimum spacing per cue (s): repeats inside it are dropped (chat bursts, a cue queued twice)
-COOLDOWN = {"answer_lock": 0.15, "vote": 0.3, "tick_soft": 0.2, "countdown": 0.5, "combo": 0.25, "streak": 0.4}
+# answer_lock: at most ~4 soft clicks a second however fast chat answers; vote likewise for votes,
+# !half and !crew; !duel's double_points and !accept's rank_up are stings, so a burst is one.
+COOLDOWN = {"answer_lock": 0.25, "vote": 0.4, "tick_soft": 0.2, "countdown": 0.5, "combo": 0.25, "streak": 0.4,
+            "double_points": 3.0, "rank_up": 1.5, "power_up": 1.0, "crowd": 2.0}
 DEFAULT_COOLDOWN = 0.8
 
 
@@ -958,25 +973,64 @@ def _ui_timing():
             "podium": {0: podium.get(0, 3.0), 1: podium.get(1, 1.95), 2: podium.get(2, 0.9)}}
 
 
+CONTROLLER_TIMED = ("buildup", "stakes")   # the controller plays these from the state clock, never from the queue
+
+
 class ShowCues:
     """Cues the logic does not queue, derived each frame from logic.state and its clock, timed to
     the visuals in quiz/ui_vertical.py and quiz/transitions.py (docs/transitions.md). Each cue
-    fires once per state visit."""
+    fires once per state visit.
+
+    route() takes the cues the logic queued and holds the ones that would land on top of a bigger
+    moment until their own visual beat: the round's combo / power-up / rank toasts wait for the
+    fastest-players panel instead of crowding the stinger, halftime waits for its card (once,
+    whether the logic or the clock asks), level_up waits for the stakes, round_sting for the
+    open's hit, jackpot / team_win for the podium's first place."""
 
     def __init__(self):
         from quiz.config import BONUS_QUESTIONS, LIGHTNING_QUESTION, MATCH_LENGTH
         self.match_length, self.lightning, self.bonus = MATCH_LENGTH, LIGHTNING_QUESTION, BONUS_QUESTIONS
-        self.timing = _ui_timing()
+        self.timing = tm = _ui_timing()
+        panel = tm["panel"]
+        self.hold = {
+            "REVEALING": {"combo": panel, "streak": panel + 0.15, "power_up": panel + 0.4, "rank_up": panel + 0.7,
+                          "crowd": panel + 1.0, "double_points": 1.6, "halftime": tm["half"]},
+            "PODIUM": {"jackpot": tm["podium"][0] + 1.4, "team_win": tm["podium"][0] + 1.4},
+            "BUILDUP": {"level_up": STAKES_AT + 1.2},
+            "INTRO": {"round_sting": 0.55},
+        }
         self._visit = None
         self._fired: set[str] = set()
+        self._held: list[tuple[str, float]] = []
 
-    def update(self, logic) -> list[str]:
+    def _sync(self, logic):
         state = getattr(logic.state, "name", str(logic.state))
         visit = (state, logic.state_start_time)
-        if visit != self._visit:
-            self._visit, self._fired = visit, set()
+        if visit != self._visit:   # a new state visit: held cues of the last one are dropped
+            self._visit, self._fired, self._held = visit, set(), []
+        return state, logic.state_duration - logic.state_timer
+
+    def route(self, names, logic) -> list[str]:
+        """The logic's queued cues: those to play now; the others are held for update()."""
+        state, age = self._sync(logic)
+        hold = self.hold.get(state, {})
+        out = []
+        for name in names:
+            if name in CONTROLLER_TIMED:
+                continue
+            due = hold.get(name)
+            if due is None:
+                out.append(name)
+            elif age < due:                    # update() releases it once (at() dedupes)
+                self._held.append((name, due))
+            elif name not in self._fired:      # queued after its beat: now, unless it played
+                self._fired.add(name)
+                out.append(name)
+        return out
+
+    def update(self, logic) -> list[str]:
+        state, age = self._sync(logic)
         rem = logic.state_timer
-        age = logic.state_duration - rem
         out: list[str] = []
 
         def at(name, due):
@@ -984,6 +1038,9 @@ class ShowCues:
                 self._fired.add(name)
                 out.append(name)
 
+        for name, due in self._held:
+            at(name, age >= due)
+        self._held = [(n, d) for n, d in self._held if n not in self._fired]
         tm, q = self.timing, getattr(logic, "q_index", 0)
         if state == "BUILDUP":
             at("buildup", True)
@@ -1033,6 +1090,7 @@ class SoundManager:
         self._last_variant: dict[str, int] = {}
         self._music: dict[str, pygame.mixer.Sound] = {}
         self._scene_bed = None
+        self._scene_state = ""
         self._wanted_bed = "lobby"
         self._drumroll_seconds = drumroll_seconds
         self._duck_until, self._duck_depth, self._duck = 0.0, 1.0, 1.0
@@ -1049,7 +1107,7 @@ class SoundManager:
         self._bed_channels = [pygame.mixer.Channel(0), pygame.mixer.Channel(1)]
         self._roll_channel = pygame.mixer.Channel(2)
         self._layer_channel = pygame.mixer.Channel(3)   # the question bed's tension layer
-        self._riser_channel = pygame.mixer.Channel(4)   # the BUILDUP riser
+        self._riser_channel = pygame.mixer.Channel(4)   # the BUILDUP bed
         self._enabled = True
         threading.Thread(target=self._generate, daemon=True).start()
 
@@ -1083,12 +1141,16 @@ class SoundManager:
             self._roll_channel.fadeout(150)
         if state_name != "BUILDUP":
             self._riser_channel.fadeout(250)
+        # out of BUILDUP the question bed comes in on its downbeat, not over a slow fade
+        fade = 120 if self._scene_state == "BUILDUP" else self.MUSIC_FADE_MS
+        self._scene_state = state_name
         self._wanted_bed = SCENE_MUSIC.get(state_name, "lobby")
-        self._apply_bed()
+        self._apply_bed(fade)
 
-    def _apply_bed(self):
+    def _apply_bed(self, fade_ms: int | None = None):
         if not self._enabled or not self._music or self._wanted_bed == self._scene_bed:
             return
+        fade_ms = self.MUSIC_FADE_MS if fade_ms is None else fade_ms
         old, new = self._bed_channels
         if self._scene_bed:
             old.fadeout(self.MUSIC_FADE_MS if self._wanted_bed else 250)
@@ -1096,10 +1158,10 @@ class SoundManager:
             self._layer_channel.fadeout(self.MUSIC_FADE_MS if self._wanted_bed else 250)
         self._scene_bed = self._wanted_bed
         if self._wanted_bed:
-            new.play(self._music[self._wanted_bed], loops=-1, fade_ms=self.MUSIC_FADE_MS)
+            new.play(self._music[self._wanted_bed], loops=-1, fade_ms=fade_ms)
             layer = self._music.get("question_tension")
             if self._wanted_bed == "question" and layer:   # same length, started together: in sync
-                self._layer_channel.play(layer, loops=-1, fade_ms=self.MUSIC_FADE_MS)
+                self._layer_channel.play(layer, loops=-1, fade_ms=fade_ms)
             self._bed_channels = [new, old]
         self._applied = None
 

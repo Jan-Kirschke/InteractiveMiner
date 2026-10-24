@@ -166,11 +166,11 @@ def test_repeated_cues_vary_and_respect_their_cooldown(manager, monkeypatch):
     monkeypatch.setattr(S.time, "monotonic", lambda: clock[0])
     for _ in range(6):
         manager.play("vote")
-        clock[0] += 0.35
+        clock[0] += 0.45
     a, b = manager._sounds["vote"]
     assert (a.plays, b.plays) == (3, 3)   # alternates, never the same voicing twice in a row
     manager.play("vote")
-    manager.play("vote")                  # inside the 0.3 s cooldown: dropped
+    manager.play("vote")                  # inside the 0.4 s cooldown: dropped
     assert a.plays + b.plays == 7
 
 
@@ -191,3 +191,42 @@ def test_controller_times_buildup_and_stakes_and_feeds_the_tension():
     logic.sound_queue, logic.state_timer = [], 6.0 - S.STAKES_AT
     g._play_sounds()
     assert calls[-2:] == ["stakes", ("tension", 0.8)]
+
+
+def test_chat_cues_play_in_the_frame_they_are_queued(tmp_path, monkeypatch):
+    """logic.update() clears sound_queue, and chat runs before it: the controller must play
+    what chat queued right away, and not replay the last update's cues."""
+    import queue
+    import time
+
+    import quiz.logic as logic_mod
+    from quiz.chat import ChatMessage
+    from quiz.controller import MainGameController
+    from quiz.db import QuizDatabase
+    monkeypatch.setattr(logic_mod, "requests", None)
+    db = QuizDatabase(str(tmp_path / "q.db"))
+    logic = logic_mod.QuizLogic(db)
+    logic.update(0.0)                      # WAITING -> LOBBY: queues a whoosh, played by _play_sounds
+    assert logic.state == GameState.LOBBY and "whoosh" in logic.sound_queue
+    played = []
+    g = MainGameController.__new__(MainGameController)
+    g.logic, g._cues, g.msg_queue = logic, S.ShowCues(), queue.Queue()
+    g.sounds = SimpleNamespace(play=lambda n, variant=None: played.append(n))
+    g.msg_queue.put(ChatMessage(username="viewer", message="2", timestamp=time.time(), raw="2"))
+    g._process_chat()
+    assert played == ["vote"] and "vote" not in logic.sound_queue
+    db.close()
+
+
+def test_result_cues_wait_for_their_beat_and_halftime_plays_once():
+    cues = S.ShowCues()
+    logic = _logic(GameState.REVEALING, 8.0, q_index=5, standings={"a": 1})
+    assert cues.route(["whoosh", "combo", "halftime", "halftime"], logic) == ["whoosh"]
+    fired = _run(cues, logic)
+    t = dict((n, a) for a, n in fired)
+    assert [n for _, n in fired].count("halftime") == 1 and abs(t["halftime"] - 3.9) < 0.05
+    assert abs(t["combo"] - 1.85) < 0.05
+    late = _logic(GameState.REVEALING, 8.0)
+    late.state_timer = 2.0                 # queued after its beat (a chat !accept at 6 s): plays now
+    assert cues.route(["rank_up"], late) == ["rank_up"]
+    assert cues.route(["halftime"], late) == []   # the card's cue already played this visit

@@ -153,21 +153,27 @@ class MainGameController:
             pass
 
     def _process_chat(self):
+        queue = self.logic.sound_queue
+        played = len(queue)   # the last update's cues, already played
         while not self.msg_queue.empty():
             msg = self.msg_queue.get()
             if msg.username.lower() in CHAT_BOTS:
                 continue  # moderator bots post how-to-play timers; they never play
             # Speed counts from when the player sent it (YouTube's timestamp)
             self.logic.process_message(msg.username, msg.message, msg.raw, at=msg.timestamp)
+        # Chat runs before logic.update(), which clears the queue: play what chat queued now
+        # (answer clicks, votes, !half, !crew, !duel, !accept; SoundManager caps the bursts).
+        for name in self._cues.route(queue[played:], self.logic):
+            self.sounds.play(name)
+        del queue[played:]
 
     def _play_sounds(self):
         """The logic's queued cues, plus the cues ShowCues derives from its state clock (reveal
-        sweep, points, standings, halftime, podium places, sweeps, BUILDUP riser and stakes).
+        sweep, points, standings, halftime, podium places, sweeps, BUILDUP bed and stakes).
         SoundManager rate-limits repeats and ignores names it has no sound for."""
         logic = self.logic
-        for sound_name in logic.sound_queue:
-            if sound_name not in ("buildup", "stakes"):   # timed here, from the state clock
-                self.sounds.play(sound_name)
+        for sound_name in self._cues.route(logic.sound_queue, logic):   # some wait for their visual beat
+            self.sounds.play(sound_name)
         for cue in self._cues.update(logic):
             if cue == "buildup":
                 info = getattr(logic, "buildup", None) or {}
