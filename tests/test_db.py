@@ -92,6 +92,44 @@ def test_ladders_follow_the_week_and_the_roster_without_points_changing(db, monk
     assert names(db.get_top_players()) == ["ann", "cat"]
 
 
+def ref_find_player(db, name):
+    want = name.strip().lstrip("@").lower()
+    for u in db._players:
+        if u.lstrip("@").lower() == want and not is_bot(u):
+            return u
+    return None
+
+
+def test_find_player_matches_the_scan(db):
+    # Mentions resolve like the old full scan: case-insensitive, "@" ignored, first player wins
+    # when two names differ only in case, bots never.
+    for u in ["Lena_K", "@owlbert", "lena_k", "Ünal", BOT_PREFIX + "Rookie", "Max"]:
+        db.get_or_create_player(u)
+    probes = ["lena_k", "@LENA_K", " owlbert ", "@@owlbert", "ünal", "ÜNAL", "[bot] rookie",
+              BOT_PREFIX + "Rookie", "max", "nobody", "", "@"]
+    for p in probes:
+        assert db.find_player(p) == ref_find_player(db, p), p
+    db.remove_players(["Lena_K"])
+    db.get_or_create_player("Newbie")
+    for p in probes + ["newbie"]:
+        assert db.find_player(p) == ref_find_player(db, p), p
+
+
+def test_find_player_does_not_scan_every_player_per_mention(db):
+    class Counting(dict):
+        scans = 0
+
+        def __iter__(self):
+            Counting.scans += 1
+            return super().__iter__()
+    for i in range(1000):
+        db.get_or_create_player(f"u{i}")
+    db._players = Counting(db._players)
+    for i in range(50):                  # 50 "!duel @u.." in a row
+        db.find_player(f"@u{i * 7}")
+    assert Counting.scans <= 1
+
+
 FIELDS = ("score", "streak", "best_streak", "rank", "games_played", "correct_answers", "wrong_answers",
           "wrong_streak", "participation_streak", "streak_shield", "weekly_score", "week", "day_streak",
           "last_day", "crew", "duel_wins", "duel_losses")

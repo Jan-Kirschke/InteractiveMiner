@@ -56,6 +56,8 @@ class QuizDatabase:
         self._weekly: list[Player] = []
         self._weekly_pos: dict[str, int] | None = None
         self._lifetime: list[Player] | None = None
+        self._names: dict[str, str] = {}   # find_player: lower-case name without "@" -> username
+        self._names_key = None
         self._load_all()
 
     def _create_tables(self):
@@ -192,10 +194,13 @@ class QuizDatabase:
     def find_player(self, name: str) -> str | None:
         """Resolve a chat mention ("@Lena_K", "lena_k") to a known username."""
         want = name.strip().lstrip("@").lower()
-        for u in self._players:
-            if u.lstrip("@").lower() == want and not is_bot(u):
-                return u
-        return None
+        if self._names_key != self._roster:  # names only change with the roster
+            index = {}
+            for u in self._players:
+                if not is_bot(u):
+                    index.setdefault(u.lstrip("@").lower(), u)  # first in roster order, as the scan was
+            self._names, self._names_key = index, self._roster
+        return self._names.get(want)
 
     def crew_members(self, crew: str) -> list[str]:
         return [u for u, p in self._players.items() if p.crew == crew]
