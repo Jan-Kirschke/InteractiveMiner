@@ -24,7 +24,7 @@ from quiz.chat import ChatManager
 from quiz.logic import QuizLogic
 from quiz.ui import UIManager
 from quiz.ui_vertical import VerticalUI
-from quiz.sounds import SoundManager
+from quiz.sounds import ShowCues, SoundManager
 from quiz.ytchat import page_url
 from quiz.broadcaster import YouTubeBroadcaster
 
@@ -58,6 +58,7 @@ class MainGameController:
         self.chat = ChatManager(chat_urls, self.msg_queue, offline=offline)
         self.ui = (VerticalUI if VERTICAL else UIManager)(self.screen)
         self.sounds = SoundManager(drumroll_seconds=LATE_ANSWER_GRACE + REVEAL_AT)
+        self._cues = ShowCues()
 
         # YouTube Live broadcaster (started in run() so frames are available immediately)
         self.broadcaster = YouTubeBroadcaster(
@@ -160,14 +161,24 @@ class MainGameController:
             self.logic.process_message(msg.username, msg.message, msg.raw, at=msg.timestamp)
 
     def _play_sounds(self):
-        """Play all queued sounds from logic with appropriate rate limiting."""
-        for sound_name in self.logic.sound_queue:
-            if sound_name == "answer_lock":
-                self.sounds.play_throttled(sound_name, 0.15)
-            elif sound_name == "vote":
-                self.sounds.play_throttled(sound_name, 0.3)
-            else:
+        """The logic's queued cues, plus the cues ShowCues derives from its state clock (reveal
+        sweep, points, standings, halftime, podium places, sweeps, BUILDUP riser and stakes).
+        SoundManager rate-limits repeats and ignores names it has no sound for."""
+        logic = self.logic
+        for sound_name in logic.sound_queue:
+            if sound_name not in ("buildup", "stakes"):   # timed here, from the state clock
                 self.sounds.play(sound_name)
+        for cue in self._cues.update(logic):
+            if cue == "buildup":
+                info = getattr(logic, "buildup", None) or {}
+                self.sounds.play_buildup(info.get("intensity", getattr(logic, "buildup_intensity", 0.0)),
+                                         logic.state_duration)
+            elif cue == "stakes":
+                self.sounds.play_stakes()
+            else:
+                self.sounds.play(cue)
+        self.sounds.set_tension(getattr(logic, "buildup_intensity", 0.0) or 0.0)
+        self.sounds.update()
 
     def _start_music_when_ready(self):
         """Start background music once it's finished generating."""
