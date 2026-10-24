@@ -16,10 +16,10 @@ import pygame
 
 from quiz.config import SCREEN_WIDTH, SCREEN_HEIGHT, FONT_DIR, MATCH_LENGTH, REVEAL_AT
 from quiz.models import GameState
-from quiz.gfx import SurfCache
+from quiz.gfx import SurfCache, edge_glow
 from quiz.logic import is_bot
 from quiz.motion import clamp01, heartbeat, lerp, out_back, out_cubic, progress, smoothstep
-from quiz.transitions import Transitions
+from quiz.transitions import BUILDUP, Transitions
 
 # ==========================================
 # PALETTE
@@ -41,7 +41,7 @@ EVENT_STYLE = {
     "first_blood": ("FIRST BLOOD BONUS", (255, 110, 110)),
     "jackpot": ("JACKPOT ROUND", (190, 120, 255)),
 }
-DIFF_COLORS = {"easy": GOOD, "medium": (255, 159, 28), "hard": BAD}
+DIFF_COLORS = {"easy": GOOD, "medium": (255, 159, 28), "hard": BAD, "expert": (190, 140, 255)}
 # Special rounds (quiz/special.py): kind -> (chip label, colour, rule under the question, tag on the winner)
 ROUND_STYLE = {
     "majority": ("CROWD MIND", (255, 140, 200), "No right answer: pick what most of chat picks", "CROWD PICK"),
@@ -443,28 +443,36 @@ class UIManager:
             self._burst_done = set()
             if state == GameState.LOBBY:
                 self._vote_bars = {}
+            elif state == BUILDUP:
+                # The next question is already served; its options must not show before ASKING.
+                # The build-up's cover closes over the last frame of the state before, frozen.
+                self._freeze = self.screen.copy()
         age = now - self._state_enter
         self.fx.cue(logic, now)
 
-        self._draw_stage(now, dt)
-        if state == GameState.INTRO:
-            self._draw_intro(logic, age)
-        else:
-            self._draw_header(logic, status, now)
-            if state == GameState.LOBBY:
-                self._draw_lobby(logic, age, dt)
-            elif state in (GameState.ASKING, GameState.LOCKING):
-                self._draw_question(logic, age, now)
-                self._draw_rail_live(logic, now)
-                self._draw_toast(logic, now)
-            elif state == GameState.REVEALING:
-                self._draw_reveal(logic, age)
-            elif state == GameState.PODIUM:
-                self._draw_podium(logic, age)
+        if state == BUILDUP:
+            if not self.fx.covered(now) and getattr(self, "_freeze", None) is not None:
+                self.screen.blit(self._freeze, (0, 0))
+        elif not self.fx.covered(now):   # a cut-away hides everything: skip the frame underneath
+            self._draw_stage(now, dt)
+            if state == GameState.INTRO:
+                self._draw_intro(logic, age)
             else:
-                self._text("display", 90, "THE LIFELONG QUIZ", ACCENT, (SCREEN_WIDTH // 2, 470), "center")
-            self._draw_footer(logic, now)
-            self._draw_player_card(logic, now)
+                self._draw_header(logic, status, now)
+                if state == GameState.LOBBY:
+                    self._draw_lobby(logic, age, dt)
+                elif state in (GameState.ASKING, GameState.LOCKING):
+                    self._draw_question(logic, age, now)
+                    self._draw_rail_live(logic, now)
+                    self._draw_toast(logic, now)
+                elif state == GameState.REVEALING:
+                    self._draw_reveal(logic, age)
+                elif state == GameState.PODIUM:
+                    self._draw_podium(logic, age)
+                else:
+                    self._text("display", 90, "THE LIFELONG QUIZ", ACCENT, (SCREEN_WIDTH // 2, 470), "center")
+                self._draw_footer(logic, now)
+                self._draw_player_card(logic, now)
         self.fx.draw(self.screen, now)
         self._draw_confetti(dt)
         pygame.display.flip()
@@ -901,24 +909,9 @@ class UIManager:
                 pygame.draw.circle(self.screen, mix(BG_STAGE, (0, 0, 0), 0.2), (x, y), f.r // 2.4)
 
     def _draw_vignette(self, color, strength):
-        """Coloured glow on the four screen edges (pre-rendered strips: cheap enough for the server)."""
-        key = tuple(color)
-        if key not in self._vignettes:
-            depth = 110
-            top = pygame.Surface((SCREEN_WIDTH, depth), pygame.SRCALPHA)
-            side = pygame.Surface((depth, SCREEN_HEIGHT), pygame.SRCALPHA)
-            for d in range(depth):
-                a = int(150 * (1 - d / depth) ** 2.2)
-                top.fill((*color, a), (0, d, SCREEN_WIDTH, 1))
-                side.fill((*color, a), (d, 0, 1, SCREEN_HEIGHT))
-            self._vignettes[key] = (top, pygame.transform.flip(top, False, True),
-                                    side, pygame.transform.flip(side, True, False))
-        top, bottom, left, right = self._vignettes[key]
-        alpha = int(255 * clamp01(strength))
-        for surf, pos in ((top, (0, 0)), (bottom, (0, SCREEN_HEIGHT - bottom.get_height())),
-                          (left, (0, 0)), (right, (SCREEN_WIDTH - right.get_width(), 0))):
-            surf.set_alpha(alpha)
-            self.screen.blit(surf, pos)
+        """Coloured light on the four screen edges: additive stepped fills, no surfaces (the
+        alpha strips it replaces cost 1.6 ms per frame at 1080x1920; this costs about 0.1 ms)."""
+        edge_glow(self.screen, color, strength)
 
     def _draw_rail_live(self, logic, now):
         x, y = RAIL_X, BODY_Y

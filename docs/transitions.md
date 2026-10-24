@@ -1,223 +1,155 @@
-# Transitions and cutscenes
+# Transitions, build-up and brand moments
 
-Goal: make the show move like HQ Trivia (flat violet stage, bold white type, flat circles,
-rings, crosses and hex nuts in the answer colours) without hiding anything players need.
-Prototype: `quiz/transitions.py`. It does not depend on `quiz/ui.py`, works at any size
-(16:9 TV and 9:16 Shorts), and has not been wired in yet.
+`quiz/transitions.py` draws every cut-away of the show: the match open, the build-up before
+each question, the halftime ribbon, the final curtain and the next-match sweep. It depends
+only on `quiz.config`, `quiz.models`, `quiz.special`, `quiz.motion` and `quiz.gfx`, works at
+any size (9:16 Shorts and 16:9 TV), and takes its geometry from the surface it draws to.
 
-## 1. Audit of the current motion (quiz/ui.py, quiz/ui_vertical.py)
+Rule for every cut-away: **cover in the dead tail of the outgoing state, uncover in the
+first few hundred ms of the incoming state.** No state duration, timer or answer window
+changes.
 
-**Always moving (ambient):** the background is pre-rendered. Two 820 px spotlights drift
-across it (additive blits), with 16 flat floaters and 45 dust motes. Small pulses: the live
-dot and the current match pip. The host caption types out with "voice" bars.
+## 1. The flow of a match
 
-**Moves on entry, then static:**
-
-| State | What animates | Then |
-|---|---|---|
-| LOBBY | countdown pop in the last 10 s, vote cards ease-out-back, vote bars ease toward their share, social panels slide up | static apart from the bars |
-| INTRO (4 s) | shine sweep, "MATCH N" scales 2.4x to 1x (smoothscale every frame), category slides, 3-2-1 pops | it is the only real sting |
-| ASKING | question lines fade up (staggered), options pop (scale 0.85 to 1, 0.25 to 0.9 s), lock-ins slide into the rail | ring timer; heartbeat ring and red vignette in the last 5 s |
-| LOCKING | "TIME'S UP" stamp slams in (rotozoom every frame), jitter, yellow vignette, lock bar | options snap to dimmed in one frame |
-| REVEALING | answer split counts up, the correct card lifts, outline and ring burst at 1.1 s, confetti, the "knew it" panel slides in at 1.5 s, fastest-right rows pop | **nothing moves from about 2 s to 8 s** |
-| PODIUM | title fades, bars rise (staggered ease-out-back), avatars drop, crown, confetti, stat cards slide | static after about 2.6 s |
-
-**Hard cuts (one frame, whole layout swapped):**
-
-1. **LOBBY to INTRO.** The header, vote cards and rail vanish together. This is the show
-   opening, and it has no open.
-2. **REVEALING to ASKING.** It happens 9 times per match. The whole screen swaps to the next
-   question with no announcement of the question number. Lightning and bonus rounds only get
-   a toast and a pill.
-3. **LOCKING to REVEALING.** The worst jump. The question block shrinks, the options jump up
-   about 100 px and shrink from 190 to 160 px, and the rail swaps panels.
-4. **REVEALING to PODIUM.** The climax arrives as a plain cut.
-5. **PODIUM to LOBBY.** A cut, but a low-attention moment.
-
-Budget observations (not fixed here): the stamp rotozoom and the intro smoothscale allocate
-a surface every frame, and `_draw_option` with scale makes a new cache entry per size while
-it pops in. On this PC `ui.draw` itself costs 3 to 9 ms per frame on average, with spikes of
-15 to 30 ms on the first frame of a new state (text cache misses).
-
-## 2. Concepts (ranked)
-
-Every concept follows one rule: **cover in the dead tail of the outgoing state, uncover in
-the first few hundred ms of the incoming state**, while that state's own entry animation plays
-underneath. No state duration, timer or answer window changes. The logic's `"whoosh"` (queued
-on every state change) lands on the uncover.
-
-### 1. Question bumper "QUESTION 3 -> 4" (REVEALING to ASKING). BUILT
-
-Four answer-colour bands (pink, blue, orange, teal, in answer order) lead a flat violet curtain
-across the screen. On TV it moves left to right, slanted like the stage stripes. On Shorts it
-moves bottom to top, the "swipe up to next" gesture. On the curtain, "QUESTION" sits over a
-huge numeral that rolls like an odometer from the last number to this one. The match pips
-(green and red history) light the new one, and "OF 10 · EASY" rises from a mask. Event
-variants: LIGHTNING ROUND (sky blue, bolt badge, "22 SECONDS · 1.5x POINTS"), FINAL QUESTION
-(gold, x2 badge), BONUS ROUND (purple). The curtain then leaves the same way, uncovering the
-new question.
-
-| t (ms, 0 = state change) | |
-|---|---|
-| -1100 (-1500 for event rounds) | bands enter, curtain follows (460 ms, in-out cubic, bands lead by 22 ms each) |
-| -640 | screen covered; the old numeral arrives printed on the curtain, and riders bob |
-| -620 to -320 | numeral rolls to the new number (out-back), pip lights; event rounds hold 400 ms longer first |
-| -520 to -240 | sub line rises; event badge pops |
-| 0 to +400 | the curtain leaves, card and riders riding it, bands trailing (they clear by +490) |
-
-- **Reuses:** answer colours, pips and their done/miss data, the floater shape vocabulary,
-  and the stage-stripe slant.
-- **Fit:** it covers the last 1.1 s (1.5 s) of an 8 s reveal. The fact panel has been up for
-  4.6 s or more by then. In ASKING, the TV slant uncovers the question text (top left) first,
-  by about 250 ms. On Shorts the bottom clears first and the question by about 400 ms. Both are
-  inside the existing 0.9 s option pop-in.
-- **Trade-off:** stream viewers see the question up to 0.25 to 0.4 s after phone-page players.
-  That is small next to stream latency, and it is the same for everyone in chat.
-- **Cost:** 5 polygons, 8 shape riders, 4 or 5 cached text blits.
-
-### 2. Match open: colour iris, logo flash, shape burst (LOBBY to INTRO). BUILT
-
-Pink, blue, orange, teal, then violet discs swell from the centre and swallow the lobby. On
-violet the Spotlight LQ logo draws on: the four answer-colour arcs, the gold "LQ" and the
-tracked wordmark "THE LIFELONG QUIZ". "• LIVE · MATCH N" follows, and a dotted orbit draws on
-(the HQ intro's dotted circle). The logo sinks. At the state change the colours open again as
-rings, the four answer shapes fly out of their quarter of the ring, and 30 HQ shapes burst
-outward over the "MATCH N" sting.
-
-| t (ms) | |
-|---|---|
-| -1500 to -940 | five discs, 50 ms stagger, 360 ms in-cubic each |
-| -1100 to -600 | ring draws on, orbit draws, LQ then the wordmark rise |
-| -200 to 0 | logo sinks into its baseline mask |
-| 0 to +730 | violet, teal, orange, blue and pink open in turn (out-quad, 45 ms lag), then the hole; the burst flies (exponential drag) and shrinks away by +1000 |
-
-- **Fit:** the cover holds the lobby's last 1.5 s of 30 s, while the countdown reads 0:02 to
-  0:00. Votes still count until expiry, since the logic is untouched. The INTRO's 3-2-1 starts
-  at 1.0 s, after the burst has left the centre.
-- **Cost:** while the iris is still growing, each colour is drawn as a ring rather than a full
-  disc, and once it covers the screen it is a single `fill`; plus about 34 small shapes.
-
-### 3. Final curtain "AND THE WINNER IS..." (REVEALING Q10 to PODIUM). BUILT
-
-Violet stage panels (9 on TV, 5 on Shorts) drop from the centre outward. Each has a gold
-fringe and a small bounce. "MATCH N · CATEGORY" sits over "AND THE WINNER IS", on one line on
-TV and stacked three lines on Shorts. Three gold dots tick in like a drumroll. At the state
-change the panels fly up from the centre outward. The stepped lift forms a podium silhouette
-that frames the real podium rising underneath, and the text rides the first panels so it never
-sits over the podium.
-
-| t (ms) | |
-|---|---|
-| -1600 to -1010 | panels drop (440 ms, out-back 1.1, 50 ms stagger centre-out) |
-| -1110 to -720 | big line rises, then the match line |
-| -810 to -260 | three dots pop (out-back 2.4) |
-| 0 to +450 | panels lift (340 ms in-cubic, 35 ms stagger) |
-
-- **Fit:** it covers the last 1.6 s of the final reveal. The answer, split and fastest-right
-  rows have been up for more than 4 s. The podium's own bars start at 0.3 s.
-- **Suspense:** the podium is not computed until the state change, so the card cannot spoil it.
-- **Cost:** about 20 rects, 6 riders, 3 dots, and 3 or 4 cached text blits.
-
-### 4. Reveal shutter (LOCKING to REVEALING). Not built as a cut-away
-
-The layout jump (cut 3) is fixed in the Shorts layout instead (`quiz/ui_vertical.py`): the
-answer buttons glide from their question positions to the results positions over the first
-600 ms of REVEALING (in-out cubic) while the question cross-fades to its smaller size. The TV
-layout (`quiz/ui.py`) still cuts.
-
-### 5. Halftime standings (end of REVEALING Q5). BUILT for Shorts
-
-Drawn by `ui_vertical`, not by the transitions module, because it is a state view with data:
-from 3.9 s into the Q5 reveal, the answer-colour bands sweep right to left onto violet, gold
-"HALFTIME" rises, and the top 5 match standings slide in as bars with overtake arrows. The Q6
-bumper wipes over it. TV keeps its rail standings and has no halftime.
-
-### 6. Next-match sweep (PODIUM to LOBBY). BUILT
-
-The question wipe with "NEXT MATCH", the match number rolling on (15 to 16) and "VOTE THE
-CATEGORY · TYPE 1-4"; no pips. Lead 1.1 s, tail 0.5 s.
-
-**They run 12 times per match: 9 question bumpers, 1 open, 1 final, 1 next-match sweep.**
-
-## 3. CPU
-
-All drawing is flat polygons, circles and rects straight onto the screen, plus pre-rendered,
-tight-cropped text. There is no per-frame full-screen alpha, no smoothscale and no rotozoom.
-Text is built once per transition on its first frame, for the size of the target surface, and
-cached.
-
-Measured by `fx.draw` alone on this PC (Windows, pygame 2.6.1, 30 fps fake clock, real
-QuizLogic, with the real UI underneath):
-
-| | 1920x1080 mean / p95 | 1080x1920 mean / p95 | first frame incl. build |
-|---|---|---|---|
-| question | 1.35 / 2.15 ms | 1.43 / 2.21 ms | 2.4 to 5.1 ms |
-| match_open | 0.64 / 1.09 ms | 0.59 / 1.03 ms | 3.3 to 3.6 ms |
-| final | 1.58 / 2.19 ms | 1.55 / 2.15 ms | 1.8 to 3.0 ms |
-| reference: one full-screen opaque blit | 0.58 ms | 0.85 ms | |
-
-Single-frame maxima of 4 to 9 ms appeared now and then. They did not repeat across passes, and
-this PC was busy with other sessions. Assume a 2 vCPU cloud core is about 2x slower: about
-3 ms per frame on average and under 5 ms at p95, against the 20 ms budget.
-
-`covered(now)` reports when the screen is fully covered. The UI can then skip drawing the
-state underneath for those frames (0.5 to 1.0 s per transition), which saves its 3 to 9 ms
-per frame.
-
-Whole `ui.draw` for the Shorts layout, one full match (13,883 frames, 30 fps fake clock, same
-PC, back to back): before the visual overhaul (53b3f6b) p50 4.64 / p95 8.68 / p99 12.51 ms,
-after p50 4.63 / p95 8.34 / p99 10.08 ms. Glows, shadows, button faces, beams and bokeh are
-rendered once and cached (`quiz/gfx.py`); nothing smoothscales or blurs a large surface per
-frame.
-
-## 4. Wiring (exact)
-
-`quiz/transitions.py` imports only `quiz.config`, `quiz.models`, `quiz.motion` and `quiz.gfx`, so `quiz/ui.py` can import
-it with no cycle. `VerticalUI` subclasses `UIManager`, so both get it.
-
-```python
-# quiz/ui.py, imports
-from quiz.transitions import Transitions
-
-# UIManager.__init__, after self.fonts = Fonts()
-self.fx = Transitions(self.fonts)
-
-# UIManager.draw AND VerticalUI.draw, right after `age = now - self._state_enter`
-self.fx.cue(logic, now)
-# optional saving while the cut-away fully covers the screen:
-# if self.fx.covered(now): skip _draw_stage / the state branch / header / footer
-
-# both draw methods, immediately before `self._draw_confetti(dt)`
-self.fx.draw(self.screen, now)
+```
+LOBBY --(match open: LQ ring iris)--> INTRO --> BUILDUP Q1 --> ASKING --> LOCKING --> REVEALING
+  --> BUILDUP Qn+1 --> ASKING ... REVEALING Q10 --(final curtain)--> PODIUM --(next-match ribbon)--> LOBBY
 ```
 
-`cue()` does the triggering itself:
+`GameState.BUILDUP` (game loop, `docs/game-modes.md`) opens every question: 4 s
+(`BUILDUP_TIME`), 6 s before the final and a difficulty step-up. **The build-up IS the
+question transition.** Its cover closes over the previous screen when BUILDUP starts, the
+build-up card plays on the cover, and the cover opens onto the question when ASKING starts.
+There is no separate question bumper, so there is never a double transition.
 
-| Outgoing state | Starts when | Plays | Anchors to |
-|---|---|---|---|
-| LOBBY | `time_remaining <= 1.5` | `match_open` | INTRO's `state_start_time` |
-| REVEALING, `q_index < 10` | `time_remaining <= 1.1` (1.5 if the next question is 5, 3, 7 or 10) | `question` with n, event, difficulty, pips | ASKING's `state_start_time` |
-| REVEALING, `q_index == 10` | `time_remaining <= 1.6` | `final` with match no and category | PODIUM's `state_start_time` |
+The question is already served at BUILDUP entry, and answers count only from ASKING. So both
+layouts freeze the last frame of the state before (one `screen.copy()` per question) and
+the cover closes over that frame. The new options are never drawn during BUILDUP.
+`tests/test_render.py` guards the button painters during BUILDUP, and a planted mutant fails
+the test.
 
-If the pre-roll never happened (the F1 skip key), nothing plays and the cut stays hard, as
-today. Confetti draws over the curtains on purpose. Manual use:
-`fx.start("question", now, n=4, event="", difficulty="medium", pips=[...])` plays a full
-cut-away from `now`.
+## 2. Cover styles (rotated by context)
 
-## 5. Shorts (9:16) specifics
+`STYLES` = style -> (seconds to cover, seconds to uncover). `pick_style(n, event, match_no, last)`:
 
-- Geometry comes from `screen.get_size()` on every draw and is laid out once per size. There
-  are no `SCREEN_WIDTH`/`SCREEN_HEIGHT` constants. Tested at 1920x1080, 1080x1920, 1280x720
-  and 720x1280.
-- Cards centre on the Shorts safe zone. They stay below the top 180 px and above the bottom
-  320 px, and also clear `ui_vertical.SAFE_BOTTOM = 1500`: the lowest element, the question
-  pips, ends at about y = 1300. Decorative shapes may sit in the overlay zones.
-- The type is bigger and stacked: the numeral is 620 px, "AND THE / WINNER / IS..." runs on
-  three lines, and the logo scales with the orbit. Lines that might overflow are fitted to the
-  width.
+| Context | Style | Look |
+|---|---|---|
+| Q1, and Q6 out of halftime | `iris` | the LQ logo ring closes like a camera iris, then winds up and the camera pushes through it |
+| Lightning (alternates in a Speed match) | `slash` | a sky-blue diagonal cut, then a bolt strike across the card |
+| Final (Q10) | `spotlight` | lights out to night, a searching spotlight finds the numeral, then opens as a gold-rimmed circle |
+| Others | `bands`, `doors`, `slats`, `tiles` | in rotation by question and match number, never the same style twice in a row |
+| Halftime, next match | `ribbon` | the four answer colours sweep the screen as one ribbon |
 
-## 6. Follow-ups
+The four-colour vocabulary is the brand's answer order: pink, blue, orange, teal.
 
-- Move the `"whoosh"` to the cover start, or add a short pre-roll riser, so the sound follows
-  the picture into each cut-away.
-- Fix cut 3 inside ui.py (TV) by tweening the option rects, as the Shorts layout does.
+## 3. The build-up card (from `logic.buildup` alone)
+
+Keys: `q_no, of, tier, stakes, kind, event, headline, subline, spotlight, intensity`.
+`Transitions.buildup_info` fills every gap, so a sparse or odd dict still draws (tested with
+full, sparse and malformed dicts in every style, at both sizes).
+
+Beats, in seconds into BUILDUP:
+
+| t | |
+|---|---|
+| 0 to 0.5 | cover closes; the headline (event colour) and the previous numeral ride in |
+| ~0.6 | the numeral rolls like an odometer to this question; the match pips light the new one |
+| 1.2 (`T_STAKES`, on the "stakes" sound hit) | FOR N POINTS slams in (shake and ring in proportion to intensity) |
+| then | the tier ladder lights rung by rung to this tier (easy, medium, hard, expert), the subline types in, the spotlight finds its player's name plate, and a four-colour fuse burns to the question |
+| ASKING 0 | uncover |
+
+**Intensity** (0.15 at Q1, 1.0 at the final) scales the drama: the background darkens from
+violet to night, a light pool and heartbeat rings grow behind the numeral, floating shapes
+thin out above 0.3 and stop above 0.55. `logic.buildup_intensity` also makes the ASKING
+timer glow breathe harder.
+
+Portrait stacks everything in one column inside the Shorts safe zone (y 190 to 1500).
+Landscape puts the numeral on the left and the rest on the right.
+
+## 4. Signature brand moments
+
+- **Match open (LOBBY to INTRO):** the LQ ring closes over the lobby as an iris, the logo,
+  wordmark and the tag "LIVE · MATCH N · <FORMAT>" (format label in its `special.FORMATS`
+  colour, rule underneath) rise, then the ring winds up and the camera pushes through it with
+  a burst of the answer shapes. The INTRO repeats the format as a chip beside the category,
+  with its rule under the ring, for 4 s.
+- **Halftime (REVEALING Q5):** the ribbon sweeps the reveal from 3.9 s, then the gold
+  HALFTIME over a quiet ring watermark and the top 5 standings bars.
+- **Final question:** the spotlight style (above).
+- **Winner (REVEALING Q10 to PODIUM):** violet panels drop centre-out with a gold fringe and
+  a searching spotlight pool over "AND THE WINNER IS...", then lift in a stepped podium shape.
+
+## 5. Announcements (toasts)
+
+Every `logic._push_event(text, color, badge)` toast uses one broadcast tab: a badge block
+in the event colour (a glyph for known codes in `BADGE_GLYPHS`, else the code), a dark panel
+that unrolls out of it, a light sweep, and a fuse that burns down its 3.6 s life. A new toast
+rolls the old one up first. **Text written as "KICKER: rest" or "KICKER! rest" with an
+all-caps kicker prints the kicker in the event colour.** New features get a headline just by
+how they word the event.
+
+## 6. Feature kit (game loop 2)
+
+One look for every mode. Each element is a glass pod with a tracked caps label, a display
+value and a segment meter, or a pill tag. Each is composed once per value and blitted once
+per frame.
+
+| Feature | Where | Reads |
+|---|---|---|
+| Format chip | chip row (non-classic), intro, match open | `match_format`, `special.FORMATS` |
+| Stakes and tier ladder | right pod beside the timer | `question_stakes()`, `q.difficulty` (expert adds a 4th rung) |
+| Survivor counter | left pod (survivors) | `perfect` |
+| Gold vs Teal bar | left pod (teams) | `team_scores()`, `special.TEAMS` |
+| Community goal | left pod (classic, speed) | `community_goal`, `community_correct`, `community_jackpot` |
+| Combo step meter | fastest-right rows in the reveal | `Player.streak`, `config.COMBO_STEPS` |
+| x2 and 50:50 tags | locked-in list | `double_picks`, `half_picks` |
+| Payout card, team-win card | podium, 4.4 to 8.2 s (the ladder follows) | `match_stats["survivors"]`, `match_stats["team"]` |
+
+The pods sit under the timer and the TIME'S UP band, and are skipped when a long question
+leaves less than 112 px beside the ring. The TV layout (`quiz/ui.py`) has none of the kit
+yet. It draws every state without crashing.
+
+## 7. CPU
+
+Rules: no per-frame `set_alpha` on per-pixel-alpha surfaces (pygame's slow path, about 4x).
+Fades use `gfx.faded` (alpha baked, quantised, cached). Glows are opaque light added with
+`BLEND_RGB_ADD`. Nothing smoothscales or blurs a large surface per frame. While a cut-away
+fully covers the screen, the UI skips drawing the state underneath.
+
+- `gfx.edge_glow` (the urgency and LOCKING edge light): ADD blits of three cached strip sets
+  chosen by bit. 0.24 ms, against 1.6 ms for the alpha strips it replaces.
+- Podium sunburst: opaque polygons on a black scratch surface, ADDed. 0.8 ms, against 3.2 ms
+  for 24 gfxdraw alpha polygons.
+- Option shadows composed with their faces; timer, flare, lobby and intro glows faded and
+  cached.
+
+`ui.draw`, Shorts layout, one whole match (15,273 frames, 30 fps fake clock, harness
+`render.py`). Runs alternated back to back on this shared PC. Before = 31da909
+(feature/matches), after = this branch:
+
+| ms | before p50 / p95 | after p50 / p95 |
+|---|---|---|
+| all frames | 4.64-4.93 / 8.67-8.98 | 3.72-4.34 / 6.00-7.47 |
+| LOBBY | 3.29-3.66 / 6.10-6.80 | 2.52-2.67 / 4.74-6.08 |
+| INTRO | 4.91-5.40 / 5.92-7.72 | 3.41-3.52 / 5.84-6.62 |
+| BUILDUP | 1.87-2.12 / 2.82-4.36 (placeholder) | 1.92-2.10 / 3.83-4.11 (full card) |
+| ASKING | 4.53-4.79 / 7.48-8.02 | 3.78-4.32 / 5.27-6.15 |
+| LOCKING | 7.43-7.46 / 8.98-9.49 | 4.28-5.27 / 6.22-7.43 |
+| REVEALING | 7.13-7.23 / 9.87-9.96 | 4.77-5.50 / 6.75-8.40 |
+| PODIUM | 8.48-8.54 / 10.50-10.51 | 4.93-8.04 / 8.78-11.39 |
+
+## 8. Wiring
+
+`UIManager.__init__` creates `self.fx = Transitions(self.fonts)`. Both `draw` methods call
+`self.fx.cue(logic, now)` each frame, skip the state underneath while `self.fx.covered(now)`,
+and call `self.fx.draw(self.screen, now)` before the confetti. `cue()` starts the build-up
+when BUILDUP starts. It pre-rolls the match open (last 1.5 s of LOBBY), the final curtain
+(last 1.6 s of REVEALING Q10) and the next-match ribbon (end of PODIUM). It anchors each
+uncover to the next state's `state_start_time`. If the state is left any other way (the skip
+key), nothing uncovers and the cut stays hard. `fx.cover(screen, style, p)` draws one style
+on its own; the halftime card uses it.
+
+## 9. Follow-ups
+
+- The TV layout has no feature kit and keeps its rail; port the pods if TV goes live.
+- Closest Call (number) and Double Down need their own reveal (number line, stake chips).
