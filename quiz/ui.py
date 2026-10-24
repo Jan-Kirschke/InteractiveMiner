@@ -17,6 +17,7 @@ import pygame
 from quiz.config import SCREEN_WIDTH, SCREEN_HEIGHT, FONT_DIR, MATCH_LENGTH, REVEAL_AT
 from quiz.models import GameState
 from quiz.logic import is_bot
+from quiz.motion import clamp01, heartbeat, lerp, out_back, out_cubic, progress, smoothstep
 from quiz.transitions import Transitions
 
 # ==========================================
@@ -91,41 +92,9 @@ BODY_BOTTOM = FOOTER_Y - 28
 
 
 # ==========================================
-# EASING
+# EASING (quiz/motion.py; the TV layout's names)
 # ==========================================
-def clamp01(t):
-    return max(0.0, min(1.0, t))
-
-
-def ease_out_cubic(t):
-    t = clamp01(t)
-    return 1 - (1 - t) ** 3
-
-
-def ease_out_back(t):
-    t = clamp01(t)
-    c = 1.70158
-    return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2
-
-
-def ease_in_out(t):
-    t = clamp01(t)
-    return 3 * t * t - 2 * t * t * t
-
-
-def progress(age, delay, dur):
-    return clamp01((age - delay) / dur)
-
-
-def lerp(a, b, t):
-    return a + (b - a) * t
-
-
-def heartbeat(since):
-    """0..1 pulse for a lub-dub: 'since' = seconds since the beat started (matches sounds.final_countdown)."""
-    lub = math.exp(-since * 10)
-    dub = 0.6 * math.exp(-(since - 0.22) * 10) if since >= 0.22 else 0.0
-    return min(1.0, lub + dub)
+ease_out_cubic, ease_out_back, ease_in_out = out_cubic, out_back, smoothstep
 
 
 def mix(c1, c2, t):

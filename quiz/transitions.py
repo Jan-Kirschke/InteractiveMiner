@@ -30,6 +30,8 @@ import pygame
 
 from quiz.config import FONT_DIR, MATCH_LENGTH, LIGHTNING_QUESTION, BONUS_QUESTIONS, LIGHTNING_TIME, DIFFICULTY_RAMP
 from quiz.models import GameState
+from quiz.motion import (in_cubic as _in_cubic, in_out_cubic as _in_out, out_back as _out_back,
+                         out_cubic as _out_cubic, out_quad as _out_quad, progress as _prog)
 
 # ==========================================
 # PALETTE (the show palette from quiz/ui.py plus a flat HQ violet for the cut-aways)
@@ -61,39 +63,6 @@ SPECIAL_BUMPERS["minority"] = SPECIAL_BUMPERS["majority"]   # Lonely Answer's tw
 
 # YouTube Shorts covers the top and bottom of a 1080x1920 frame with its own UI
 SHORTS_SAFE_TOP, SHORTS_SAFE_BOTTOM = 180, 320
-
-
-# ==========================================
-# EASING
-# ==========================================
-def _clamp01(t):
-    return max(0.0, min(1.0, t))
-
-
-def _prog(t, delay, dur):
-    return _clamp01((t - delay) / dur)
-
-
-def _out_cubic(t):
-    return 1 - (1 - _clamp01(t)) ** 3
-
-
-def _out_quad(t):
-    return 1 - (1 - _clamp01(t)) ** 2
-
-
-def _in_cubic(t):
-    return _clamp01(t) ** 3
-
-
-def _in_out(t):
-    t = _clamp01(t)
-    return 4 * t ** 3 if t < 0.5 else 1 - (-2 * t + 2) ** 3 / 2
-
-
-def _out_back(t, c=1.70158):
-    t = _clamp01(t)
-    return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2
 
 
 # ==========================================
