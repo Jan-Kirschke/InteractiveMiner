@@ -15,9 +15,22 @@ import json
 import random
 from pathlib import Path
 
+from quiz.config import LIGHTNING_TIME, SURVIVOR_POT, SURVIVOR_MIN, TEAM_WIN_BONUS
 from quiz.models import Question
 
 PACK_DIR = Path(__file__).resolve().parent / "packs"
+
+# Match formats (config.FORMAT_ROTATION; logic.match_format): format -> (chip label, colour, one-line rule)
+FORMATS = {
+    "classic": ("CLASSIC MATCH", (240, 235, 220), "Ten questions: the fastest right answers score most"),
+    "speed": ("SPEED MATCH", (110, 190, 255), f"Every question is a {LIGHTNING_TIME} s lightning question: 1.5x points"),
+    "survivors": ("SURVIVORS", (255, 90, 95),
+                  f"Get every answer right and split {SURVIVOR_POT} points (at least {SURVIVOR_MIN} each)"),
+    "teams": ("GOLD VS TEAL", (255, 210, 63),
+              f"Your name picks your team: the higher average wins +{TEAM_WIN_BONUS} each"),
+}
+# Teams (logic.team_of): team -> (label, colour)
+TEAMS = {"gold": ("TEAM GOLD", (255, 196, 40)), "teal": ("TEAM TEAL", (20, 201, 168))}
 
 OPTION_RANGE = {"majority": (2, 4), "higher_lower": (2, 2), "odd_one_out": (3, 4)}
 TITLES = {"majority": "crowd mind", "higher_lower": "higher or lower", "odd_one_out": "odd one out"}

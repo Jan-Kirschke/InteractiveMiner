@@ -20,11 +20,22 @@ post, so a quiet chat is not spammed.
 | howto | 10 min | 5 | 🎮 HOW TO PLAY: read the question on screen and type 1, 2, 3 or 4 in chat before the countdown ends. Fast answers and streaks earn bonus points! |
 | vote | 20 min | 10 | 🗳️ Between matches, vote the next category with 1-4. Type !rank to see your place on the weekly ladder. |
 | fair | 30 min | 10 | ⚖️ Fair play: watch at the live position, one answer counts per question, no spam. Players marked [Bot] are computer opponents, not viewers. |
+| powers | 25 min | 10 | ⚡ Power-ups: after 5 answers in a match type !double to bet x2 on your next answer. On a 3-answer streak, !half 1 3 picks two answers for half points. !team shows your team (Gold or Teal). |
 | sub | 30 min | 15 | 🔔 Enjoying the quiz? Subscribe and turn on notifications: live shows every day at 18:00 and 01:00 UTC. |
 
 ## Commands
 
-Do not create `!rank` or `!card`: the game answers those itself.
+Do not create these: the game answers them itself, on screen. Each answer is a toast; nothing is posted to chat.
+
+| Game command | What it does | Limit |
+|---|---|---|
+| `!rank` | your weekly place, points, level and day streak | once per 30 s per player |
+| `!card` | your player card | once per 30 s per player |
+| `!team` | which team your name puts you in (Gold or Teal, for good) | once per 30 s per player |
+| `!half 1 3` | the 50:50 joker: two options, half the points | once per match, from a 3-answer streak |
+| `!double` (or `!x2`) | while a question runs: your answer pays x2 if right, or costs up to 20 match points if wrong | once per match, after 5 answers in it; not on Crowd Mind |
+
+Nightbot commands:
 
 | Command | Message |
 |---|---|
