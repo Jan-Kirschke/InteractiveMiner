@@ -431,8 +431,45 @@ class UIManager:
             else:
                 self._text("display", 90, "THE LIFELONG QUIZ", ACCENT, (SCREEN_WIDTH // 2, 470), "center")
             self._draw_footer(logic, now)
+            self._draw_player_card(logic, now)
         self._draw_confetti(dt)
         pygame.display.flip()
+
+    CARD_TIME = 6.0
+
+    def _draw_player_card(self, logic, now):
+        """!card: a trading-card style profile that slides up over the main stage for 6 s."""
+        cards = [(u, t) for u, t in logic.cards if 0 <= now - t < self.CARD_TIME]
+        if not cards:
+            return
+        user, t = cards[0]
+        a = now - t
+        p = ease_out_back(a / 0.45) * (1 - ease_in_out(progress(a, self.CARD_TIME - 0.4, 0.4)))
+        player = logic.db._players.get(user)
+        if player is None or p <= 0:
+            return
+        w, h = 560, 300
+        x = MAIN_X + MAIN_W - w
+        y = int(lerp(SCREEN_HEIGHT + 20, BODY_BOTTOM - h, p))
+        self.screen.blit(self._alpha_rect(w, h, (0, 0, 0, 120), 26), (x, y + 12))
+        self.screen.blit(self._alpha_rect(w, h, (22, 26, 88, 250), 26), (x, y))
+        pygame.draw.rect(self.screen, ACCENT, (x, y, w, h), width=3, border_radius=26)
+        self._avatar(user, x + 80, y + 82, 50, ACCENT)
+        self._blit(self._fit_name(user, 34, INK, w - 170, kind="black"), (x + 150, y + 60), "midleft")
+        self._text("bold", 22, f"LV {player.level}  -  {player.rank}", ACCENT, (x + 150, y + 100), "midleft")
+        pos = logic.db.weekly_rank(user)
+        stats = [
+            ("THIS WEEK", f"#{pos}" if pos else "-"),
+            ("DAY STREAK", str(player.day_streak)),
+            ("DUELS W-L", f"{player.duel_wins}-{player.duel_losses}"),
+        ]
+        cw = (w - 48) // 3
+        for i, (label, value) in enumerate(stats):
+            cx = x + 24 + i * cw
+            self._text("black", 16, label, DIM, (cx, y + 160))
+            self._text("display", 40, value, INK, (cx, y + 184))
+        crew = f"Crew {player.crew}" if player.crew else "No crew yet: !crew NAME"
+        self._blit(self._fit_name(crew, 22, INK if player.crew else FAINT, w - 48, kind="semi"), (x + 24, y + h - 30), "midleft")
 
     def _draw_stage(self, now, dt):
         self.screen.blit(self._bg, (0, 0))
@@ -633,6 +670,43 @@ class UIManager:
             self._text("bold", 22, "Type !ready or vote to check in", FAINT, (x + 24, y + 80))
         y += h + 20
         self._draw_ladder(logic, x, y, BODY_BOTTOM - y, rows=6, age=age, title="THIS WEEK")
+        self._draw_lobby_social(logic, age)
+
+    def _draw_lobby_social(self, logic, age):
+        """Under the vote cards: weekly crew ladder and the duels set for this match."""
+        top = BODY_Y + 260 + 2 * 170 + 24 + 24
+        h = BODY_BOTTOM - top
+        if h < 120:
+            return
+        p = ease_out_cubic(progress(age, 0.5, 0.4))
+        oy = int((1 - p) * 30)
+        w = (MAIN_W - 24) // 2
+        x = MAIN_X
+        self._panel(x, top + oy, w, h)
+        self._panel_title(x, top + oy, w, "CREWS THIS WEEK")
+        crews = logic.crew_ladder(n=3)
+        for i, (crew, pts, n) in enumerate(crews):
+            ry = top + oy + 78 + i * 34
+            col = ACCENT if i == 0 else INK
+            self._blit(self._fit_name(f"{i + 1}  {crew}", 24, col, w - 240), (x + 24, ry), "midleft", alpha=255 * p)
+            self._text("bold", 18, f"{n} member{'s' if n != 1 else ''}", DIM, (x + w - 130, ry), "midright", alpha=255 * p)
+            self._text("black", 24, f"{pts:,}", col, (x + w - 24, ry), "midright", alpha=255 * p)
+        if not crews:
+            self._text("bold", 22, "Play with friends: type !crew NAME", INK, (x + 24, top + oy + 80), alpha=255 * p)
+            self._text("bold", 20, "Your crew scores its best 3 players", FAINT, (x + 24, top + oy + 114), alpha=255 * p)
+        x += w + 24
+        self._panel(x, top + oy, w, h)
+        duels = [d for d in logic.duels if d.match_no == logic.match_no]
+        self._panel_title(x, top + oy, w, "DUELS THIS MATCH")
+        for i, d in enumerate(duels[:3]):
+            ry = top + oy + 78 + i * 34
+            self._blit(self._fit_name(f"{d.a}  vs  {d.b}", 24, INK if d.accepted else DIM, w - 170),
+                       (x + 24, ry), "midleft", alpha=255 * p)
+            tag, col = ("ON", BAD) if d.accepted else ("!accept?", FAINT)
+            self._text("black", 18, tag, col, (x + w - 24, ry), "midright", alpha=255 * p)
+        if not duels:
+            self._text("bold", 22, "Challenge someone: !duel @name", INK, (x + 24, top + oy + 80), alpha=255 * p)
+            self._text("bold", 20, "They type !accept. Higher match score wins.", FAINT, (x + 24, top + oy + 114), alpha=255 * p)
 
     # ------------------------------------------
     # QUESTION (ASKING / LOCKING)
@@ -695,9 +769,10 @@ class UIManager:
         r = int(min(39, h * 0.22))
         kx, ky = x + 34 + r, y + h // 2
         knob = mix(INK, (150, 150, 170), dim)
-        pygame.draw.circle(self.screen, knob, (kx, ky), r)
-        self._text("display", int(r * 1.15), str(i + 1), DARK_INK, (kx, ky), "center", alpha=a)
-        self._shape(i, kx + r + 34, ky, 15, knob)
+        if a >= 160:  # opaque primitives only once the card itself is mostly visible
+            pygame.draw.circle(self.screen, knob, (kx, ky), r)
+            self._text("display", int(r * 1.15), str(i + 1), DARK_INK, (kx, ky), "center", alpha=a)
+            self._shape(i, kx + r + 34, ky, 15, knob)
         tx = kx + r + 66
         lines, size = self._fit_wrap(text, "black", (46, 40, 34, 30), x + w - tx - 110, 2)
         lh = int(size * 1.1)
@@ -765,7 +840,34 @@ class UIManager:
         self._draw_match_table(logic, x, y, BODY_BOTTOM - y)
 
     def _draw_match_table(self, logic, x, y, h):
+        # The panel rotates between standings, the crew race and live duels every 6 s
+        race, duels = logic.crew_race(), logic.active_duels()
+        views = ["standings"] + (["crews"] if race else []) + (["duels"] if duels else [])
+        view = views[int(time.time() / 6) % len(views)]
         self._panel(x, y, RAIL_W, h)
+        rows = max(1, (h - 70) // 42)
+        if view == "crews":
+            self._panel_title(x, y, RAIL_W, "CREW RACE  -  BEST 3 COUNT")
+            for i, (crew, pts, n) in enumerate(race[:rows]):
+                ry = y + 80 + i * 42
+                col = ACCENT if i == 0 else INK
+                self._text("display", 26, str(i + 1), col, (x + 24, ry), "midleft")
+                self._blit(self._fit_name(crew, 25, col, RAIL_W - 250), (x + 60, ry), "midleft")
+                self._text("bold", 18, f"{n} playing", DIM, (x + RAIL_W - 120, ry), "midright")
+                self._text("black", 25, f"{pts:,}", col, (x + RAIL_W - 24, ry), "midright")
+            return
+        if view == "duels":
+            self._panel_title(x, y, RAIL_W, "LIVE DUELS")
+            for i, d in enumerate(duels[:max(1, rows // 2)]):
+                ry = y + 84 + i * 84
+                pa = logic.standings[d.a].points if d.a in logic.standings else 0
+                pb = logic.standings[d.b].points if d.b in logic.standings else 0
+                for j, (name, pts, lead) in enumerate(((d.a, pa, pa > pb), (d.b, pb, pb > pa))):
+                    col = ACCENT if lead else INK
+                    self._blit(self._fit_name(name, 25, col, RAIL_W - 170), (x + 24, ry + j * 34), "midleft")
+                    self._text("black", 25, f"{pts:,}", col, (x + RAIL_W - 24, ry + j * 34), "midright")
+                self._text("black", 16, "VS", BAD, (x + RAIL_W - 110, ry + 17), "center")
+            return
         self._panel_title(x, y, RAIL_W, f"MATCH {logic.match_no} STANDINGS")
         ranked = logic.match_ranking(n=max(1, (h - 70) // 42))
         for i, st in enumerate(ranked):
@@ -899,6 +1001,12 @@ class UIManager:
         if stats.get("best_streak"):
             n, s = stats["best_streak"]
             cards.append(("BEST STREAK", f"{s} in a row  {n}"))
+        if stats.get("crew"):
+            crew, pts = stats["crew"]
+            cards.insert(1, ("CREW OF THE MATCH", f"{crew}  {pts:,}"))
+        if logic.duel_results:
+            w, l, wp, lp = logic.duel_results[0]
+            cards.insert(1, ("DUEL", f"{w} beat {l}  {wp}-{lp}"))
         cards.append(("PLAYERS", str(logic.match_player_count)))
         cw = (MAIN_W - 40) // 3
         sp = ease_out_cubic(progress(age, 2.2, 0.4))

@@ -151,7 +151,7 @@ class MainGameController:
     def _process_chat(self):
         while not self.msg_queue.empty():
             msg = self.msg_queue.get()
-            self.logic.process_message(msg.username, msg.message)
+            self.logic.process_message(msg.username, msg.message, msg.raw)
 
     def _play_sounds(self):
         """Play all queued sounds from logic with appropriate rate limiting."""

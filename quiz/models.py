@@ -50,6 +50,9 @@ class Player:
     week: str = ""
     day_streak: int = 0
     last_day: str = ""
+    crew: str = ""
+    duel_wins: int = 0
+    duel_losses: int = 0
 
     @property
     def level(self) -> int:
@@ -67,6 +70,7 @@ class Player:
             self.weekly_score = 0
         self.score += points
         self.weekly_score += points
+        self.update_rank()  # bonuses go through here too
 
     def mark_played(self, now: float | None = None) -> bool:
         """Update the day streak. Returns True on the first play of a new UTC day."""
@@ -81,6 +85,7 @@ class Player:
     def record_correct(self, points: int):
         was_wrong_streak = self.wrong_streak
         self.wrong_streak = 0
+        old_rank = self.rank
         self.add_points(points)
         self.streak += 1
         self.correct_answers += 1
@@ -88,8 +93,6 @@ class Player:
         self.last_seen = time.time()
         if self.streak > self.best_streak:
             self.best_streak = self.streak
-        old_rank = self.rank
-        self.update_rank()
         self._rank_changed = (self.rank != old_rank)
         self._was_comeback = (was_wrong_streak >= 3)  # for comeback detection
 
@@ -167,8 +170,18 @@ class MatchStanding:
 @dataclass
 class ChatMessage:
     username: str
-    message: str
+    message: str      # normalized: lowercase, punctuation stripped
     timestamp: float
+    raw: str = ""     # original text (crew names, @mentions)
+
+
+@dataclass
+class Duel:
+    a: str
+    b: str
+    match_no: int
+    accepted: bool = False
+    created: float = field(default_factory=time.time)
 
 
 @dataclass

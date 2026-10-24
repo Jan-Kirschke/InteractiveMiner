@@ -70,6 +70,9 @@ class QuizDatabase:
             ("week", "TEXT DEFAULT ''"),
             ("day_streak", "INTEGER DEFAULT 0"),
             ("last_day", "TEXT DEFAULT ''"),
+            ("crew", "TEXT DEFAULT ''"),
+            ("duel_wins", "INTEGER DEFAULT 0"),
+            ("duel_losses", "INTEGER DEFAULT 0"),
         ]:
             try:
                 self._conn.execute(f"ALTER TABLE players ADD COLUMN {col} {typedef}")
@@ -120,6 +123,9 @@ class QuizDatabase:
                 week=row["week"] or "",
                 day_streak=row["day_streak"] or 0,
                 last_day=row["last_day"] or "",
+                crew=row["crew"] or "",
+                duel_wins=row["duel_wins"] or 0,
+                duel_losses=row["duel_losses"] or 0,
             )
             self._players[p.username] = p
         print(f"[DB] Loaded {len(self._players)} players from database")
@@ -156,6 +162,17 @@ class QuizDatabase:
             if p.username == username:
                 return i
         return 0
+
+    def find_player(self, name: str) -> str | None:
+        """Resolve a chat mention ("@Lena_K", "lena_k") to a known username."""
+        want = name.strip().lstrip("@").lower()
+        for u in self._players:
+            if u.lstrip("@").lower() == want and not is_bot(u):
+                return u
+        return None
+
+    def crew_members(self, crew: str) -> list[str]:
+        return [u for u, p in self._players.items() if p.crew == crew]
 
     def next_match_number(self) -> int:
         row = self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM matches").fetchone()
@@ -225,6 +242,7 @@ class QuizDatabase:
                         p.participation_streak, int(p.streak_shield),
                         p.last_seen, p.weekly_score, p.week,
                         p.day_streak, p.last_day,
+                        p.crew, p.duel_wins, p.duel_losses,
                     ))
             if data:
                 self._conn.executemany("""
@@ -232,8 +250,9 @@ class QuizDatabase:
                     (username, score, streak, best_streak, rank,
                      games_played, correct_answers, wrong_answers,
                      wrong_streak, participation_streak, streak_shield,
-                     last_seen, weekly_score, week, day_streak, last_day)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     last_seen, weekly_score, week, day_streak, last_day,
+                     crew, duel_wins, duel_losses)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, data)
                 self._conn.commit()
                 print(f"[DB] Saved {len(data)} players")

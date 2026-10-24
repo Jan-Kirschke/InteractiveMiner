@@ -114,10 +114,11 @@ def test_full_match_cycle_records_winner_and_ladders(game):
         game.process_message("bob", str((correct + 1) % 4 + 1))   # always wrong
         expire(game)
         assert game.state == GameState.LOCKING
-        game.process_message("carol", str(correct + 1))            # late answer still counts
+        carol = correct if q not in (1, 10) else (correct + 1) % 4  # wrong twice: jackpots cannot lift her past alice
+        game.process_message("carol", str(carol + 1))              # late answer still counts
         expire(game)
         assert game.state == GameState.REVEALING
-        assert game.last_result.option_counts[correct] == 2
+        assert game.last_result.option_counts[correct] == (2 if q not in (1, 10) else 1)
 
     expire(game)
     assert game.state == GameState.PODIUM
@@ -151,3 +152,61 @@ def test_day_streak_counts_consecutive_utc_days():
     assert not p.mark_played(day + 60)
     assert p.mark_played(day + 86400) and p.day_streak == 2
     assert p.mark_played(day + 3 * 86400) and p.day_streak == 1
+
+
+def test_crew_join_is_case_insensitive_and_scores_best_three(game):
+    game.process_message("alice", "crew night owls", "!crew night owls")
+    game.process_message("bob", "crew night owls", "!crew NIGHT OWLS")
+    assert game.db.get_or_create_player("alice").crew == "Night Owls"
+    assert game.db.get_or_create_player("bob").crew == "Night Owls"
+    for name, pts in (("alice", 50), ("bob", 40), ("carol", 30), ("dave", 5)):
+        if name in ("carol", "dave"):
+            game.process_message(name, "crew x", "!crew Night Owls")
+        game.standings[name] = logic_mod.MatchStanding(name, points=pts)
+    assert game.crew_race() == [("Night Owls", 120, 4)]       # dave's 5 does not count
+    game.process_message("bob", "crew leave", "!crew leave")
+    assert game.db.get_or_create_player("bob").crew == ""
+
+
+def test_duel_needs_accept_and_records_winner(game):
+    game.db.get_or_create_player("bob")
+    game.state = GameState.LOBBY
+    game.process_message("alice", "duel bob", "!duel @Bob")
+    assert game.active_duels() == []                         # not accepted yet
+    game.process_message("bob", "accept")
+    assert len(game.active_duels()) == 1
+    game.standings["alice"] = logic_mod.MatchStanding("alice", points=80)
+    game.standings["bob"] = logic_mod.MatchStanding("bob", points=60)
+    game._resolve_duels()
+    assert game.duel_results == [("alice", "bob", 80, 60)]
+    assert game.db.get_or_create_player("alice").duel_wins == 1
+    assert game.db.get_or_create_player("bob").duel_losses == 1
+    assert game.duels == []
+
+
+def test_bots_cannot_join_crews_or_duel(game):
+    bot = BOT_PREFIX + "Rookie"
+    game.process_message(bot, "crew x", "!crew X")
+    game.process_message(bot, "duel alice", "!duel alice")
+    assert game.db.get_or_create_player(bot).crew == "" and game.duels == []
+
+
+def test_overtake_is_announced(game):
+    a = game.db.get_or_create_player("alice"); a.add_points(10)
+    b = game.db.get_or_create_player("bob"); b.add_points(50)
+    before = {p.username: i for i, p in enumerate(game.db.get_weekly_top(n=50), 1)}
+    a.add_points(100)
+    game.current_answers = {"alice": (1, game.question_start_time)}
+    game._announce_overtakes(before)
+    assert any("alice passed bob" in e.text for e in game.event_feed)
+
+
+def test_crew_and_duel_record_survive_restart(game, tmp_path):
+    game.process_message("alice", "crew owls", "!crew Owls")
+    game.db.get_or_create_player("alice").duel_wins = 2
+    game.db.mark_dirty("alice")
+    game.db.save_all()
+    db2 = QuizDatabase(str(tmp_path / "quiz.db"))
+    p = db2._players["alice"]
+    assert (p.crew, p.duel_wins) == ("Owls", 2)
+    db2.close()

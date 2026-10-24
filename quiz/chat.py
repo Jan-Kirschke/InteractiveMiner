@@ -126,6 +126,7 @@ class ChatManager:
                             username=c.author.name,
                             message=normalized,
                             timestamp=time.time(),
+                            raw=text,
                         )
                         self._queue.put(msg)
                         self._message_count += 1
@@ -178,12 +179,16 @@ class ChatManager:
             time.sleep(random.uniform(0.3, 1.5))
             user = random.choice(FAKE_USERNAMES)
             roll = random.random()
-            if roll < 0.03:
-                msg_text = "reset"
+            if roll < 0.02:
+                raw = "!crew " + random.choice(["Night Owls", "Kaffee Klatsch", "Brainrot Busters"])
+            elif roll < 0.03:
+                raw = "!duel @" + random.choice(FAKE_USERNAMES)
+            elif roll < 0.05:
+                raw = random.choice(["!accept", "!ready", "!rank", "!card"])
             else:
-                msg_text = str(random.randint(1, 4))
-
-            self._queue.put(ChatMessage(user, msg_text, time.time()))
+                raw = str(random.randint(1, 4))
+            msg_text = _PUNCTUATION_RE.sub('', raw).strip().lower()
+            self._queue.put(ChatMessage(user, msg_text, time.time(), raw=raw))
             self._message_count += 1
 
     def stop(self):

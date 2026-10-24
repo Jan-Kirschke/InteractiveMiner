@@ -8,6 +8,7 @@ Match points reset every match; weekly and lifetime points keep growing.
 import time
 import html
 import random
+import re
 import threading
 
 try:
@@ -35,7 +36,7 @@ from quiz.config import (
     COMMAND_COOLDOWN,
 )
 from quiz.models import (
-    GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding,
+    GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding, Duel,
 )
 from quiz.db import QuizDatabase
 
@@ -178,6 +179,23 @@ def host_line_for_rate(rate: float, answers: int) -> str:
     return f"Too easy? {pct}% knew that."
 
 
+CREW_TEAM_SIZE = 3          # a crew scores its best 3 members, so small friend groups can win
+CREW_NAME_MAX = 20
+_CREW_CLEAN_RE = re.compile(r"[^\w &'.-]+")
+
+
+def clean_crew_name(raw: str) -> str:
+    """'night owls!!' -> 'Night Owls' (letters of any script, digits, space, & ' . -)."""
+    name = _CREW_CLEAN_RE.sub("", raw).strip()
+    name = re.sub(r"\s+", " ", name)[:CREW_NAME_MAX].strip()
+    return name.title() if name == name.lower() else name
+
+
+def _rest_after_command(raw: str) -> str:
+    parts = raw.strip().split(None, 1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
 STATE_DURATIONS = {
     GameState.LOBBY: LOBBY_TIME,
     GameState.INTRO: INTRO_TIME,
@@ -219,6 +237,9 @@ class QuizLogic:
         self.match_stats: dict = {}
         self.match_player_count = 0
         self.ready_players: list[str] = []
+        self.duels: list[Duel] = []
+        self.duel_results: list[tuple[str, str, int, int]] = []  # (winner, loser, w_pts, l_pts)
+        self.cards: list[tuple[str, float]] = []                # player cards requested with !card
 
         # Current round
         self.current_question: Question | None = None
@@ -555,7 +576,9 @@ class QuizLogic:
 
     def _enter_revealing(self):
         self.round_count += 1
+        before = {p.username: i for i, p in enumerate(self.db.get_weekly_top(n=50), 1)}
         self.last_result = self._resolve_question()
+        self._announce_overtakes(before)
         res = self.last_result
         self.pips.append("done" if res.total_answers and res.correct_rate >= 0.5 else "miss")
         self.sound_queue.append("correct" if res.correct_players else "wrong")
@@ -568,10 +591,13 @@ class QuizLogic:
         self.match_player_count = len(real)
         fastest = min((s for s in real if s.fastest > 0), key=lambda s: s.fastest, default=None)
         streak = max(real, key=lambda s: s.best_streak, default=None)
+        race = self.crew_race()
         self.match_stats = {
             "fastest": (fastest.username, fastest.fastest) if fastest else None,
             "best_streak": (streak.username, streak.best_streak) if streak and streak.best_streak else None,
+            "crew": race[0][:2] if race and race[0][1] > 0 else None,
         }
+        self._resolve_duels()
         winner = self.podium[0] if self.podium else None
         self.db.record_match(
             self.match_started_at, self.match_category, len(real),
@@ -585,6 +611,62 @@ class QuizLogic:
                       "Next match starts soon.")
         else:
             self._say("No winner this time. Next match starts soon: type 1 to 4 to play!")
+
+    def _announce_overtakes(self, before: dict[str, int]):
+        """Rivals: "Lena_K passed owlbert on the weekly ladder!" (at most two per round)."""
+        after = self.db.get_weekly_top(n=50)
+        said = 0
+        for i, p in enumerate(after[:-1]):
+            below = after[i + 1].username
+            old_me, old_below = before.get(p.username), before.get(below)
+            if (old_below is not None and (old_me is None or old_me > old_below)
+                    and p.username in self.current_answers):
+                self._push_event(f"{p.username} passed {below} on the weekly ladder!", COLOR_TEXT_GOLD, "UP")
+                said += 1
+                if said == 2:
+                    break
+
+    def crew_race(self) -> list[tuple[str, int, int]]:
+        """(crew, points, members playing) in this match; the best CREW_TEAM_SIZE members count."""
+        groups: dict[str, list[int]] = {}
+        for st in self.standings.values():
+            p = self.db._players.get(st.username)
+            if p and p.crew and not is_bot(st.username):
+                groups.setdefault(p.crew, []).append(st.points)
+        race = [(c, sum(sorted(v, reverse=True)[:CREW_TEAM_SIZE]), len(v)) for c, v in groups.items()]
+        race.sort(key=lambda r: -r[1])
+        return race
+
+    def crew_ladder(self, n: int = 8) -> list[tuple[str, int, int]]:
+        """(crew, weekly points of its best 3, members) for this ISO week."""
+        groups: dict[str, list[int]] = {}
+        for p in self.db._players.values():
+            if p.crew and not is_bot(p.username):
+                groups.setdefault(p.crew, []).append(p.current_weekly())
+        ladder = [(c, sum(sorted(v, reverse=True)[:CREW_TEAM_SIZE]), len(v)) for c, v in groups.items()]
+        ladder = [r for r in ladder if r[1] > 0]
+        ladder.sort(key=lambda r: -r[1])
+        return ladder[:n]
+
+    def active_duels(self) -> list[Duel]:
+        return [d for d in self.duels if d.accepted and d.match_no == self.match_no]
+
+    def _resolve_duels(self):
+        self.duel_results = []
+        for d in self.active_duels():
+            pa = self.standings[d.a].points if d.a in self.standings else 0
+            pb = self.standings[d.b].points if d.b in self.standings else 0
+            if pa == pb:
+                self._push_event(f"Duel {d.a} vs {d.b}: a draw at {pa}!", COLOR_AMBER, "DUEL")
+                continue
+            (w, wp), (l, lp) = sorted(((d.a, pa), (d.b, pb)), key=lambda x: -x[1])
+            self.db.get_or_create_player(w).duel_wins += 1
+            self.db.get_or_create_player(l).duel_losses += 1
+            self.db.mark_dirty(w)
+            self.db.mark_dirty(l)
+            self.duel_results.append((w, l, wp, lp))
+            self._push_event(f"{w} wins the duel vs {l} ({wp}-{lp})!", COLOR_EVENT_RED, "DUEL")
+        self.duels = [d for d in self.duels if d.match_no > self.match_no]
 
     def _detect_ladder_changes(self):
         """Places gained on the weekly ladder during this match (None = new on the ladder)."""
@@ -861,7 +943,55 @@ class QuizLogic:
         self._command_cooldowns[username] = now
         return True
 
-    def process_message(self, username: str, message: str):
+    def _cmd_crew(self, username: str, rest: str):
+        if is_bot(username):
+            return
+        player = self.db.get_or_create_player(username)
+        if not rest:
+            if player.crew:
+                n = len(self.db.crew_members(player.crew))
+                self._push_event(f"{username} is in crew {player.crew} ({n} members)", COLOR_AMBER, "CREW")
+            return
+        if rest.lower() in ("leave", "quit", "none"):
+            if player.crew:
+                self._push_event(f"{username} left crew {player.crew}", (150, 140, 130), "CREW")
+                player.crew = ""
+                self.db.mark_dirty(username)
+            return
+        name = clean_crew_name(rest)
+        if not name or name == player.crew:
+            return
+        existing = next((p.crew for p in self.db._players.values() if p.crew.lower() == name.lower()), None)
+        player.crew = existing or name
+        self.db.mark_dirty(username)
+        verb = "joined" if len(self.db.crew_members(player.crew)) > 1 else "founded"
+        self._push_event(f"{username} {verb} crew {player.crew}!", COLOR_AMBER, "CREW")
+        self.sound_queue.append("vote")
+
+    def _cmd_duel(self, username: str, rest: str):
+        if is_bot(username) or not rest:
+            return
+        target = self.db.find_player(rest.split()[0])
+        if not target or target == username:
+            return
+        match_no = self.match_no if self.state in (GameState.LOBBY, GameState.WAITING) else self.match_no + 1
+        self.duels = [d for d in self.duels if not (d.a == username and not d.accepted)]
+        self.duels.append(Duel(username, target, match_no))
+        self._push_event(f"{username} challenges {target} to a duel! {target}: type !accept",
+                         COLOR_EVENT_RED, "DUEL")
+        self.sound_queue.append("double_points")
+
+    def _cmd_accept(self, username: str):
+        for d in self.duels:
+            if d.b == username and not d.accepted:
+                if any(x.accepted and x.match_no == d.match_no and username in (x.a, x.b) for x in self.duels):
+                    return  # one duel per match
+                d.accepted = True
+                self._push_event(f"DUEL ON: {d.a} vs {d.b} in match {d.match_no}!", COLOR_EVENT_RED, "DUEL")
+                self.sound_queue.append("rank_up")
+                return
+
+    def process_message(self, username: str, message: str, raw: str = ""):
         msg = message.strip().lower()  # chat already stripped punctuation: "!rank" arrives as "rank"
 
         if msg in ("reset", "clear"):
@@ -879,6 +1009,24 @@ class QuizLogic:
                     f"{username}: {where}, {p.current_weekly():,} pts, level {p.level}, {p.day_streak}-day streak",
                     COLOR_TEXT_GOLD, "PTS",
                 )
+            return
+
+        cmd = msg.split(" ", 1)[0]
+        if cmd == "crew":
+            self._cmd_crew(username, _rest_after_command(raw or msg))
+            return
+        if cmd == "duel":
+            self._cmd_duel(username, _rest_after_command(raw or msg))
+            return
+        if msg == "accept":
+            self._cmd_accept(username)
+            return
+        if msg == "card":
+            if self._check_command_cooldown(username) and not is_bot(username):
+                self.db.get_or_create_player(username)
+                start = max(time.time(), self.cards[-1][1] + 6.0 if self.cards else 0.0)  # cards queue, 6 s each
+                if start - time.time() < 30:
+                    self.cards = (self.cards + [(username, start)])[-5:]
             return
 
         if msg in ("ready", "join", "play"):
