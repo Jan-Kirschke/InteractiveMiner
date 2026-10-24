@@ -45,6 +45,7 @@ ROUND_STYLE = {
     "majority": ("CROWD MIND", (255, 140, 200), "No right answer: pick what most of chat picks", "CROWD PICK"),
     "minority": ("TWIST: LONELY ANSWER", (255, 128, 64), "The least picked answer wins", "LONELY PICK"),
     "higher_lower": ("HIGHER OR LOWER", (150, 230, 90), "Two choices: type 1 or 2", "CORRECT"),
+    "odd_one_out": ("ODD ONE OUT", (90, 220, 230), "Three belong together: which one does not?", "ODD ONE"),
 }
 
 
@@ -854,6 +855,13 @@ class UIManager:
                        (tx, ky - len(lines) * lh / 2 + j * lh + lh / 2), "midleft", alpha=a)
         return (x, y, w, h)
 
+    def _strike(self, x0, x1, cy, k):
+        """Odd One Out reveal: a line draws through an answer that belongs with the others."""
+        xe = int(lerp(x0, x1, k))
+        if xe > x0 + 4:
+            pygame.draw.line(self.screen, DARK_INK, (x0, cy + 2), (xe, cy + 2), 6)   # shadow keeps it visible on light cards
+            pygame.draw.line(self.screen, INK, (x0, cy), (xe, cy), 4)
+
     def _draw_question(self, logic, age, now):
         q = logic.current_question
         if not q:
@@ -1027,6 +1035,8 @@ class UIManager:
                 outline=INK if reveal and correct else None,
                 lift=int(8 * k) if reveal and correct else 0, right_pad=150,   # room for the percentage
             )
+            if reveal and not correct and q.kind == "odd_one_out":
+                self._strike(x + 2 * min(39, int(h * 0.22)) + 90, x + w - 170, y + h // 2, k)   # from the shape on
             # HQ-style answer split: a bar grows along the button while the percentage counts up
             target = res.option_counts[i] / total if i < len(res.option_counts) else 0
             shown = target * ease_out_cubic(progress(age, 0.25, 0.9))

@@ -288,6 +288,51 @@ def test_higher_lower_takes_only_1_or_2_and_scores_like_classic(game, monkeypatc
     assert res.winners == [right] and game.db.get_or_create_player("bob").wrong_answers == 1
 
 
+# ------------------------------------------
+# ODD ONE OUT: four items, the one that does not belong is right
+# ------------------------------------------
+def test_odd_one_out_scores_the_item_that_does_not_belong(game):
+    q = ask(game, 6)
+    assert q.kind == "odd_one_out" and len(q.options) == 4
+    assert "odd one out" in game.host_line.lower()
+    answer_at(game, "alice", q.correct_index, 1)
+    answer_at(game, "bob", (q.correct_index + 1) % 4, 1)
+    res = game._resolve_question()
+    assert [u for u, _, _ in res.correct_players] == ["alice"] and res.winners == [q.correct_index]
+
+
+def expire(game):
+    game.state_timer = 0
+    game.update(0)
+
+
+def test_a_full_match_plays_every_special_slot(game, monkeypatch):
+    monkeypatch.setattr(logic_mod, "MIN_PLAYERS", 0)        # no bots: the crowd is the three of us
+    game.state = GameState.WAITING
+    game.update(0)
+    expire(game)                                            # lobby -> intro
+    kinds = {}
+    for n in range(1, 11):
+        expire(game)
+        q = game.current_question
+        kinds[n] = q.kind
+        crowd_round = q.kind in ("majority", "minority")
+        pick = 0 if crowd_round else q.correct_index
+        game.process_message("alice", str(pick + 1))
+        game.process_message("bob", str(pick + 1))
+        game.process_message("carol", str((pick + 1) % len(q.options) + 1))
+        expire(game)
+        expire(game)
+        res = game.last_result
+        assert not res.void
+        alice_won = "alice" in [u for u, _, _ in res.correct_players]
+        assert alice_won == (q.kind != "minority"), n      # Lonely Answer: carol's lone pick wins
+    expire(game)
+    assert game.state == GameState.PODIUM and game.podium[0].username in ("alice", "bob")
+    assert {n: k for n, k in kinds.items() if k != "classic"}.keys() == game.special_slots.keys()
+    assert kinds[2] == "higher_lower" and kinds[4] in ("majority", "minority") and kinds[6] == "odd_one_out"
+
+
 def test_empty_deck_falls_back_to_a_classic_question(game, tmp_path):
     game.special = SpecialDecks([write_pack(tmp_path, [])])
     game.special_slots = {2: "odd_one_out"}

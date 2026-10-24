@@ -249,6 +249,8 @@ class VerticalUI(UIManager):
             x, y, w, hh = self._v_option(i, opt, rect, dim=(0.55 * k if reveal and not correct and res.winners else 0.0),
                                          outline=INK if reveal and correct else None,
                                          lift=int(8 * k) if reveal and correct else 0, right_pad=170)
+            if reveal and not correct and q.kind == "odd_one_out":
+                self._strike(x + 2 * min(46, int(hh * 0.33)) + 40, x + w - 190, y + hh // 2, k)   # clear of the knob
             target = res.option_counts[i] / total if i < len(res.option_counts) else 0
             shown = target * ease_out_cubic(progress(age, 0.25, 0.9))
             bw = int(w * shown)

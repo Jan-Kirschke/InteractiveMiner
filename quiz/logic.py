@@ -192,6 +192,7 @@ _CROWD_INTRO = "Crowd Mind! No right answer: pick what you think most of chat wi
 SPECIAL_INTROS = {
     "majority": _CROWD_INTRO, "minority": _CROWD_INTRO,   # Lonely Answer hides as Crowd Mind
     "higher_lower": "Higher or lower! Just two choices: type 1 or 2.",
+    "odd_one_out": "Odd one out! Three of these belong together. Which one does not?",
 }
 
 
