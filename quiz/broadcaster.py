@@ -117,6 +117,8 @@ class YouTubeBroadcaster:
             self._scaled = None
         self._latest = None     # newest frame bytes from the game loop
         self._fresh = 0         # frames handed over since the last stats line
+        self._sent = None       # the frame bytes the writer sent last
+        self._dropped = 0       # game frames replaced before they were sent, since the last stats line
         self._stderr_lines = []
         self._force_cpu = False  # set True after GPU encoding fails
         self._thread = None
@@ -289,9 +291,12 @@ class YouTubeBroadcaster:
                     pygame.transform.smoothscale(surface, self._out_size, self._scaled)  # releases the GIL
                     surface = self._scaled
                 if raw_pix_fmt(surface) == self.pix_fmt != "rgb24":
-                    self._latest = surface.get_buffer().raw  # one copy, no repacking
+                    raw = surface.get_buffer().raw  # one copy, no repacking
                 else:
-                    self._latest = pygame.image.tobytes(surface, _TOBYTES[self.pix_fmt])
+                    raw = pygame.image.tobytes(surface, _TOBYTES[self.pix_fmt])
+                if self._latest is not None and self._latest is not self._sent:
+                    self._dropped += 1   # the previous frame was replaced before the writer sent it
+                self._latest = raw
                 self._fresh += 1
             except Exception as e:  # never kill the thread: the game would wait for it
                 print(f"[Broadcast] Frame conversion failed: {e}")
@@ -317,8 +322,8 @@ class YouTubeBroadcaster:
         proc = self._proc
         next_write = time.perf_counter()
         stats_at = next_write + self.STATS_EVERY
-        written = late = 0
-        self._fresh = 0
+        written = late = repeats = 0
+        self._fresh = self._dropped = 0
         self._last_write = time.monotonic()
         while self._want and proc.poll() is None:
             raw = self._latest
@@ -331,6 +336,9 @@ class YouTubeBroadcaster:
                 proc.stdin.write(raw)
             except (BrokenPipeError, OSError, ValueError):
                 break
+            if raw is self._sent:
+                repeats += 1   # no new game frame since the last write: viewers see a held frame
+            self._sent = raw
             self._last_write = time.monotonic()
             written += 1
             next_write += interval
@@ -342,8 +350,10 @@ class YouTubeBroadcaster:
                 time.sleep(next_write - now)
             if now >= stats_at:
                 print(f"[Broadcast] Health: {written / self.STATS_EVERY:.1f} fps sent, "
-                      f"{self._fresh / self.STATS_EVERY:.1f} fps from the game, {late} stalls")
-                stats_at, written, late, self._fresh = now + self.STATS_EVERY, 0, 0, 0
+                      f"{self._fresh / self.STATS_EVERY:.1f} fps from the game, {late} stalls, "
+                      f"{repeats} repeated, {self._dropped} dropped")
+                stats_at, written, late, repeats = now + self.STATS_EVERY, 0, 0, 0
+                self._fresh = self._dropped = 0
         self._active = False
 
     def _close_proc(self):

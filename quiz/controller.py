@@ -148,8 +148,11 @@ class MainGameController:
 
         print("[Game] The Lifelong Quiz is running!")
 
+        frame_ms, work_ms, stats_at = [], [], time.monotonic() + 60
         while self.running:
             dt = self.clock.tick(FPS) / 1000.0
+            began = time.perf_counter()
+            frame_ms.append(dt * 1000)
 
             self._handle_events()
             self._process_chat()
@@ -162,6 +165,13 @@ class MainGameController:
             self._broadcast_frame()
             self._periodic_save()
             self._watchdog_ping()
+            work_ms.append((time.perf_counter() - began) * 1000)
+            if time.monotonic() >= stats_at:   # frame pacing: averages hide the hitches viewers see
+                f, w = sorted(frame_ms), sorted(work_ms)
+                print(f"[Game] Frame ms p50 {f[len(f) // 2]:.0f} p99 {f[len(f) * 99 // 100]:.0f} "
+                      f"max {f[-1]:.0f} | work p50 {w[len(w) // 2]:.1f} p99 {w[len(w) * 99 // 100]:.1f} "
+                      f"max {w[-1]:.0f} | over 50 ms: {sum(x > 50 for x in f)}")
+                frame_ms, work_ms, stats_at = [], [], time.monotonic() + 60
 
         self.shutdown()
 

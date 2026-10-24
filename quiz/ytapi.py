@@ -361,7 +361,7 @@ class YouTubeAPI:
             # auto-start off: on the quiz channel it never fired and it blocks manual transitions
             # (403 invalidTransition, measured 2026-10-24); the show takes it live itself
             "contentDetails": {"enableAutoStart": False, "enableAutoStop": False,
-                               "latencyPreference": "ultraLow", "enableDvr": False,
+                               "latencyPreference": "low", "enableDvr": False,   # ultraLow made viewers buffer
                                # no enableEmbed: channels not allowed to embed get 400 invalidEmbedSetting
                                # the testing step needs the monitor stream (viewers never see it)
                                "monitorStream": {"enableMonitorStream": True, "broadcastStreamDelayMs": 0}},

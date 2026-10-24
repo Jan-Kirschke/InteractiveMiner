@@ -239,7 +239,7 @@ def test_without_a_broadcast_one_is_created_bound_and_categorised(yt, monkeypatc
     assert params["part"] == "snippet,status,contentDetails"
     assert body["status"] == {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
     assert body["contentDetails"] == {"enableAutoStart": False, "enableAutoStop": False,
-                                      "latencyPreference": "ultraLow", "enableDvr": False,
+                                      "latencyPreference": "low", "enableDvr": False,
                                       "monitorStream": {"enableMonitorStream": True, "broadcastStreamDelayMs": 0}}
     assert body["snippet"]["title"] == ytapi.DEFAULT_TITLE
     assert not set("<>") & set(body["snippet"]["description"])   # YouTube answers 400 invalidDescription
