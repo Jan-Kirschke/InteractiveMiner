@@ -1,7 +1,6 @@
 [
   {"question": "Which planet is famous for its bright rings?", "correct": "Saturn", "incorrect": ["Mars", "Venus", "Mercury"], "category": "Space & Astronomy", "difficulty": "easy", "fact": "Saturn's rings are made mostly of water ice."},
   {"question": "What is the name of Earth's natural satellite?", "correct": "The Moon", "incorrect": ["Phobos", "Titan", "Europa"], "category": "Space & Astronomy", "difficulty": "easy", "fact": "The Moon is about 384,000 km from Earth."},
-  {"question": "What is the name of our galaxy?", "correct": "The Milky Way", "incorrect": ["Andromeda", "Triangulum", "Whirlpool"], "category": "Space & Astronomy", "difficulty": "easy", "fact": "Our solar system sits in one of its spiral arms."},
   {"question": "What is the star at the center of our solar system?", "correct": "The Sun", "incorrect": ["Sirius", "Polaris", "Betelgeuse"], "category": "Space & Astronomy", "difficulty": "easy", "fact": "The Sun holds 99.8% of the solar system's mass."},
   {"question": "How many planets are in our solar system?", "correct": "8", "incorrect": ["7", "9", "10"], "category": "Space & Astronomy", "difficulty": "easy", "fact": "Pluto was reclassified as a dwarf planet in 2006."},
   {"question": "What do we call a rock from space that burns up in the atmosphere?", "correct": "Meteor", "incorrect": ["Comet", "Asteroid", "Satellite"], "category": "Space & Astronomy", "difficulty": "easy", "fact": "A meteor that reaches the ground is a meteorite."},

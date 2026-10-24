@@ -28,6 +28,5 @@
   {"question": "What is a baby hedgehog called?", "correct": "Hoglet", "incorrect": ["Pup", "Kit", "Piglet"], "category": "Animals", "difficulty": "hard", "fact": "Hoglets are born with soft spines under the skin."},
   {"question": "Which beetle is among the heaviest insects, weighing up to about 100 g as a larva?", "correct": "Goliath beetle", "incorrect": ["Stag beetle", "Ladybug", "Dung beetle"], "category": "Animals", "difficulty": "hard", "fact": "Adult goliath beetles are around 11 cm long."},
   {"question": "Which sea creature is thought to be the basis for the legendary Kraken?", "correct": "Giant squid", "incorrect": ["Whale shark", "Manta ray", "Great white shark"], "category": "Animals", "difficulty": "hard", "fact": "Giant squid reach about 13 meters."},
-  {"question": "What is a baby beaver called?", "correct": "Kit", "incorrect": ["Pup", "Joey", "Calf"], "category": "Animals", "difficulty": "hard", "fact": "Beavers are the second-largest rodents."},
-  {"question": "Which penguin lives farthest north, right on the equator?", "correct": "Galapagos penguin", "incorrect": ["Emperor penguin", "Humboldt penguin", "Rockhopper"], "category": "Animals", "difficulty": "hard", "fact": "It breeds mostly on the Galapagos island of Isabela."}
+  {"question": "What is a baby beaver called?", "correct": "Kit", "incorrect": ["Pup", "Joey", "Calf"], "category": "Animals", "difficulty": "hard", "fact": "Beavers are the second-largest rodents."}
 ]
