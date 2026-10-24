@@ -589,7 +589,7 @@ class VerticalUI(UIManager):
         shown = int(round(self._lock_shown))
         y = L["floor"] + 32
         if locked:
-            label = f"{shown} LOCKED IN"
+            label = f"{max(1, shown)} LOCKED IN"   # the roll-up never reads 0 under a locked-in name
         else:
             label = "TYPE 1 OR 2 IN CHAT" if n == 2 else "TYPE 1, 2, 3 OR 4 IN CHAT"
         self._stext("black", TYPE["label"], label, ACCENT, (W // 2, y), "center")
