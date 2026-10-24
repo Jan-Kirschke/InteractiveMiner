@@ -41,7 +41,7 @@ EVENT_STYLE = {
     "first_blood": ("FIRST BLOOD BONUS", (255, 110, 110)),
     "jackpot": ("JACKPOT ROUND", (190, 120, 255)),
 }
-DIFF_COLORS = {"easy": GOOD, "medium": (255, 159, 28), "hard": BAD}
+DIFF_COLORS = {"easy": GOOD, "medium": (255, 159, 28), "hard": BAD, "expert": (190, 140, 255)}
 # Special rounds (quiz/special.py): kind -> (chip label, colour, rule under the question, tag on the winner)
 ROUND_STYLE = {
     "majority": ("CROWD MIND", (255, 140, 200), "No right answer: pick what most of chat picks", "CROWD PICK"),

@@ -208,7 +208,8 @@ class VerticalUI(UIManager):
             # The next question is already served; its options must not show before ASKING. The
             # build-up's cover closes over the last frame of the state before, frozen at entry.
             if not self.fx.covered(now) and self._freeze is not None:
-                self.screen.blit(self._freeze, (0, 0))        elif not self.fx.covered(now):   # a cut-away hides everything: skip the frame underneath
+                self.screen.blit(self._freeze, (0, 0))
+        elif not self.fx.covered(now):   # a cut-away hides everything: skip the frame underneath
             self._v_stage(now, dt)
             if state == GameState.INTRO:
                 self._v_intro(logic, age)
@@ -736,8 +737,9 @@ class VerticalUI(UIManager):
                 s.blit(v, (20, 42))
                 pts = self._render("black", 24, "PTS", DIM)
                 s.blit(pts, (24 + v.get_width(), 42 + v.get_height() - pts.get_height() - 8))
-            rung = LADDER.index(tier) + 1 if tier in LADDER else len(LADDER)
-            self._segments(s, 20, h - 30, w - 40, 12, len(LADDER), rung, tuple(TIER_INK[t] for t in LADDER))
+            ladder = LADDER + ("expert",) if tier == "expert" else LADDER   # the final's top rung
+            rung = ladder.index(tier) + 1 if tier in ladder else len(ladder)
+            self._segments(s, 20, h - 30, w - 40, 12, len(ladder), rung, tuple(TIER_INK[t] for t in ladder))
             return s
         return self._qc(key, make)
 
