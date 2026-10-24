@@ -607,6 +607,102 @@ def test_buildup_tells_chat_how_far_the_goal_is(game):
     assert "jackpot" in buildup_at(game, 10)["subline"].lower()
 
 
+# ------------------------------------------
+# 6. !double: once per match after 5 answers; x2 if right, up to -20 match points if wrong
+# ------------------------------------------
+def can_double(game, user, answered=5, pts=0):
+    st = game._standing(user)
+    st.answered, st.points = answered, pts
+
+
+def test_double_needs_five_answers_this_match(game):
+    classic(game)
+    can_double(game, "alice", answered=4)
+    game.process_message("alice", "double")
+    assert "alice" not in game.double_picks
+    can_double(game, "alice", answered=5)
+    game.process_message("alice", "double")
+    assert "alice" in game.double_picks and "alice" in game.doubles_used
+
+
+def test_double_pays_twice_when_right(game):
+    classic(game)
+    can_double(game, "alice")
+    game.process_message("alice", "double")
+    answer_at(game, "alice", 1)
+    answer_at(game, "bob", 1)
+    assert points(game._resolve_question()) == {"alice": 40, "bob": 20}
+
+
+def test_double_costs_match_points_when_wrong_but_never_below_zero(game):
+    classic(game)
+    can_double(game, "alice", pts=50)
+    can_double(game, "bob", pts=8)
+    for u in ("alice", "bob"):
+        game.process_message(u, "double")
+        answer_at(game, u, 0)
+    lifetime = game.db.get_or_create_player("alice").score
+    game._resolve_question()
+    assert game.standings["alice"].points == 50 - logic_mod.DOUBLE_STAKE and game.standings["bob"].points == 0
+    assert game.db.get_or_create_player("alice").score == lifetime          # only match points
+
+
+def test_double_is_once_per_match(game):
+    classic(game)
+    can_double(game, "alice")
+    game.process_message("alice", "double")
+    classic(game)
+    game.double_picks = {}
+    game.process_message("alice", "double")
+    assert "alice" not in game.double_picks
+    game._enter_intro()
+    assert not game.doubles_used
+
+
+def test_double_is_not_for_crowd_rounds_late_answers_bots_or_with_half(game):
+    classic(game, correct=-1, kind="majority")
+    can_double(game, "alice")
+    game.process_message("alice", "double")
+    classic(game)
+    game.state = GameState.LOCKING
+    game.process_message("alice", "double")
+    game.state = GameState.ASKING
+    can_double(game, BOT)
+    game.process_message(BOT, "double")
+    game._standing("carol").streak = 3
+    can_double(game, "carol")
+    game.process_message("carol", "half 1 2")
+    game.process_message("carol", "double")
+    assert game.double_picks == set() and "carol" in game.half_picks
+    can_double(game, "dave")
+    game._standing("dave").streak = 3
+    game.process_message("dave", "double")
+    game.process_message("dave", "half 1 2")
+    assert "dave" not in game.half_picks
+
+
+def test_reaching_five_answers_announces_double_once_per_reveal(game):
+    classic(game)
+    for u in ("alice", "bob", BOT):
+        can_double(game, u, answered=4)
+        answer_at(game, u, 1)
+    game.sound_queue.clear()
+    game._resolve_question()
+    said = [e.text for e in game.event_feed if "!double" in e.text]
+    assert len(said) == 1 and "Bot" not in said[0] and game.sound_queue.count("power_up") == 1
+
+
+def test_using_double_plays_power_up_on_the_next_frame(game):
+    classic(game)
+    can_double(game, "alice")
+    game.state_timer = 20
+    game.process_message("alice", "double")
+    game.update(0.01)
+    assert "power_up" in game.sound_queue
+    game.update(0.01)
+    assert "power_up" not in game.sound_queue
+
+
 def test_question_lines_vary(game):
     import re
     lines = []

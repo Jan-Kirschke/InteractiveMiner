@@ -173,6 +173,7 @@ class MatchStanding:
     best_streak: int = 0
     streak: int = 0
     fastest: float = 0.0  # fastest correct answer time in this match (0 = none)
+    answered: int = 0     # questions answered in this match (a void crowd round does not count)
 
 
 @dataclass

@@ -40,7 +40,7 @@ from quiz.config import (
     COLOR_CORRECT, COLOR_TEXT_GOLD, COLOR_AMBER, COLOR_RANK_DIAMOND,
     LIGHTNING_TIME, LIGHTNING_MULT, JACKPOT_BONUS, FIRST_BLOOD_BONUS,
     PARTICIPATION_MILESTONES, PARTICIPATION_BONUS, STREAK_SHIELD_THRESHOLD,
-    COMMAND_COOLDOWN, SPECIAL_SLOTS, CROWD_MIN_REAL, LONELY_CHANCE, HALF_STREAK,
+    COMMAND_COOLDOWN, SPECIAL_SLOTS, CROWD_MIN_REAL, LONELY_CHANCE, HALF_STREAK, DOUBLE_AFTER, DOUBLE_STAKE,
 )
 from quiz.models import (
     GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding, Duel,
@@ -351,6 +351,9 @@ class QuizLogic:
         self.lock_order: list[tuple[str, float]] = []  # (username, seconds after question start)
         self.half_picks: dict[str, tuple[int, int]] = {}  # 50:50 joker this question: the two options named
         self.halves_used: set[str] = set()                # who spent their joker this match
+        self.double_picks: set[str] = set()               # "!double" on this question
+        self.doubles_used: set[str] = set()               # who spent their !double this match
+        self._chat_sounds: list[str] = []                 # sounds from chat commands, played on the next frame
         self.question_start_time = 0.0
         self.question_duration = float(QUESTION_DISPLAY_TIME)
         self.last_result: RoundResult | None = None
@@ -599,7 +602,9 @@ class QuizLogic:
     # STATE MACHINE
     # ------------------------------------------
     def update(self, dt: float):
-        self.sound_queue.clear()
+        self.sound_queue.clear()   # the controller runs chat before update(): chat sounds wait in _chat_sounds
+        self.sound_queue += self._chat_sounds
+        self._chat_sounds.clear()
         self._ensure_cache()
 
         if self.state == GameState.WAITING:
@@ -685,6 +690,7 @@ class QuizLogic:
         self.q_index = 0
         self.standings = {}
         self.halves_used = set()
+        self.doubles_used = set()
         self.tier_reached = 0
         self.perfect = None
         self.buildup_intensity = 0.0
@@ -726,6 +732,7 @@ class QuizLogic:
         self.current_answers = {}
         self.lock_order = []
         self.half_picks = {}
+        self.double_picks = set()
         self.new_players_this_round = []
         self._check_level_up()
 
@@ -1193,7 +1200,7 @@ class QuizLogic:
         if not q:
             return RoundResult(Question("?", "?", [], 0, "", ""), [], [], 0)
 
-        correct_players, wrong_players = [], []
+        correct_players, wrong_players, double_ready = [], [], []
         crowd = q.kind in CROWD_KINDS
         # A crowd round is decided and scored by real players only: bots must never sway it
         answers = {u: a for u, a in self.current_answers.items() if not is_bot(u)} if crowd else self.current_answers
@@ -1215,11 +1222,16 @@ class QuizLogic:
             answer_time = max(0.0, timestamp - self.question_start_time)
             half = self.half_picks.get(username)
             self._team_add(username, 0)   # answering makes you a team member for this match
+            st.answered += 1
+            if st.answered == DOUBLE_AFTER and not is_bot(username) and username not in self.doubles_used:
+                double_ready.append(username)
 
             if choice in winners or (half and q.correct_index in half):
                 pts = int(self._calculate_points(timestamp, player.streak) * self.question_mult(q))
                 if half:
                     pts = max(1, pts // 2)   # 50:50 joker: two guesses, half the points
+                if username in self.double_picks:
+                    pts *= 2                 # !double paid off
                 if self.community_jackpot and self.is_double_points and not is_bot(username):
                     pts += JACKPOT_BONUS     # chat reached the community goal: every right answer on the final
                 if player.wrong_streak >= COMEBACK_STREAK_THRESHOLD:
@@ -1242,6 +1254,10 @@ class QuizLogic:
             else:
                 player.record_wrong()
                 st.streak = 0
+                if username in self.double_picks:   # !double lost: match points only, never below 0
+                    lost = min(DOUBLE_STAKE, st.points)
+                    st.points -= lost
+                    self._team_add(username, -lost)
                 if getattr(player, "_shield_used", False):
                     self._push_event(f"{username} SHIELD! Streak saved (x{player.streak})",
                                      COLOR_EVENT_BLUE, "SHD")
@@ -1259,6 +1275,12 @@ class QuizLogic:
                              + (f" (+{more} more combos)" if more else ""), COLOR_TEXT_GOLD, "FIRE")
             self.sound_queue.append("combo")
             self._combo_hits = []
+
+        if double_ready:
+            who = ", ".join(double_ready[:3]) + (f" +{len(double_ready) - 3}" if len(double_ready) > 3 else "")
+            self._push_event(f"{who}: !double unlocked! x2 if right, -{DOUBLE_STAKE} if wrong",
+                             COLOR_EVENT_BLUE, "x2")
+            self.sound_queue.append("power_up")
 
         unlocked = [u for u, _, _ in correct_players if not is_bot(u) and u not in self.halves_used
                     and self.standings[u].streak == HALF_STREAK]
@@ -1515,7 +1537,8 @@ class QuizLogic:
         Once per match, from a HALF_STREAK answer streak in this match; not on crowd or two-option rounds."""
         q = self.current_question
         if (is_bot(username) or self.state not in (GameState.ASKING, GameState.LOCKING) or not q
-                or q.kind in CROWD_KINDS or len(q.options) < 4 or username in self.halves_used):
+                or q.kind in CROWD_KINDS or len(q.options) < 4 or username in self.halves_used
+                or username in self.double_picks):   # one power-up per answer
             return
         st = self.standings.get(username)
         if not st or st.streak < HALF_STREAK:
@@ -1532,6 +1555,19 @@ class QuizLogic:
         self.halves_used.add(username)
         self._push_event(f"{username} plays the 50:50 joker!", COLOR_EVENT_PURPLE, "50")
         self.sound_queue.append("vote")
+
+    def _cmd_double(self, username: str):
+        """!double: once per match after DOUBLE_AFTER answers in it, while a question with a right
+        answer is open; this answer pays x2 if right, or costs up to DOUBLE_STAKE match points."""
+        q, st = self.current_question, self.standings.get(username)
+        if (is_bot(username) or self.state != GameState.ASKING or not q or q.kind in CROWD_KINDS
+                or username in self.doubles_used or username in self.half_picks
+                or not st or st.answered < DOUBLE_AFTER):
+            return
+        self.double_picks.add(username)
+        self.doubles_used.add(username)
+        self._push_event(f"{username} doubles down: x2 or -{DOUBLE_STAKE}!", COLOR_EVENT_BLUE, "x2")
+        self._chat_sounds.append("power_up")
 
     def process_message(self, username: str, message: str, raw: str = "", at: float | None = None):
         """at: when the answer arrived (the answer page stamps it on receipt); None = now."""
@@ -1566,6 +1602,9 @@ class QuizLogic:
             return
         if cmd in ("half", "5050"):
             self._cmd_half(username, _rest_after_command(msg), at)
+            return
+        if msg in ("double", "x2"):
+            self._cmd_double(username)
             return
         if msg == "team":
             if not is_bot(username) and self._check_command_cooldown(username):

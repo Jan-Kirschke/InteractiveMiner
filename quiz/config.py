@@ -93,6 +93,8 @@ FINAL_QUESTION_MULT = 2.0  # the last question pays double
 SPECIAL_SLOTS = {2: "higher_lower", 4: "majority", 6: "odd_one_out"}
 LONELY_CHANCE = 0.3        # share of Crowd Mind slots secretly played as Lonely Answer (least picked wins)
 HALF_STREAK = 3            # 50:50 joker ("!half 1 3"): once per match from this answer streak in the match
+DOUBLE_AFTER = 5           # "!double": once per match after this many answers in it...
+DOUBLE_STAKE = 20          # ...x2 if right, or this many match points lost if wrong (never below 0)
 CROWD_MIN_REAL = 3         # Crowd Mind needs this many real (non-bot) answers, or the question is void
 DIFFICULTY_RAMP = {1: "easy", 2: "easy", 3: "easy", 4: "medium", 5: "medium",
                    6: "medium", 7: "medium", 8: "hard", 9: "hard", 10: "hard"}
