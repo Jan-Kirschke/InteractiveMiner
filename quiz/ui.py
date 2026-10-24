@@ -17,6 +17,7 @@ import pygame
 from quiz.config import SCREEN_WIDTH, SCREEN_HEIGHT, FONT_DIR, MATCH_LENGTH, REVEAL_AT
 from quiz.models import GameState
 from quiz.logic import is_bot
+from quiz.transitions import Transitions
 
 # ==========================================
 # PALETTE
@@ -225,6 +226,7 @@ class UIManager:
     def __init__(self, screen: pygame.Surface):
         self.screen = screen
         self.fonts = Fonts()
+        self.fx = Transitions(self.fonts)   # cutscenes between questions, into the match and the podium
         self._text_cache = {}
         self._surf_cache = {}
         self._bg = self._make_background()
@@ -438,6 +440,7 @@ class UIManager:
             if state == GameState.LOBBY:
                 self._vote_bars = {}
         age = now - self._state_enter
+        self.fx.cue(logic, now)
 
         self._draw_stage(now, dt)
         if state == GameState.INTRO:
@@ -458,6 +461,7 @@ class UIManager:
                 self._text("display", 90, "THE LIFELONG QUIZ", ACCENT, (SCREEN_WIDTH // 2, 470), "center")
             self._draw_footer(logic, now)
             self._draw_player_card(logic, now)
+        self.fx.draw(self.screen, now)
         self._draw_confetti(dt)
         pygame.display.flip()
 

@@ -37,6 +37,7 @@ class VerticalUI(UIManager):
             if state == GameState.LOBBY:
                 self._vote_bars = {}
         age = now - self._state_enter
+        self.fx.cue(logic, now)
 
         self._draw_stage(now, dt)
         if state == GameState.INTRO:
@@ -56,6 +57,7 @@ class VerticalUI(UIManager):
                 self._text("display", 96, "THE LIFELONG", ACCENT, (W // 2, 760), "center")
                 self._text("display", 96, "QUIZ", ACCENT, (W // 2, 870), "center")
             self._draw_player_card(logic, now)
+        self.fx.draw(self.screen, now)
         self._draw_confetti(dt)
         pygame.display.flip()
 
