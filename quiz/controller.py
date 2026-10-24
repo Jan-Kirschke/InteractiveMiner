@@ -29,9 +29,18 @@ from quiz.ytchat import page_url
 from quiz.broadcaster import YouTubeBroadcaster
 
 
+def init_pygame():
+    """Only the subsystems the game uses (SoundManager starts the mixer itself). Not pygame.init():
+    its joystick subsystem, under the dummy video driver on Windows, leaks ~100 USER objects per
+    second (10,000 cap in ~2 min), and quitting it afterwards leaves device events in the queue
+    that make pygame.event.get() raise KeyError."""
+    pygame.display.init()
+    pygame.font.init()
+
+
 class MainGameController:
     def __init__(self, video_id: str = "", offline: bool = False):
-        pygame.init()
+        init_pygame()
         pygame.display.set_caption(WINDOW_TITLE)
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         self.clock = pygame.time.Clock()

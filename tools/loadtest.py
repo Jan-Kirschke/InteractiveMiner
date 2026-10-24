@@ -62,6 +62,33 @@ def _rss_mb() -> float:
         return 0.0
 
 
+def _user_objects() -> int:
+    """Windows USER handles held by this process (GetGuiResources flag 1); -1 elsewhere."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32, u32 = ctypes.WinDLL("kernel32"), ctypes.WinDLL("user32")
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        u32.GetGuiResources.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        return u32.GetGuiResources(k32.GetCurrentProcess(), 1)
+    except Exception:
+        return -1
+
+
+def _init_without_joystick():
+    """Every pygame.init() in this process starts only display and font, whatever the code
+    under test does (older trees call pygame.init()): the joystick subsystem leaks ~100 USER
+    objects per second under the dummy driver on Windows, and quitting it after init leaves
+    device events that make pygame.event.get() raise KeyError."""
+    import pygame
+
+    def init():
+        pygame.display.init()
+        pygame.font.init()
+        return (2, 0)
+    pygame.init = init
+
+
 def _pct(values, *ps):
     if not values:
         return {f"p{p}": 0.0 for p in ps} | {"max": 0.0}
@@ -158,6 +185,7 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
     real_time = time.time
     clock = [real_time()]
     time.time = lambda: clock[0]          # every quiz module reads time.time(): one fake clock for all
+    _init_without_joystick()              # also for older trees whose controller lacks the fix
 
     from quiz.models import utc_day, utc_week, ChatMessage
     tmp = tempfile.TemporaryDirectory()
@@ -208,7 +236,7 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
     pace = 1 / fps if pace_real_time else 0.0
     times = {p: [] for p in phases}
     msgs_done, owed, chat_us = 0, 0.0, []
-    mem, next_mem = [], 0.0
+    mem, next_mem, user_obj = [], 0.0, [_user_objects()]
     threads_start = threading.active_count()
     sampler = Sampler() if sample else None
     prof = None
@@ -277,6 +305,7 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
         sim = f / fps
         if sim >= next_mem:
             mem.append((round(sim, 1), round(_rss_mb(), 1)))
+            user_obj.append(_user_objects())
             next_mem += mem_every
     wall = real_time() - began_wall
     wait_frame(5.0)
@@ -352,6 +381,7 @@ def run_scenario(players: int, rate: float, seconds: float, render_every: int = 
         "rss_mb": {"start": mem[0][1] if mem else 0, "end": round(_rss_mb(), 1),
                    "slope_mb_per_h": round(slope, 2), "samples": mem if len(mem) <= 40 else mem[::max(1, len(mem) // 40)]},
         "threads": {"start": threads_start, "end": threading.active_count()},
+        "user_objects": {"max": max(user_obj), "end": _user_objects()},
         "sizes": sizes,
         "rounds": logic.round_count, "match_no": logic.match_no,
     }
@@ -441,7 +471,7 @@ def main():
     ap.add_argument("--sample", action="store_true", help="add a stack-sampling profile to the result")
     ap.add_argument("--json", default="", help="write the result here (matrix workers)")
     ap.add_argument("--matrix", action="store_true")
-    ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--jobs", type=int, default=1, help="parallel workers (keep at most 2 Python processes)")
     ap.add_argument("--out", default="")
     ap.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"))
     ap.add_argument("--pace", action="store_true", help="real-time 30 fps like clock.tick (CPU %% like production)")

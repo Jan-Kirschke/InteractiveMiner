@@ -25,6 +25,14 @@ class _FillUI:
         self.screen.fill((self.n * 40 % 256, 0, 0))
 
 
+def test_pygame_starts_without_the_joystick_subsystem():
+    from quiz.controller import init_pygame
+    init_pygame()
+    assert pygame.display.get_init() and pygame.font.get_init() and not pygame.joystick.get_init()
+    pygame.display.set_mode((64, 64))
+    pygame.event.get()   # the game loop's event pump works (joystick quit-after-init broke it)
+
+
 def test_saves_never_block_the_game_loop(tmp_path):
     # A commit that takes a second (WAL checkpoint on a busy disk) must not stall a frame or
     # the systemd watchdog ping that follows it in the same loop.
