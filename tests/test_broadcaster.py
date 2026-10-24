@@ -249,3 +249,42 @@ def test_writer_keeps_real_time_when_the_game_stalls():
     b._want = False
     t.join()
     assert 27 <= len(b._proc.stdin.frames) <= 32
+
+
+class _BurstyPipe(_Pipe):
+    """FFmpeg on a busy CPU: every 4th write blocks for ~3 frame times, then it takes input fast."""
+
+    def write(self, raw):
+        super().write(raw)
+        if len(self.frames) % 4 == 0:
+            time.sleep(0.1)
+
+
+def test_every_game_frame_goes_out_once_while_ffmpeg_takes_input_in_bursts():
+    # Server, 2026-10-24: after each blocked write the writer caught up by re-sending the newest
+    # frame, and the frames that came meanwhile were overwritten: ~1,330 of 1,800 frames a minute
+    # repeated and as many game frames lost. Every game frame must go out once, in order.
+    import threading
+    screen = _picture()
+    b = _streaming()
+    b._proc = _Proc()
+    b._proc.stdin = _BurstyPipe()
+    b._want = True
+    writer = threading.Thread(target=b._writer_loop, daemon=True)
+    writer.start()
+    period, sent = 1 / 29.7, 0
+    t = time.perf_counter()
+    for i in range(90):                      # 3 s of game frames
+        assert b.wait_frame(2.0)
+        b.send_frame(screen, i)
+        sent += 1
+        t += period
+        time.sleep(max(0.0, t - time.perf_counter()))
+    assert b.wait_frame(2.0)
+    time.sleep(0.1)
+    b._want = False
+    writer.join(2.0)
+    frames = b._proc.stdin.frames
+    unique = len({id(f) for f in frames})
+    assert unique >= sent * 0.9                 # nearly no game frame lost
+    assert len(frames) - unique <= len(frames) * 0.15   # repeats only to keep in step (~1 %)

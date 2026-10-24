@@ -11,6 +11,7 @@ when the game is late, so the video clock never falls behind real time. If it di
 would report "not receiving enough video" and viewers would buffer.
 """
 
+import collections
 import subprocess
 import threading
 import time
@@ -89,6 +90,7 @@ class YouTubeBroadcaster:
     RESTART_MAX = 60   # backoff ceiling
     STABLE_RUN = 60    # a run this long resets the backoff
     STALL_KILL = 20    # FFmpeg took no frame for this long (network hung): kill it, the supervisor restarts it
+    QUEUE = 6          # game frames held while FFmpeg is busy (~0.2 s); beyond that the oldest are lost
     STOP_WAIT = 8      # stop(): how long the writer may take to finish before FFmpeg is killed
 
     def __init__(self, stream_key: str, width: int = 1920, height: int = 1080,
@@ -118,6 +120,8 @@ class YouTubeBroadcaster:
         self._latest = None     # newest frame bytes from the game loop
         self._fresh = 0         # frames handed over since the last stats line
         self._sent = None       # the frame bytes the writer sent last
+        self._new = threading.Event()   # a game frame arrived that the writer has not sent
+        self._queue = collections.deque()   # converted game frames not yet sent, oldest first
         self._dropped = 0       # game frames replaced before they were sent, since the last stats line
         self._stderr_lines = []
         self._force_cpu = False  # set True after GPU encoding fails
@@ -294,10 +298,13 @@ class YouTubeBroadcaster:
                     raw = surface.get_buffer().raw  # one copy, no repacking
                 else:
                     raw = pygame.image.tobytes(surface, _TOBYTES[self.pix_fmt])
-                if self._latest is not None and self._latest is not self._sent:
-                    self._dropped += 1   # the previous frame was replaced before the writer sent it
+                if len(self._queue) >= self.QUEUE:
+                    self._queue.popleft()
+                    self._dropped += 1   # FFmpeg is far behind: lose the oldest, never block the game
+                self._queue.append(raw)
                 self._latest = raw
                 self._fresh += 1
+                self._new.set()   # wake the writer
             except Exception as e:  # never kill the thread: the game would wait for it
                 print(f"[Broadcast] Frame conversion failed: {e}")
             finally:
@@ -317,37 +324,48 @@ class YouTubeBroadcaster:
     STATS_EVERY = 60  # seconds between "[Broadcast] Health" lines
 
     def _writer_loop(self):
-        """Write one frame every 1/fps seconds until FFmpeg exits or stop() is called."""
+        """Send every game frame once, in order, until FFmpeg exits or stop() is called.
+
+        FFmpeg stamps frame n at n/fps, so the stream stays in step with the live audio only if
+        about fps frames go out per second. Frame k is due at start + k/fps. Game frames queue up
+        while a write blocks (FFmpeg takes input in bursts on a busy CPU) and go out afterwards; the
+        last frame is repeated only when no game frame came by one interval past due.
+        Before (2026-10-24, server): after each blocked write the writer caught up by sending the
+        newest frame again and again, and the frames that arrived meanwhile were overwritten:
+        ~1,330 of 1,800 frames a minute repeated, as many game frames lost. Smooth game, juddering stream."""
         interval = 1.0 / self._fps
         proc = self._proc
-        next_write = time.perf_counter()
-        stats_at = next_write + self.STATS_EVERY
-        written = late = repeats = 0
+        start = time.perf_counter()
+        stats_at = start + self.STATS_EVERY
+        n = written = late = repeats = 0
         self._fresh = self._dropped = 0
         self._last_write = time.monotonic()
         while self._want and proc.poll() is None:
-            raw = self._latest
-            if raw is None:
+            if self._latest is None:
                 time.sleep(0.01)
-                next_write = time.perf_counter()
+                start, n = time.perf_counter(), 0
                 self._last_write = time.monotonic()  # nothing to send is not a stall
                 continue
+            if not self._queue:   # wait for the next game frame, at most until it is one interval overdue
+                self._new.wait(max(0.0, start + (n + 1) * interval - time.perf_counter()))
+                self._new.clear()
+            raw = self._queue.popleft() if self._queue else (self._sent or self._latest)
             try:
                 proc.stdin.write(raw)
             except (BrokenPipeError, OSError, ValueError):
                 break
             if raw is self._sent:
-                repeats += 1   # no new game frame since the last write: viewers see a held frame
+                repeats += 1   # no new game frame in time: viewers see a held frame
             self._sent = raw
             self._last_write = time.monotonic()
             written += 1
-            next_write += interval
+            n += 1
             now = time.perf_counter()
-            if now > next_write + 1.0:  # stalled over a second (pipe blocked): resync, do not burst
+            if now > start + n * interval + 1.0:  # stalled over a second (pipe blocked): resync, do not burst
                 late += 1
-                next_write = now
-            elif next_write > now:
-                time.sleep(next_write - now)
+                start, n = now, 0
+            elif start + (n - 2) * interval > now:  # game ahead of the stream clock: do not run ahead
+                time.sleep(start + (n - 2) * interval - now)
             if now >= stats_at:
                 print(f"[Broadcast] Health: {written / self.STATS_EVERY:.1f} fps sent, "
                       f"{self._fresh / self.STATS_EVERY:.1f} fps from the game, {late} stalls, "
@@ -371,6 +389,7 @@ class YouTubeBroadcaster:
             proc.kill()
             proc.wait()
         self._latest = None
+        self._queue.clear()
 
     def stop(self):
         """Stop streaming and do not restart."""
