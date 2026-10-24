@@ -43,6 +43,8 @@ class QuizDatabase:
             self._conn.row_factory = sqlite3.Row
             self._create_tables()
 
+        self._conn.execute("PRAGMA journal_mode=WAL")      # a crash mid-write cannot corrupt the file
+        self._conn.execute("PRAGMA synchronous=NORMAL")
         self._players: dict[str, Player] = {}
         self._load_all()
 
@@ -229,7 +231,7 @@ class QuizDatabase:
             return
         with self._lock:
             to_save = list(self._dirty)
-            self._dirty.clear()
+            self._dirty.difference_update(to_save)
         try:
             data = []
             for uname in to_save:
@@ -245,18 +247,21 @@ class QuizDatabase:
                         p.crew, p.duel_wins, p.duel_losses,
                     ))
             if data:
-                self._conn.executemany("""
-                    INSERT OR REPLACE INTO players
-                    (username, score, streak, best_streak, rank,
-                     games_played, correct_answers, wrong_answers,
-                     wrong_streak, participation_streak, streak_shield,
-                     last_seen, weekly_score, week, day_streak, last_day,
-                     crew, duel_wins, duel_losses)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, data)
-                self._conn.commit()
-                print(f"[DB] Saved {len(data)} players")
+                with self._lock:
+                    self._conn.executemany("""
+                        INSERT OR REPLACE INTO players
+                        (username, score, streak, best_streak, rank,
+                         games_played, correct_answers, wrong_answers,
+                         wrong_streak, participation_streak, streak_shield,
+                         last_seen, weekly_score, week, day_streak, last_day,
+                         crew, duel_wins, duel_losses)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, data)
+                    self._conn.commit()
+                    print(f"[DB] Saved {len(data)} players")
         except Exception as e:
+            with self._lock:
+                self._dirty.update(to_save)  # keep them for the next save instead of losing them
             print(f"[DB] Save error: {e}")
 
     def close(self):

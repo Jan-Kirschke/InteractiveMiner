@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 import requests
 
@@ -43,14 +44,24 @@ def parse_page(html: str) -> tuple[str, str, str] | None:
         return None
     try:
         data, _ = json.JSONDecoder().raw_decode(html, start + len(marker))
-        conts = data["contents"]["twoColumnWatchNextResults"]["conversationBar"]["liveChatRenderer"]["continuations"]
+        chat = data["contents"]["twoColumnWatchNextResults"]["conversationBar"]["liveChatRenderer"]
     except (ValueError, KeyError, TypeError):
         return None
-    token = next_continuation(conts)[0]
+    token = _unfiltered_token(chat) or next_continuation(chat.get("continuations"))[0]
     if not token:
         return None
     vid = _VIDEO_ID_RE.search(html)
     return (vid.group(1) if vid else "", version.group(1), token)
+
+
+def _unfiltered_token(chat: dict) -> str:
+    """The page opens 'Top chat', which YouTube filters (repeated short messages like '1' can vanish).
+    The view menu's second entry is 'Live chat': every message."""
+    try:
+        items = chat["header"]["liveChatHeaderRenderer"]["viewSelector"]["sortFilterSubMenuRenderer"]["subMenuItems"]
+        return items[1]["continuation"]["reloadContinuationData"]["continuation"]
+    except (KeyError, IndexError, TypeError):
+        return ""
 
 
 def next_continuation(continuations: list) -> tuple[str, float]:
@@ -62,8 +73,8 @@ def next_continuation(continuations: list) -> tuple[str, float]:
     return "", 0.0
 
 
-def parse_chat(response: dict) -> tuple[list[tuple[str, str, str]], str, float]:
-    """([(message id, author, text)], next token, wait seconds) from a get_live_chat response."""
+def parse_chat(response: dict) -> tuple[list[tuple[str, str, str, float]], str, float]:
+    """([(message id, author, text, sent at)], next token, wait seconds) from a get_live_chat response."""
     lc = response.get("continuationContents", {}).get("liveChatContinuation")
     if not lc:
         return [], "", 0.0
@@ -75,7 +86,8 @@ def parse_chat(response: dict) -> tuple[list[tuple[str, str, str]], str, float]:
         author = item.get("authorName", {}).get("simpleText", "").lstrip("@")
         text = "".join(r.get("text", "") for r in item.get("message", {}).get("runs", [])).strip()
         if author and text:
-            messages.append((item.get("id", ""), author, text))
+            sent = int(item.get("timestampUsec") or 0) / 1e6 or time.time()
+            messages.append((item.get("id", ""), author, text, sent))
     token, wait = next_continuation(lc.get("continuations"))
     return messages, token, wait
 
@@ -108,19 +120,19 @@ class LiveChat:
     def alive(self) -> bool:
         return bool(self._token)
 
-    def poll(self) -> tuple[list[tuple[str, str]], float]:
-        """New messages and how long to wait before the next poll. Chat ended -> alive is False."""
+    def poll(self) -> tuple[list[tuple[str, str, float]], float]:
+        """New (author, text, sent at) and how long to wait before the next poll. Chat ended -> alive is False."""
         body = {"context": {"client": {"clientName": "WEB", "clientVersion": self._version}},
                 "continuation": self._token}
-        resp = self._http.post(_CHAT_URL, json=body, headers=_HEADERS, cookies=_COOKIES, timeout=15)
+        resp = self._http.post(_CHAT_URL, json=body, headers=_HEADERS, cookies=_COOKIES, timeout=5)
         resp.raise_for_status()
         messages, self._token, wait = parse_chat(resp.json())
         fresh = []
-        for msg_id, author, text in messages:
+        for msg_id, author, text, sent in messages:
             if msg_id and msg_id in self._seen:
                 continue
             self._seen[msg_id] = None
-            fresh.append((author, text))
+            fresh.append((author, text, sent))
         while len(self._seen) > 2000:
             del self._seen[next(iter(self._seen))]
         return fresh, min(self.MAX_WAIT, max(self.MIN_WAIT, wait))

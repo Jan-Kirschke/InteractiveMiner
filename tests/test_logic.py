@@ -230,3 +230,12 @@ def test_last_five_seconds_beep_once_per_second_with_one_riser(game):
             break
     assert played.count("countdown") == 5
     assert played.count("final_countdown") == 1
+
+
+def test_answer_speed_counts_from_when_it_was_sent(game):
+    game.question_start_time -= 5
+    sent = game.question_start_time + 1.5
+    game.process_message("alice", "2", "2", at=sent)
+    assert game.lock_order[-1] == ("alice", 1.5)
+    game.process_message("bob", "2", "2", at=game.question_start_time - 30)  # never before the question
+    assert game.lock_order[-1] == ("bob", 0.0)

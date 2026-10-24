@@ -10,8 +10,8 @@ RECORDED = json.loads((Path(__file__).parent / "fixtures" / "live_chat_response.
 
 def test_chat_messages_authors_and_next_token():
     messages, token, wait = parse_chat(RECORDED)
-    assert [(a, t) for _, a, t in messages] == [("LifelongQuiz", "1"), ("Viewer_1", "1"), ("Viewer_1", "!crew  Night Owls")]
-    assert all(mid for mid, _, _ in messages)
+    assert [(a, t) for _, a, t, _ in messages] == [("LifelongQuiz", "1"), ("Viewer_1", "1"), ("Viewer_1", "!crew  Night Owls")]
+    assert all(mid and sent > 1.7e9 for mid, _, _, sent in messages)
     assert token.startswith("0ofMyAOR")
     assert wait == 10.0
 
@@ -28,6 +28,13 @@ def test_page_gives_video_version_and_token():
             '"INNERTUBE_CLIENT_VERSION":"2.20261023.01.00"'
             '"currentVideoEndpoint":{"watchEndpoint":{"videoId":"_nNUB0vC7Yw"}}')
     assert parse_page(html) == ("_nNUB0vC7Yw", "2.20261023.01.00", "TOKEN")
+    # with the view menu present, the unfiltered "Live chat" token wins over "Top chat"
+    menu = {"liveChatHeaderRenderer": {"viewSelector": {"sortFilterSubMenuRenderer": {"subMenuItems": [
+        {"title": "Top chat", "continuation": {"reloadContinuationData": {"continuation": "TOP"}}},
+        {"title": "Live chat", "continuation": {"reloadContinuationData": {"continuation": "ALL"}}}]}}}}
+    data["contents"]["twoColumnWatchNextResults"]["conversationBar"]["liveChatRenderer"]["header"] = menu
+    html2 = ('<script>var ytInitialData = ' + json.dumps(data) + ';</script>"INNERTUBE_CLIENT_VERSION":"2.1"')
+    assert parse_page(html2)[2] == "ALL"
 
 
 def test_page_without_live_chat():

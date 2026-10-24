@@ -98,20 +98,21 @@ class ChatManager:
                         break  # re-open the page: the token may be stale
                     self._wake.wait(2 * failures)
                     continue
-                for author, text in messages:
-                    self._put(author, text)
+                for author, text, sent in messages:
+                    self._put(author, text, sent)
                 self._log_status()
                 self._wake.wait(wait)
             self._connected = False
             if self._running:
                 print("[Chat] Live chat ended or lost, looking for it again")
 
-    def _put(self, author: str, text: str):
+    def _put(self, author: str, text: str, sent: float):
         # Normalize the message: lowercase, strip punctuation for matching
         normalized = _PUNCTUATION_RE.sub('', text).strip().lower()
-        self._queue.put(ChatMessage(username=author, message=normalized, timestamp=time.time(), raw=text))
+        self._queue.put(ChatMessage(username=author, message=normalized, timestamp=sent, raw=text))
         self._message_count += 1
-        print(f"[Chat] {author}: {text}")
+        if self._message_count <= 300 or self._message_count % 100 == 0:  # keep the log useful at high volume
+            print(f"[Chat] {author}: {text}")
 
     def _log_status(self):
         now = time.time()

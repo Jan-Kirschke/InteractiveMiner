@@ -272,6 +272,7 @@ class QuizLogic:
         self.sound_queue: list[str] = []
         self._last_countdown_second = None
         self._stinger_due = False
+        self._bots_in_round = 0
         self.host_line = ""
         self.host_line_time = 0.0
         self.new_players_this_round: list[str] = []
@@ -561,6 +562,7 @@ class QuizLogic:
         self.lock_order = []
         self.question_start_time = time.time()
         self._last_countdown_second = None
+        self._bots_in_round = 0
         self.new_players_this_round = []
         self.sound_queue.append("new_question")
 
@@ -910,6 +912,8 @@ class QuizLogic:
             self._scheduled_bots.append((bot_name, choice, at))
 
     def _remove_excess_bots(self):
+        if not self._scheduled_bots and not self._bots_in_round:
+            return  # the common case, and O(1): scanning every answer per answer was quadratic
         real_in_round = self._count_real_in_round()
         bots_in_round = [u for u in self.current_answers if is_bot(u)]
         excess = real_in_round + len(bots_in_round) - MIN_PLAYERS
@@ -922,8 +926,11 @@ class QuizLogic:
             for bot_name in bots_in_round[:excess]:
                 del self.current_answers[bot_name]
                 self.lock_order = [x for x in self.lock_order if x[0] != bot_name]
+                self._bots_in_round -= 1
 
     def _process_bot_answers(self):
+        if not self._scheduled_bots:
+            return
         now = time.time()
         remaining = []
         real_in_round = self._count_real_in_round()
@@ -940,6 +947,7 @@ class QuizLogic:
                 self.db.get_or_create_player(bot_name)
                 self.sound_queue.append("answer_lock")
                 bots_in_round += 1
+                self._bots_in_round += 1
         self._scheduled_bots = remaining
 
     # ------------------------------------------
@@ -1097,7 +1105,9 @@ class QuizLogic:
                     self.ready_players.append(username)
 
     def _record_answer(self, username: str, choice: int, at: float | None = None):
-        now = min(at, time.time()) if at else time.time()
+        now = time.time()
+        if at:  # sent-at time, but never before this question started or in the future
+            now = min(max(at, self.question_start_time), now)
         old = self.current_answers.get(username)
         if old is None:
             self.current_answers[username] = (choice, now)

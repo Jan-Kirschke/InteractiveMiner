@@ -220,6 +220,23 @@ class Dust:
         self.tw = random.uniform(0, 6.28)
 
 
+class Floater:
+    """HQ-style flat shape drifting around the stage: circle, ring, cross or hex nut."""
+    __slots__ = ("x", "y", "vx", "vy", "r", "kind", "color", "rot", "spin", "bob")
+
+    def __init__(self):
+        self.x = random.uniform(0, SCREEN_WIDTH)
+        self.y = random.uniform(0, SCREEN_HEIGHT)
+        self.vx, self.vy = random.uniform(-14, 14), random.uniform(-10, 10)
+        self.r = random.choice((9, 12, 16, 22, 28))
+        self.kind = random.choice(("circle", "circle", "ring", "cross", "hex"))
+        self.color = random.choice(((255, 77, 109), (58, 134, 255), (255, 159, 28), (20, 201, 168),
+                                    (255, 210, 63), (150, 140, 255)))
+        self.rot = random.uniform(0, 6.28)
+        self.spin = random.uniform(-0.6, 0.6)
+        self.bob = random.uniform(0, 6.28)
+
+
 # ==========================================
 # UI MANAGER
 # ==========================================
@@ -236,6 +253,7 @@ class UIManager:
         self._shine = self._make_shine()
         self.confetti: list[Confetti] = []
         self.dust = [Dust() for _ in range(45)]
+        self.floaters = [Floater() for _ in range(16)]
         self._last_state = None
         self._state_enter = time.time()
         self._vote_bars = {}
@@ -506,6 +524,7 @@ class UIManager:
             x = SCREEN_WIDTH * bx + math.sin(now * sp + i * 2.1) * 260
             y = SCREEN_HEIGHT * by + math.cos(now * sp * 0.8 + i) * 80
             self.screen.blit(self._spot, (x - 410, y - 410), special_flags=pygame.BLEND_RGB_ADD)
+        self._draw_floaters(now, dt)
         for d in self.dust:
             d.y -= d.vy * dt
             if d.y < -10:
@@ -865,6 +884,28 @@ class UIManager:
                 continue
             self._draw_option(i, opt, rect, alpha=255 * clamp01(p * 1.4), scale=lerp(0.85, 1.0, p),
                               dim=0.35 if locking else 0.0)
+
+    def _draw_floaters(self, now, dt):
+        """Flat shapes drifting and bobbing behind everything (dimmed so they never fight the content)."""
+        for f in self.floaters:
+            f.x = (f.x + f.vx * dt) % (SCREEN_WIDTH + 80)
+            f.y = (f.y + f.vy * dt) % (SCREEN_HEIGHT + 80)
+            f.rot += f.spin * dt
+            x, y = f.x - 40, f.y - 40 + math.sin(now * 1.3 + f.bob) * 6
+            col = mix(f.color, BG_STAGE, 0.55)
+            if f.kind == "circle":
+                pygame.draw.circle(self.screen, col, (x, y), f.r)
+            elif f.kind == "ring":
+                pygame.draw.circle(self.screen, col, (x, y), f.r, width=max(3, f.r // 3))
+            elif f.kind == "cross":
+                for a in (f.rot, f.rot + math.pi / 2):
+                    dx, dy = math.cos(a) * f.r, math.sin(a) * f.r
+                    pygame.draw.line(self.screen, col, (x - dx, y - dy), (x + dx, y + dy), max(4, f.r // 2))
+            else:
+                pts = [(x + math.cos(f.rot + k * math.pi / 3) * f.r, y + math.sin(f.rot + k * math.pi / 3) * f.r)
+                       for k in range(6)]
+                pygame.draw.polygon(self.screen, col, pts)
+                pygame.draw.circle(self.screen, mix(BG_STAGE, (0, 0, 0), 0.2), (x, y), f.r // 2.4)
 
     def _draw_vignette(self, color, strength):
         """Coloured glow on the four screen edges (pre-rendered strips: cheap enough for the server)."""

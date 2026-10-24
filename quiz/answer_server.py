@@ -102,6 +102,7 @@ class AnswerHub:
 class _Handler(BaseHTTPRequestHandler):
     hub: AnswerHub = None  # set by serve()
     protocol_version = "HTTP/1.1"
+    timeout = 30   # a phone that went away frees its thread
 
     def log_message(self, *args):
         pass
