@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from quiz.ytchat import parse_chat, parse_page
+from quiz.ytchat import live_chat_token, parse_chat, parse_page
 
 RECORDED = json.loads((Path(__file__).parent / "fixtures" / "live_chat_response.json").read_text())
 
@@ -28,13 +28,6 @@ def test_page_gives_video_version_and_token():
             '"INNERTUBE_CLIENT_VERSION":"2.20261023.01.00"'
             '"currentVideoEndpoint":{"watchEndpoint":{"videoId":"_nNUB0vC7Yw"}}')
     assert parse_page(html) == ("_nNUB0vC7Yw", "2.20261023.01.00", "TOKEN")
-    # with the view menu present, the unfiltered "Live chat" token wins over "Top chat"
-    menu = {"liveChatHeaderRenderer": {"viewSelector": {"sortFilterSubMenuRenderer": {"subMenuItems": [
-        {"title": "Top chat", "continuation": {"reloadContinuationData": {"continuation": "TOP"}}},
-        {"title": "Live chat", "continuation": {"reloadContinuationData": {"continuation": "ALL"}}}]}}}}
-    data["contents"]["twoColumnWatchNextResults"]["conversationBar"]["liveChatRenderer"]["header"] = menu
-    html2 = ('<script>var ytInitialData = ' + json.dumps(data) + ';</script>"INNERTUBE_CLIENT_VERSION":"2.1"')
-    assert parse_page(html2)[2] == "ALL"
 
 
 def test_page_without_live_chat():
@@ -60,3 +53,12 @@ def test_a_message_delivered_twice_counts_once():
     chat._token = "t"
     assert len(chat.poll()[0]) == 3
     assert chat.poll()[0] == []
+
+
+def test_live_chat_token_switches_top_chat_to_all_messages():
+    import base64
+    # shape of the live page's token (2026-10-24), trimmed to the view-mode field: 4 = top chat
+    top = base64.urlsafe_b64encode(b"\xd2\x87\xcc\xc8\x03\x16\x1a\x000\x01\x82\x01\x0c\x08\x04\x18\x02 \x00").decode()
+    live = live_chat_token(top.replace("=", "%3D"))
+    assert b"\x82\x01\x0c\x08\x01" in base64.urlsafe_b64decode(live)
+    assert live_chat_token("not a token!") == "not a token!"

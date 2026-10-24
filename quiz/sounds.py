@@ -234,7 +234,7 @@ def _music_lobby():
         root, chord = _PROG_LOBBY[(bar // 2) % 4]
         b0 = bar * BAR
         for beat in range(4):
-            parts.append((b0 + beat * BEAT, kick, 0.55))
+            parts.append((b0 + beat * BEAT, kick, 0.35))
             parts.append((b0 + beat * BEAT + BEAT / 2, hat if beat != 3 else ohat, 0.16))
             if beat in (1, 3):
                 parts.append((b0 + beat * BEAT, clap, 0.32))
@@ -268,8 +268,8 @@ def _music_question():
     kick = _kick(0.5, punch=0.7)
     for bar, (root, chord) in enumerate(prog):
         b0 = bar * BAR
-        parts.append((b0, kick, 0.5))
-        parts.append((b0 + 2.5 * BEAT, kick, 0.25))
+        parts.append((b0, kick, 0.22))
+        parts.append((b0 + 2.5 * BEAT, kick, 0.1))
         for e in range(8):
             accent = 1.0 if e % 2 == 0 else 0.7
             parts.append((b0 + e * BEAT / 2,
@@ -295,27 +295,28 @@ def _sfx_final_countdown(dur=5.0):
     parts = [(0, sweep + swell, 1.0)]
     beat = _kick(0.35, punch=0.6)
     for s in range(5):  # lub-dub on every second
-        parts.append((s, beat, 0.9))
-        parts.append((s + 0.22, beat, 0.55))
-    return _norm(_mix(*parts, length=int(dur * SR)), 0.55)
+        parts.append((s, beat, 0.6))
+        parts.append((s + 0.22, beat, 0.35))
+    return _norm(_mix(*parts, length=int(dur * SR)), 0.4)
 
 
 def _sfx_times_up():
     """Time's up: low impact plus a two-note horn."""
     horn = _chord(["E4", "B4"], 0.5, harmonics=12, bright=0.8, decay=4, detune=0.003)
     hit = _kick(0.8, punch=1.3)
-    return _norm(_reverb(_mix((0, hit, 1.0), (0, horn, 0.6)).mean(axis=1), 1.4, 0.25), 0.6)
+    return _norm(_reverb(_mix((0, hit, 0.6), (0, horn, 0.6)).mean(axis=1), 1.4, 0.25), 0.4)
 
 
 def _sfx_drumroll(dur=4.0):
-    """Snare roll that builds while the last answers lock in."""
+    """Soft brush roll that swells gently while the last answers lock in."""
     hits = []
-    step = 1 / 22
+    step = 1 / 18
     n = int(dur / step)
+    brush = _filter(_noise(0.1), 800, 5000) * np.exp(-_t(0.1) * 30)
     for i in range(n):
         k = i / n
-        hits.append((i * step + _rng.uniform(-0.003, 0.003), _snare(0.12, 0.15), 0.15 + 0.6 * k ** 1.5))
-    return _norm(_reverb(_mix(*hits, length=int(dur * SR)).mean(axis=1), 0.8, 0.12)[:int(dur * SR)], 0.5)
+        hits.append((i * step + _rng.uniform(-0.004, 0.004), brush, 0.12 + 0.3 * k ** 1.5))
+    return _norm(_reverb(_mix(*hits, length=int(dur * SR)).mean(axis=1), 0.8, 0.15)[:int(dur * SR)], 0.28)
 
 
 def _sfx_correct():
@@ -338,11 +339,10 @@ def _sfx_wrong():
 
 
 def _sfx_new_question():
-    """Question appears: sub boom, bright stab, shimmer tail."""
-    stab = _chord(["A3", "E4", "A4", "C5"], 0.6, harmonics=14, bright=1.2, decay=5, detune=0.005)
-    boom = np.sin(_glide(90, 38, 1.2, 3)) * np.exp(-_t(1.2) * 3.2)
-    parts = [(0, boom, 0.9), (0, stab, 0.5), (0, _filter(_noise(0.6), 6000) * np.exp(-_t(0.6) * 6), 0.12)]
-    return _norm(_reverb(_mix(*parts).mean(axis=1), 1.4, 0.22), 0.6)
+    """Question appears: a soft rising two-note chime with a light shimmer (no drums: it plays every question)."""
+    parts = [(0, _bell(hz("E5"), 1.0, 4), 0.5), (0.09, _bell(hz("A5"), 1.2, 3.5), 0.45),
+             (0, _filter(_noise(0.5), 7000) * np.exp(-_t(0.5) * 8), 0.04)]
+    return _norm(_reverb(_mix(*parts).mean(axis=1), 1.4, 0.25), 0.32)
 
 
 def _sfx_show_open():
@@ -413,7 +413,7 @@ def _sfx_event():
     rise = np.sin(2 * np.pi * np.cumsum(hz("A4") * 2 ** (t / 0.6 * 1.5)) / SR) * (t / 0.6) ** 2
     hit = _chord(["A3", "E4", "A4", "C#5", "E5"], 1.3, harmonics=14, bright=0.7, decay=2.5, detune=0.006)
     return _norm(_reverb(_mix((0, rise, 0.35), (0.6, hit, 1.0), (0.6, _kick(0.6, 1.2), 0.8),
-                              (0.6, _crash(1.8), 0.25)).mean(axis=1), 1.6, 0.24), 0.62)
+                              (0.6, _crash(1.8), 0.25)).mean(axis=1), 1.6, 0.24), 0.45)
 
 
 _SFX = {
@@ -431,7 +431,7 @@ SCENE_MUSIC = {"WAITING": "lobby", "LOBBY": "lobby", "INTRO": None, "ASKING": "q
 STINGERS = ("correct", "wrong")   # the reveal: drumroll ends, music returns under the stinger
 
 
-SFX_GAIN = 0.8   # effects stacked on music and drumroll stay below full scale
+SFX_GAIN = 0.6   # effects sit on top of the music, not over it
 
 
 def _to_sound(st: np.ndarray, gain: float = 1.0) -> pygame.mixer.Sound:

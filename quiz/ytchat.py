@@ -8,9 +8,11 @@ confirm you're not a bot" and libraries that need the player (pytchat) fail.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
+import urllib.parse
 
 import requests
 
@@ -47,21 +49,27 @@ def parse_page(html: str) -> tuple[str, str, str] | None:
         chat = data["contents"]["twoColumnWatchNextResults"]["conversationBar"]["liveChatRenderer"]
     except (ValueError, KeyError, TypeError):
         return None
-    token = _unfiltered_token(chat) or next_continuation(chat.get("continuations"))[0]
+    token = live_chat_token(next_continuation(chat.get("continuations"))[0])
     if not token:
         return None
     vid = _VIDEO_ID_RE.search(html)
     return (vid.group(1) if vid else "", version.group(1), token)
 
 
-def _unfiltered_token(chat: dict) -> str:
-    """The page opens 'Top chat', which YouTube filters (repeated short messages like '1' can vanish).
-    The view menu's second entry is 'Live chat': every message."""
+_TOP_CHAT, _LIVE_CHAT = b"\x82\x01\x0c\x08\x04", b"\x82\x01\x0c\x08\x01"
+
+
+def live_chat_token(token: str) -> str:
+    """The page's token opens 'Top chat', which YouTube filters (repeated short messages like '1' can
+    vanish). The view mode is one protobuf field (4 = top, 1 = all); switch it to 'Live chat'.
+    The view menu's own tokens can't be used: they lack the video and get HTTP 400."""
     try:
-        items = chat["header"]["liveChatHeaderRenderer"]["viewSelector"]["sortFilterSubMenuRenderer"]["subMenuItems"]
-        return items[1]["continuation"]["reloadContinuationData"]["continuation"]
-    except (KeyError, IndexError, TypeError):
-        return ""
+        raw = base64.urlsafe_b64decode(urllib.parse.unquote(token) + "==")
+    except ValueError:
+        return token
+    if raw.count(_TOP_CHAT) != 1:
+        return token
+    return base64.urlsafe_b64encode(raw.replace(_TOP_CHAT, _LIVE_CHAT)).decode()
 
 
 def next_continuation(continuations: list) -> tuple[str, float]:
