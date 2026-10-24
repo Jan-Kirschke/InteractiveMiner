@@ -81,8 +81,10 @@ def next_continuation(continuations: list) -> tuple[str, float]:
     return "", 0.0
 
 
-def parse_chat(response: dict) -> tuple[list[tuple[str, str, str, float]], str, float]:
-    """([(message id, author, text, sent at)], next token, wait seconds) from a get_live_chat response."""
+def parse_chat(response: dict) -> tuple[list[tuple[str, str, str, float, str]], str, float]:
+    """([(message id, author, text, sent at, author channel id)], next token, wait seconds) from a
+    get_live_chat response. authorExternalChannelId is on every text message (measured 2026-10-24
+    on a public live chat; pytchat 0.5.5 reads the same key): the show's own posts carry ours."""
     lc = response.get("continuationContents", {}).get("liveChatContinuation")
     if not lc:
         return [], "", 0.0
@@ -95,7 +97,7 @@ def parse_chat(response: dict) -> tuple[list[tuple[str, str, str, float]], str, 
         text = "".join(r.get("text", "") for r in item.get("message", {}).get("runs", [])).strip()
         if author and text:
             sent = int(item.get("timestampUsec") or 0) / 1e6 or time.time()
-            messages.append((item.get("id", ""), author, text, sent))
+            messages.append((item.get("id", ""), author, text, sent, item.get("authorExternalChannelId", "")))
     token, wait = next_continuation(lc.get("continuations"))
     return messages, token, wait
 
@@ -128,19 +130,20 @@ class LiveChat:
     def alive(self) -> bool:
         return bool(self._token)
 
-    def poll(self) -> tuple[list[tuple[str, str, float]], float]:
-        """New (author, text, sent at) and how long to wait before the next poll. Chat ended -> alive is False."""
+    def poll(self) -> tuple[list[tuple[str, str, float, str]], float]:
+        """New (author, text, sent at, author channel id) and how long to wait before the next poll.
+        Chat ended -> alive is False."""
         body = {"context": {"client": {"clientName": "WEB", "clientVersion": self._version}},
                 "continuation": self._token}
         resp = self._http.post(_CHAT_URL, json=body, headers=_HEADERS, cookies=_COOKIES, timeout=5)
         resp.raise_for_status()
         messages, self._token, wait = parse_chat(resp.json())
         fresh = []
-        for msg_id, author, text, sent in messages:
+        for msg_id, author, text, sent, channel in messages:
             if msg_id and msg_id in self._seen:
                 continue
             self._seen[msg_id] = None
-            fresh.append((author, text, sent))
+            fresh.append((author, text, sent, channel))
         while len(self._seen) > 2000:
             del self._seen[next(iter(self._seen))]
         return fresh, min(self.MAX_WAIT, max(self.MIN_WAIT, wait))

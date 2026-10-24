@@ -735,7 +735,7 @@ class UIManager:
             self._text("bold", 18, f"{n} member{'s' if n != 1 else ''}", DIM, (x + w - 130, ry), "midright", alpha=255 * p)
             self._text("black", 24, f"{pts:,}", col, (x + w - 24, ry), "midright", alpha=255 * p)
         if not crews:
-            self._text("bold", 22, "Play with friends: type !crew NAME", INK, (x + 24, top + oy + 80), alpha=255 * p)
+            self._text("bold", 22, "Team up: type !crew NAME", INK, (x + 24, top + oy + 80), alpha=255 * p)
             self._text("bold", 20, "Your crew scores its best 3 players", FAINT, (x + 24, top + oy + 114), alpha=255 * p)
         x += w + 24
         self._panel(x, top + oy, w, h)

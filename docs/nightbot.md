@@ -25,10 +25,16 @@ post, so a quiet chat is not spammed.
 
 ## Commands
 
-Do not create these: the game answers them itself, on screen. Each answer is a toast; nothing is posted to chat.
+Do not create these: the game answers them itself, on screen. Each answer is a toast; only `!friends`
+is answered in chat, by the channel itself (docs/youtube-api.md, "The show posts in its own chat").
 
 | Game command | What it does | Limit |
 |---|---|---|
+| `!friend @name` | asks `name` to be friends; when `name` types `!friend @you` too, you are friends (kept for good) | up to 20 friends |
+| `!unfriend @name` | ends a friendship or withdraws a request | |
+| `!friends` | the show replies in chat with your friends' points and places in this match, else all-time | once per 2 min per player |
+| `!duel @name` | challenges `name`; they type `!accept` and you duel in the next match | one duel per match |
+| `!crew name` | joins or founds a crew (`!crew leave` to leave) | |
 | `!rank` | your weekly place, points, level and day streak | once per 30 s per player |
 | `!card` | your player card | once per 30 s per player |
 | `!team` | which team your name puts you in (Gold or Teal, for good) | once per 30 s per player |

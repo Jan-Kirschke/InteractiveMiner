@@ -39,7 +39,7 @@ SCOPE = "https://www.googleapis.com/auth/youtube"
 DEFAULT_TITLE = "The Lifelong Quiz · LIVE trivia, answer 1-4 in chat"
 DEFAULT_DESCRIPTION = (
     "Live trivia, all day. Type 1, 2, 3 or 4 in chat to answer; the fastest right answers score most.\n"
-    "Commands: !ready  !rank  !card  !crew name  !duel @name")
+    "Commands: !ready  !rank  !card  !crew name  !duel @name  !friend @name  !friends")
 ENTERTAINMENT = "24"
 AUTH_EXPIRED = "YouTube authorisation expired: run quizctl youtube-auth"
 

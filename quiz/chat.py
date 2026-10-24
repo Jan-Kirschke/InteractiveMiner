@@ -48,6 +48,13 @@ class ChatManager:
         self._last_status_log = 0.0
         self._wake = threading.Event()
         self._reopen = False
+        self._ignored: set[str] = set()   # channel ids whose messages are not plays (the show's own posts)
+
+    def ignore_channel(self, channel_id: str):
+        """Drop messages from this channel: the show posts tips and replies as the channel itself,
+        and the reader sees them come back like any other message."""
+        if channel_id:
+            self._ignored = self._ignored | {channel_id}   # swap, never mutate: the reader thread reads it
 
     def pin(self, urls: list[str]):
         """Read chat from `urls` from now on (the YouTube API made a new broadcast): drop the
@@ -115,7 +122,9 @@ class ChatManager:
                         break  # re-open the page: the token may be stale
                     self._wake.wait(self.POLL_BACKOFF * failures)
                     continue
-                for author, text, sent in messages:
+                for author, text, sent, *channel in messages:
+                    if channel and channel[0] in self._ignored:
+                        continue
                     self._put(author, text, sent)
                 self._log_status()
                 self._wake.wait(wait)

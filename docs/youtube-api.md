@@ -96,8 +96,36 @@ YouTube: ended broadcast AbCdEfGhIjK
 | `QUIZ_YT_DESCRIPTION` | how to play | Description of new broadcasts |
 | `QUIZ_YT_PRIVACY` | `public` | `public`, `unlisted` or `private` |
 | `QUIZ_YT_CLIENT`, `QUIZ_YT_TOKEN` | `secrets/youtube_client.json`, `secrets/youtube_token.json` | File locations; leave as they are |
+| `QUIZ_CHAT_TIPS_MINUTES` | `9` | Minutes between the show's chat tips; `0` turns tips off (`!friends` replies stay on) |
 
 Change them with `.\scripts\quiz-server.ps1 set QUIZ_YT_PRIVACY unlisted`. They apply to the next new broadcast.
+
+## The show posts in its own chat
+
+With the token set up, the show also writes in the live chat, as the channel (`quiz/chatpost.py`):
+
+- **Tips**: every `QUIZ_CHAT_TIPS_MINUTES` (default 9) one rotating tip about `!friend`/`!friends`,
+  `!duel @name` + `!accept`, `!crew`, `!team`, `!half`, `!double`, `!rank`/`!card`. The first tip comes
+  one interval after the show goes live, so restarts do not spam.
+- **`!friends` replies**: requests are collected and answered together, at most one message every
+  25 s and once per player every 2 minutes, each message at most 200 characters.
+
+The chat reader ignores messages from our own channel (it learns the id from the broadcast), so
+the show never answers itself or counts its own posts as plays.
+
+Quota (Google's docs, read 2026-10-24): a chat post (`liveChatMessages.insert`) costs **20 units**
+([insert reference](https://developers.google.com/youtube/v3/live/docs/liveChatMessages/insert),
+[quota calculator](https://developers.google.com/youtube/v3/determine_quota_cost)); looking up the
+broadcast's chat (`liveBroadcasts.list`) costs 1. The project has 10,000 units a day, reset at
+midnight Pacific time. Chat posts get at most **4,000 units a day (200 posts)**, of which tips may
+use 3,000 so 1,000 always stay for `!friends` replies; at least 6,000 stay for the broadcast itself.
+Six live hours with a tip every 9 minutes use about 800 units. When the budget is spent, the rest of
+the day's posts are dropped (the log says so once). The budget is counted in memory, so a restart
+starts the count again.
+
+When YouTube answers `quotaExceeded`, posting stops until midnight Pacific time; `rateLimitExceeded`
+pauses 1 minute, doubling up to 15; `forbidden` pauses an hour; `liveChatEnded` stops posting until
+the next broadcast. The game never waits for any of this: posts go out on their own thread.
 
 ## Troubleshooting
 

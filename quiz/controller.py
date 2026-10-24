@@ -16,8 +16,9 @@ from quiz.config import (
     DB_SAVE_INTERVAL, DB_PATH, DB_PATH_OFFLINE,
     VIDEO_ID, CHANNEL_IDS, CHAT_BOTS,
     STREAM_ENABLED, YOUTUBE_STREAM_KEY, STREAM_FPS, STREAM_BITRATE, STREAM_OUT_HEIGHT, VERTICAL, STREAM_AUDIO_GAIN_DB, FFMPEG_PATH,
-    STREAM_AUDIO_INPUT, STREAM_OUTPUT, LATE_ANSWER_GRACE, REVEAL_AT, MATCH_LENGTH,
+    STREAM_AUDIO_INPUT, STREAM_OUTPUT, LATE_ANSWER_GRACE, REVEAL_AT, MATCH_LENGTH, CHAT_TIPS_MINUTES,
 )
+from quiz.chatpost import ChatPoster, FriendsReplies, TipTicker
 from quiz.models import GameState
 from quiz.db import QuizDatabase
 from quiz.chat import ChatManager
@@ -73,6 +74,12 @@ class MainGameController:
             out_height=STREAM_OUT_HEIGHT, audio_gain_db=STREAM_AUDIO_GAIN_DB,
         )
         self.youtube = self._make_youtube(offline)
+        # The show's own chat posts (tips, !friends replies) ride on the same API token; none without it
+        self.poster = self._make_poster()
+        self.replies = FriendsReplies()
+        self.tips = TipTicker(CHAT_TIPS_MINUTES)
+        if self.poster:
+            self.logic.chat_reply = self.replies.ask
 
         # Periodic save timer
         self._last_save_time = time.time()
@@ -93,9 +100,31 @@ class MainGameController:
         return ytapi.BroadcastKeeper(api, is_streaming=lambda: self.broadcaster.is_active,
                                      on_video=self._pin_chat)
 
+    def _make_poster(self):
+        if not getattr(self, "youtube", None):
+            return None
+        return ChatPoster(self.youtube.api, on_channel=self.chat.ignore_channel)
+
     def _pin_chat(self, video_id: str):
         print(f"YouTube: chat pinned to video {video_id}")
         self.chat.pin([page_url(video_id=video_id)])
+        poster = getattr(self, "poster", None)
+        if poster:
+            poster.set_video(video_id)
+
+    def _chat_out(self):
+        """Hand due tips and !friends replies to the poster (its thread does the HTTP), only while
+        we stream to a known broadcast. Lines are built here, on the game thread that owns the state."""
+        poster = self.poster
+        if not poster or not self.broadcaster.is_active or not poster.ready:
+            return
+        now = time.time()
+        text = self.replies.take(now, self.logic.friends_line)
+        if text:
+            poster.post(text, "reply")
+        tip = self.tips.take(now)
+        if tip:
+            poster.post(tip, "tip")
 
     def _request_stop(self, signum, _frame):
         print(f"[Game] Signal {signum} received, shutting down")
@@ -114,6 +143,8 @@ class MainGameController:
             self.broadcaster.start()
             if self.youtube:
                 self.youtube.start()   # its own thread: creates/binds/starts the broadcast, then watches it
+            if self.poster:
+                self.poster.start()    # its own thread: posts tips and !friends replies to the chat
 
         print("[Game] The Lifelong Quiz is running!")
 
@@ -122,6 +153,7 @@ class MainGameController:
 
             self._handle_events()
             self._process_chat()
+            self._chat_out()
             self.logic.update(dt)
             self._save_on_state_change()
             self._play_sounds()
@@ -260,6 +292,9 @@ class MainGameController:
         deadline = time.monotonic() + END_BROADCAST_SECONDS
         youtube = getattr(self, "youtube", None)
         ending = youtube.end(END_BROADCAST_SECONDS) if youtube else None
+        poster = getattr(self, "poster", None)
+        if poster:
+            poster.stop()
         self.sounds.stop_music()
         self.broadcaster.stop()
         self.chat.stop()

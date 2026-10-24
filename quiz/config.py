@@ -309,6 +309,11 @@ STREAM_FPS = 30                     # Stream output framerate (30fps is ideal fo
 # Game audio boost in dB applied by FFmpeg (the procedural sounds are quiet next to other streams).
 # Moderator bots that post in chat (Nightbot timers) are never players
 CHAT_BOTS = {"nightbot", "streamelements", "moobot", "streamlabs"}
+# The show's own chat tips (quiz/chatpost.py, needs the YouTube API token): minutes between tips, 0 = off
+try:
+    CHAT_TIPS_MINUTES = max(0.0, float(_os.environ.get("QUIZ_CHAT_TIPS_MINUTES", "9")))
+except ValueError:
+    CHAT_TIPS_MINUTES = 9.0
 STREAM_AUDIO_GAIN_DB = float(_os.environ.get("QUIZ_AUDIO_GAIN_DB", "0"))
 STREAM_HEIGHT = int(_os.environ.get("QUIZ_STREAM_HEIGHT", "1080"))   # the short side: 720 = 1280x720 or 720x1280
 STREAM_OUT_HEIGHT = STREAM_HEIGHT * 16 // 9 // 2 * 2 if VERTICAL else STREAM_HEIGHT
