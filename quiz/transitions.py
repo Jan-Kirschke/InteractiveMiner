@@ -55,6 +55,7 @@ CROWD_PINK = (255, 140, 200)
 SPECIAL_BUMPERS = {
     "majority": ("CROWD MIND", CROWD_PINK, [("NO RIGHT ANSWER", INK), ("  ·  MATCH THE CROWD", LILAC)]),
 }
+SPECIAL_BUMPERS["minority"] = SPECIAL_BUMPERS["majority"]   # Lonely Answer's twist waits for the reveal
 
 # YouTube Shorts covers the top and bottom of a 1080x1920 frame with its own UI
 SHORTS_SAFE_TOP, SHORTS_SAFE_BOTTOM = 180, 320

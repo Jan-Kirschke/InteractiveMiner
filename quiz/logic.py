@@ -36,7 +36,7 @@ from quiz.config import (
     COLOR_CORRECT, COLOR_TEXT_GOLD, COLOR_AMBER, COLOR_RANK_DIAMOND,
     LIGHTNING_TIME, LIGHTNING_MULT, JACKPOT_BONUS, FIRST_BLOOD_BONUS,
     PARTICIPATION_MILESTONES, PARTICIPATION_BONUS, STREAK_SHIELD_THRESHOLD,
-    COMMAND_COOLDOWN, SPECIAL_SLOTS, CROWD_MIN_REAL,
+    COMMAND_COOLDOWN, SPECIAL_SLOTS, CROWD_MIN_REAL, LONELY_CHANCE,
 )
 from quiz.models import (
     GameState, Player, Question, RoundResult, ThemeVoteState, GameEvent, MatchStanding, Duel,
@@ -188,6 +188,8 @@ def host_line_for_rate(rate: float, answers: int) -> str:
 
 
 CROWD_KINDS = ("majority", "minority")
+_CROWD_INTRO = "Crowd Mind! No right answer: pick what you think most of chat will pick."
+SPECIAL_INTROS = {"majority": _CROWD_INTRO, "minority": _CROWD_INTRO}   # Lonely Answer hides as Crowd Mind
 
 
 def crowd_winners(counts: list[int], minority: bool = False) -> list[int]:
@@ -207,6 +209,8 @@ def host_line_for_result(res: RoundResult) -> str:
     if res.void:
         return f"Only {res.total_answers} real players: a crowd round needs {CROWD_MIN_REAL}, so this one does not count."
     picks = " and ".join(q.options[i] for i in res.winners)
+    if q.kind == "minority":
+        return f"Twist! Lonely Answer: the LEAST picked answer wins. {picks} takes it!"
     pct = round(res.correct_rate * 100)
     return f"Chat went with {picks}! {pct}% read the crowd."
 
@@ -491,7 +495,12 @@ class QuizLogic:
         """The special round for this match slot, or None (no slot, or its deck is empty)."""
         if not slot:
             return None
-        return self.special.draw(slot)
+        if slot not in CROWD_KINDS:
+            return self.special.draw(slot)
+        q = self.special.draw("majority")   # Lonely Answer plays the Crowd Mind pack
+        if q and (slot == "minority" or random.random() < LONELY_CHANCE):
+            q.kind = "minority"             # the twist: shown only on the reveal
+        return q
 
     # ------------------------------------------
     # STATE MACHINE
@@ -626,6 +635,8 @@ class QuizLogic:
             self._push_event(f"JACKPOT: one right answer wins +{JACKPOT_BONUS}", COLOR_EVENT_PURPLE, "JP")
             self.sound_queue.append("double_points")
             self._say(f"Jackpot round! One lucky right answer wins {JACKPOT_BONUS} points.")
+        elif self.current_question.kind in SPECIAL_INTROS:
+            self._say(SPECIAL_INTROS[self.current_question.kind])
         else:
             diff = self.current_question.difficulty
             self._say(f"Question {self.q_index} of {MATCH_LENGTH}. "
@@ -651,6 +662,9 @@ class QuizLogic:
         self.pips.append("done" if res.total_answers and res.correct_rate >= 0.5 else "miss")
         self._stinger_due = True
         self._say(host_line_for_result(res))
+        if res.question.kind == "minority" and not res.void:
+            self._push_event("TWIST! Lonely Answer: the least picked answer wins", COLOR_AMBER, "TWST")
+            self.sound_queue.append("double_points")
 
     def _enter_podium(self):
         real = [s for s in self.standings.values() if not is_bot(s.username)]

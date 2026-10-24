@@ -219,6 +219,54 @@ def test_crowd_reveal_says_what_the_crowd_picked(game):
     assert "Cat" in game.host_line
 
 
+# ------------------------------------------
+# LONELY ANSWER (minority): the Crowd Mind pack, scoring flipped, twist shown only after lock
+# ------------------------------------------
+def test_lonely_answer_least_picked_option_wins(game):
+    crowd(game, "minority")
+    for u, c in (("a", 0), ("b", 0), ("c", 0), ("d", 1), ("e", 1), ("f", 2)):
+        answer_at(game, u, c, 5)
+    res = game._resolve_question()
+    assert res.winners == [2]                       # Parrot (option 4) had no picks: it cannot win
+    assert [u for u, _, _ in res.correct_players] == ["f"]
+    assert game.db.get_or_create_player("a").streak == 0 and game.db.get_or_create_player("a").wrong_answers == 0
+
+
+def test_lonely_answer_tie_and_bots_never_decide(game):
+    crowd(game, "minority")
+    for u, c in (("a", 0), ("b", 0), ("c", 1), ("d", 3)):
+        answer_at(game, u, c, 5)
+    answer_at(game, BOT_PREFIX + "Rookie", 2, 1)    # a lone bot pick would be the loneliest
+    res = game._resolve_question()
+    assert res.winners == [1, 3]
+    assert {u for u, _, _ in res.correct_players} == {"c", "d"}
+
+
+def test_crowd_slot_turns_lonely_by_chance(game, monkeypatch):
+    game.special_slots = {4: "majority"}
+    monkeypatch.setattr(logic_mod, "LONELY_CHANCE", 1.0)
+    assert ask(game, 4).kind == "minority"
+    monkeypatch.setattr(logic_mod, "LONELY_CHANCE", 0.0)
+    assert ask(game, 4).kind == "majority"
+    game.special_slots = {4: "minority"}            # a slot can also force the twist
+    assert ask(game, 4).kind == "minority"
+
+
+def test_lonely_twist_stays_hidden_until_the_reveal(game, monkeypatch):
+    from quiz.ui import round_style
+    game.special_slots = {4: "minority"}
+    q = ask(game, 4)
+    assert round_style(q)[0] == "CROWD MIND"                  # asking: looks like any Crowd Mind
+    assert "lonely" not in (game.host_line + " ".join(e.text for e in game.event_feed)).lower()
+    game._transition_to(GameState.LOCKING)
+    assert "lonely" not in (game.host_line + " ".join(e.text for e in game.event_feed)).lower()
+    assert "LONELY" in round_style(q, revealed=True)[0]
+    for u, c in (("a", 0), ("b", 0), ("c", 1)):
+        game.current_answers[u] = (c, time.time())
+    game._transition_to(GameState.REVEALING)
+    assert "lonely" in game.host_line.lower()
+
+
 def test_empty_deck_falls_back_to_a_classic_question(game, tmp_path):
     game.special = SpecialDecks([write_pack(tmp_path, [])])
     game.special_slots = {2: "odd_one_out"}

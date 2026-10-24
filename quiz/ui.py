@@ -43,16 +43,20 @@ DIFF_COLORS = {"easy": GOOD, "medium": (255, 159, 28), "hard": BAD}
 # Special rounds (quiz/special.py): kind -> (chip label, colour, rule under the question, tag on the winner)
 ROUND_STYLE = {
     "majority": ("CROWD MIND", (255, 140, 200), "No right answer: pick what most of chat picks", "CROWD PICK"),
+    "minority": ("TWIST: LONELY ANSWER", (255, 128, 64), "The least picked answer wins", "LONELY PICK"),
 }
 
 
 def round_style(q, revealed=False):
-    """(label, colour, rule, tag) for a special round, or None for a classic question."""
+    """(label, colour, rule, tag) for a special round, or None for a classic question.
+    Lonely Answer looks exactly like Crowd Mind until the reveal."""
+    if q.kind == "minority" and not revealed:
+        return ROUND_STYLE["majority"]
     return ROUND_STYLE.get(q.kind)
 
 
 def winners_title(q):
-    return "FASTEST CROWD READERS" if q.kind in ("majority", "minority") else "FASTEST RIGHT"
+    return {"majority": "FASTEST CROWD READERS", "minority": "FASTEST LONELY PICKS"}.get(q.kind, "FASTEST RIGHT")
 
 
 def reveal_lines(res):
@@ -62,6 +66,8 @@ def reveal_lines(res):
         if res.void:
             return "VOID", FAINT, "A crowd round needs 3 real players: nobody scores"
         picks = " + ".join(q.options[i] for i in res.winners) or "-"
+        if q.kind == "minority":
+            return "TWIST: LEAST PICKED WINS", ROUND_STYLE["minority"][1], f"Lonely Answer: {picks}"
         pct = int(round(res.correct_rate * 100))
         return f"{pct}% READ THE CROWD", GOOD if pct >= 50 else ACCENT, f"Chat's pick: {picks}"
     knew = int(round(res.correct_rate * 100))

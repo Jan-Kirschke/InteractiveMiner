@@ -88,7 +88,8 @@ LIGHTNING_QUESTION = 5     # fixed event slots inside a match
 BONUS_QUESTIONS = (3, 7)   # first blood or jackpot
 FINAL_QUESTION_MULT = 2.0  # the last question pays double
 SPECIAL_SLOTS = {4: "majority"}  # question number -> special round (quiz/special.py), from packs/special_*.json
-CROWD_MIN_REAL = 3         # Crowd Mind needs this many real (non-bot) answers, or the question is void
+LONELY_CHANCE = 0.3        # share of Crowd Mind slots secretly played as Lonely Answer (least picked wins)
+CROWD_MIN_REAL = 3        # Crowd Mind needs this many real (non-bot) answers, or the question is void
 DIFFICULTY_RAMP = {1: "easy", 2: "easy", 3: "easy", 4: "medium", 5: "medium",
                    6: "medium", 7: "medium", 8: "hard", 9: "hard", 10: "hard"}
 
