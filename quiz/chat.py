@@ -30,6 +30,8 @@ class ChatManager:
     """Reads YouTube live chat from the first of `urls` that is live, re-finding the chat when it ends."""
 
     RETRY_SECONDS = 15   # how often to look for a live chat while none is found
+    POLL_BACKOFF = 2     # seconds x failures between failed polls
+    POLL_FAILURES = 5    # then re-open the page: the token may be stale
 
     def __init__(self, urls: list[str], message_queue: queue.Queue, offline: bool = False):
         self._urls = urls
@@ -94,9 +96,9 @@ class ChatManager:
                 except Exception as e:
                     failures += 1
                     print(f"[Chat] Poll failed ({failures}): {e}")
-                    if failures >= 5:
+                    if failures >= self.POLL_FAILURES:
                         break  # re-open the page: the token may be stale
-                    self._wake.wait(2 * failures)
+                    self._wake.wait(self.POLL_BACKOFF * failures)
                     continue
                 for author, text, sent in messages:
                     self._put(author, text, sent)

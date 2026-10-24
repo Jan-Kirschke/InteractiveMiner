@@ -25,6 +25,39 @@ class _FillUI:
         self.screen.fill((self.n * 40 % 256, 0, 0))
 
 
+def test_saves_never_block_the_game_loop(tmp_path):
+    # A commit that takes a second (WAL checkpoint on a busy disk) must not stall a frame or
+    # the systemd watchdog ping that follows it in the same loop.
+    from quiz.db import QuizDatabase
+    from quiz.models import GameState
+
+    class SlowDisk(QuizDatabase):
+        def _write_rows(self, conn, rows):
+            time.sleep(1.0)
+            super()._write_rows(conn, rows)
+
+    class _Logic:
+        state = GameState.REVEALING
+
+    class _Sounds:
+        def set_scene(self, name):
+            pass
+
+    g = MainGameController.__new__(MainGameController)
+    g.db, g.logic, g.sounds = SlowDisk(str(tmp_path / "q.db")), _Logic(), _Sounds()
+    g._prev_logic_state, g._last_save_time = None, 0.0
+    for i in range(500):
+        g.db.get_or_create_player(f"u{i}").add_points(i)
+    t0 = time.perf_counter()
+    g._save_on_state_change()      # scores were just updated: save
+    g._periodic_save()
+    assert time.perf_counter() - t0 < 0.1
+    g.db.close()
+    again = QuizDatabase(str(tmp_path / "q.db"))
+    assert len(again._players) == 500
+    again.close()
+
+
 def test_render_waits_until_the_last_frame_was_converted(monkeypatch):
     real = pygame.transform.smoothscale
 
