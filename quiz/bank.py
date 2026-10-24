@@ -6,6 +6,8 @@ long time, and once enough real players answered a question its *measured* diffi
 replaces the label it came with.
 """
 
+from __future__ import annotations
+
 import json
 import random
 import sqlite3
