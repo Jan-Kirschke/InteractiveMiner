@@ -167,6 +167,10 @@ class MainGameController:
             self._music_started = True
 
     def _render(self):
+        # The broadcaster converts the last frame on its own thread; never draw over it mid-read.
+        if not self.broadcaster.wait_frame():
+            print("[Game] Frame conversion is late, skipping a render")
+            return
         self.ui.draw(self.logic, {
             "connected": self.chat.is_connected,
             "broadcasting": self.broadcaster.is_active,

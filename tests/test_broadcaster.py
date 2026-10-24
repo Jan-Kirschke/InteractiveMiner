@@ -51,6 +51,169 @@ class _Proc:
         return None
 
 
+def _picture(w=216, h=384):
+    import pygame
+    s = pygame.Surface((w, h))
+    for y in range(0, h, 8):
+        for x in range(0, w, 8):
+            pygame.draw.rect(s, ((x * 7) % 256, (y * 3) % 256, (x + y) % 256), (x, y, 8, 8))
+    return s
+
+
+def _as_rgb(raw: bytes, pix_fmt: str) -> bytes:
+    """Decode what FFmpeg is told it gets (-pix_fmt) back to packed RGB."""
+    if pix_fmt == "rgb24":
+        return raw
+    order = {"bgr0": (2, 1, 0), "bgra": (2, 1, 0), "rgb0": (0, 1, 2), "rgba": (0, 1, 2),
+             "0rgb": (1, 2, 3), "argb": (1, 2, 3), "0bgr": (3, 2, 1), "abgr": (3, 2, 1)}[pix_fmt]
+    out = bytearray(len(raw) // 4 * 3)
+    for c in range(3):
+        out[c::3] = raw[order[c]::4]
+    return bytes(out)
+
+
+def _streaming(**kw):
+    b = YouTubeBroadcaster(stream_key="k", width=216, height=384, fps=30, game_fps=30, out_height=256, **kw)
+    b._active = True
+    return b
+
+
+def test_frame_sent_to_ffmpeg_is_the_scaled_picture():
+    # The bytes in the pipe, read as the -pix_fmt FFmpeg is given, are exactly the scaled RGB picture.
+    import pygame
+    screen = _picture()
+    b = _streaming()
+    b.send_frame(screen, 0)
+    assert b.wait_frame(2.0)
+    want = pygame.image.tobytes(pygame.transform.smoothscale(screen, (144, 256)), "RGB")
+    assert _as_rgb(b._latest, b.pix_fmt) == want
+
+
+def test_ffmpeg_is_told_the_pixel_format_and_size(monkeypatch):
+    import quiz.broadcaster as B
+    seen = {}
+
+    class Popen:
+        def __init__(self, cmd, **kw):
+            seen["cmd"] = cmd
+            self.stderr = iter(())
+
+    monkeypatch.setattr(B.subprocess, "Popen", Popen)
+    monkeypatch.setattr(B, "_detect_nvenc", lambda path: False)
+    b = _streaming()
+    b._launch()
+    cmd = seen["cmd"]
+    i = cmd.index("rawvideo")
+    assert cmd[i + 1:i + 5] == ["-pix_fmt", b.pix_fmt, "-s", "144x256"]
+
+
+def test_surface_is_free_once_wait_frame_returns(monkeypatch):
+    # The conversion runs off the game thread; after wait_frame() the game may draw again and the
+    # frame already handed over must not change.
+    import pygame
+    import quiz.broadcaster as B
+    real = pygame.transform.smoothscale
+
+    def slow(*a):
+        time.sleep(0.2)
+        return real(*a)
+    monkeypatch.setattr(B.pygame.transform, "smoothscale", slow)
+    screen = _picture()
+    want = pygame.image.tobytes(real(screen, (144, 256)), "RGB")
+    b = _streaming()
+    b.send_frame(screen, 0)
+    assert b.wait_frame(2.0)
+    screen.fill((255, 0, 0))  # the next frame being drawn
+    assert _as_rgb(b._latest, b.pix_fmt) == want
+
+
+def test_send_frame_does_not_wait_for_a_busy_converter(monkeypatch):
+    import pygame
+    import quiz.broadcaster as B
+    real = pygame.transform.smoothscale
+
+    def slow(*a):
+        time.sleep(0.5)
+        return real(*a)
+    monkeypatch.setattr(B.pygame.transform, "smoothscale", slow)
+    screen = _picture()
+    b = _streaming()
+    b.send_frame(screen, 0)
+    t0 = time.perf_counter()
+    b.send_frame(screen, 1)  # converter still busy with frame 0: drop, never stall the game
+    assert time.perf_counter() - t0 < 0.1
+    assert b.wait_frame(2.0)
+
+
+class _HungProc:
+    """FFmpeg that stopped reading its input (network stalled): writes block until it is killed."""
+
+    def __init__(self):
+        import threading
+        self.killed = threading.Event()
+        self.returncode = None
+        proc = self
+
+        class Stdin:
+            def write(self, raw):
+                if not proc.killed.wait(10):
+                    raise AssertionError("never killed")
+                raise BrokenPipeError
+
+            def close(self):  # a real pipe's close() waits for the writer's lock
+                proc.killed.wait(10)
+
+        self.stdin = Stdin()
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+        self.killed.set()
+
+
+def test_stalled_ffmpeg_is_killed_so_the_supervisor_restarts_it():
+    import threading
+
+    class Quick(YouTubeBroadcaster):
+        STALL_KILL = 0.3
+    b = Quick(stream_key="k", width=216, height=384, fps=30, game_fps=30, out_height=256)
+    b._proc, b._want, b._active, b._latest = _HungProc(), True, True, b"frame"
+    t = threading.Thread(target=b._writer_loop)
+    t.start()
+    screen = _picture()
+    deadline = time.monotonic() + 3
+    while t.is_alive() and time.monotonic() < deadline:
+        b.send_frame(screen, 0)  # the game loop keeps handing over frames
+        b.wait_frame(1.0)
+        time.sleep(1 / 30)
+    assert b._proc.killed.is_set()
+    t.join(2)
+    assert not t.is_alive()
+
+
+def test_stop_returns_when_ffmpeg_hangs():
+    # Shutdown (SIGTERM) must not wait on a writer stuck in a pipe FFmpeg no longer reads.
+    import threading
+
+    class Quick(YouTubeBroadcaster):
+        STOP_WAIT = 0.3
+    b = Quick(stream_key="k", fps=30)
+    proc = _HungProc()
+    b._proc, b._want, b._active, b._latest = proc, True, True, b"frame"
+    b._thread = threading.Thread(target=b._writer_loop)
+    b._thread.start()
+    time.sleep(0.1)
+    t0 = time.monotonic()
+    b.stop()
+    assert time.monotonic() - t0 < 3
+    assert proc.killed.is_set()
+
+
 def test_writer_keeps_real_time_when_the_game_stalls():
     # One game frame, then nothing: YouTube must still get 30 frames per second.
     import threading
