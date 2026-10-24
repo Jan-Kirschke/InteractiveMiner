@@ -94,6 +94,8 @@ HALF_STREAK = 3            # 50:50 joker ("!half 1 3"): once per match from this
 CROWD_MIN_REAL = 3         # Crowd Mind needs this many real (non-bot) answers, or the question is void
 DIFFICULTY_RAMP = {1: "easy", 2: "easy", 3: "easy", 4: "medium", 5: "medium",
                    6: "medium", 7: "medium", 8: "hard", 9: "hard", 10: "hard"}
+DIFFICULTY_TIERS = ("easy", "medium", "hard")   # a dry tier falls back to its nearest neighbour, lower first
+DIFFICULTY_MULT = {"easy": 1.0, "medium": 1.25, "hard": 1.5}   # on the question's shown difficulty
 
 # ==========================================
 # SCORING

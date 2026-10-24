@@ -23,6 +23,7 @@ from quiz.config import (
     MATCH_LENGTH, LOBBY_TIME, INTRO_TIME, QUESTION_DISPLAY_TIME,
     LATE_ANSWER_GRACE, REVEAL_DISPLAY_TIME, PODIUM_TIME,
     LIGHTNING_QUESTION, BONUS_QUESTIONS, FINAL_QUESTION_MULT, DIFFICULTY_RAMP,
+    DIFFICULTY_TIERS, DIFFICULTY_MULT,
     BASE_POINTS, SPEED_BONUS_TIER1_THRESHOLD, SPEED_BONUS_TIER2_THRESHOLD,
     SPEED_BONUS_TIER1_MULT, SPEED_BONUS_TIER2_MULT,
     STREAK_BONUS_PER, MAX_STREAK_MULT,
@@ -187,6 +188,21 @@ def host_line_for_rate(rate: float, answers: int) -> str:
     return f"Too easy? {pct}% knew that."
 
 
+def tier_rank(difficulty: str) -> int:
+    """easy 0, medium 1, hard 2 (an unknown label counts as medium)."""
+    return DIFFICULTY_TIERS.index(difficulty) if difficulty in DIFFICULTY_TIERS else 1
+
+
+def nearest_tier(questions: list, difficulty: str) -> list:
+    """The questions of the wanted tier, or else of the nearest tier (the lower one on a tie)."""
+    if not questions:
+        return []
+    want = tier_rank(difficulty)
+    best = min((abs(tier_rank(q.difficulty) - want), tier_rank(q.difficulty) > want) for q in questions)
+    return [q for q in questions
+            if (abs(tier_rank(q.difficulty) - want), tier_rank(q.difficulty) > want) == best]
+
+
 CROWD_KINDS = ("majority", "minority")
 _CROWD_INTRO = "Crowd Mind! No right answer: pick what you think most of chat will pick."
 SPECIAL_INTROS = {
@@ -303,6 +319,8 @@ class QuizLogic:
         # Show moments
         self.is_double_points = False  # final question
         self.mini_event = ""            # "lightning", "jackpot", "first_blood", ""
+        self.tier_reached = 0           # highest ramp tier served this match (tier_rank): LEVEL UP fires above it
+        self.level_up = ""              # the tier this question levelled up to ("medium", "hard"), else ""
         self.event_feed: list[GameEvent] = []
         self.sound_queue: list[str] = []
         self._last_countdown_second = None
@@ -476,9 +494,8 @@ class QuizLogic:
             self._question_cache = [c for c in self._question_cache if c.text != q.text]
             return q
         if self._question_cache:
-            idx = next((i for i, q in enumerate(self._question_cache)
-                        if q.difficulty == difficulty), 0)
-            q = self._question_cache.pop(idx)
+            q = nearest_tier(self._question_cache, difficulty)[0]
+            self._question_cache.remove(q)
             self._seen_questions[self._hash_question(q)] = time.time()
             return q
         self._purge_seen()
@@ -486,8 +503,7 @@ class QuizLogic:
                   if self._hash_question(q) not in self._seen_questions]
         if not unseen:
             unseen = list(FALLBACK_QUESTIONS)
-        preferred = [q for q in unseen if q.difficulty == difficulty]
-        q = random.choice(preferred or unseen)
+        q = random.choice(nearest_tier(unseen, difficulty))
         self._seen_questions[self._hash_question(q)] = time.time()
         options = list(q.options)
         random.shuffle(options)
@@ -590,6 +606,7 @@ class QuizLogic:
         self.q_index = 0
         self.standings = {}
         self.halves_used = set()
+        self.tier_reached = 0
         self.pips = []
         self.podium = []
         self.match_started_at = time.time()
@@ -616,6 +633,7 @@ class QuizLogic:
         self._bots_in_round = 0
         self.new_players_this_round = []
         self.sound_queue.append("new_question")
+        self._check_level_up()
 
         # Fixed event slots give every match the same shape.
         self.is_double_points = self.q_index == MATCH_LENGTH
@@ -645,6 +663,9 @@ class QuizLogic:
             self._say(f"Jackpot round! One lucky right answer wins {JACKPOT_BONUS} points.")
         elif self.current_question.kind in SPECIAL_INTROS:
             self._say(SPECIAL_INTROS[self.current_question.kind])
+        elif self.level_up:
+            self._say(f"Level up! {self.level_up.capitalize()} questions from here, "
+                      f"worth {DIFFICULTY_MULT[self.level_up]:g}x points.")
         else:
             diff = self.current_question.difficulty
             self._say(f"Question {self.q_index} of {MATCH_LENGTH}. "
@@ -652,6 +673,18 @@ class QuizLogic:
 
         self.question_duration = self.state_duration
         self._schedule_bots()
+
+    def _check_level_up(self):
+        """LEVEL UP once per ramp step, when a question of the new tier is really served."""
+        q, self.level_up = self.current_question, ""
+        ramp = DIFFICULTY_RAMP.get(self.q_index, "medium")
+        if q.kind in CROWD_KINDS or tier_rank(ramp) <= self.tier_reached or tier_rank(q.difficulty) < tier_rank(ramp):
+            return
+        self.tier_reached = tier_rank(ramp)
+        self.level_up = ramp
+        self._push_event(f"LEVEL UP: {ramp.upper()} questions, {DIFFICULTY_MULT[ramp]:g}x points",
+                         COLOR_TEXT_GOLD, "LVL")
+        self.sound_queue.append("level_up")
 
     def _enter_locking(self):
         self.sound_queue += ["times_up", "drumroll"]
@@ -838,6 +871,8 @@ class QuizLogic:
 
             if choice in winners or (half and q.correct_index in half):
                 pts = self._calculate_points(timestamp, player.streak)
+                if not crowd:
+                    pts = int(pts * DIFFICULTY_MULT.get(q.difficulty, 1.0))
                 if self.mini_event == "lightning":
                     pts = int(pts * LIGHTNING_MULT)
                 if self.is_double_points:
