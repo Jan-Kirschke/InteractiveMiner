@@ -66,11 +66,13 @@ class YouTubeBroadcaster:
 
     def __init__(self, stream_key: str, width: int = 1920, height: int = 1080,
                  fps: int = 30, bitrate: str = "4500k", ffmpeg_path: str = "ffmpeg",
-                 game_fps: int = 60, audio_input: str = "", output: str = "", out_height: int = 0):
+                 game_fps: int = 60, audio_input: str = "", output: str = "", out_height: int = 0,
+                 audio_gain_db: float = 0.0):
         self._stream_key = stream_key
         self._width = width
         self._height = height
         self._out_height = out_height if 0 < out_height < height else 0  # 0 = send at render size
+        self._audio_gain_db = audio_gain_db
         self._fps = fps
         self._bitrate = bitrate
         self._ffmpeg_path = _find_ffmpeg(ffmpeg_path)
@@ -169,6 +171,7 @@ class YouTubeBroadcaster:
             "-bufsize", f"{bufsize_val}k",
             "-g", str(self._fps * 2),
             "-pix_fmt", "yuv420p",
+            *(["-af", f"volume={self._audio_gain_db}dB"] if self._audio_gain_db else []),
             "-c:a", "aac",
             "-b:a", "128k",
             "-ar", "44100",

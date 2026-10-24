@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# quizctl - run and configure The Lifelong Quiz on this server (run as root).
+# See deploy/linux/SERVER.md for the full guide.
+set -euo pipefail
+
+APP=/opt/quiz
+ENV_FILE=$APP/.env
+START_DROPIN=/etc/systemd/system/quiz-start.timer.d/schedule.conf
+STOP_DROPIN=/etc/systemd/system/quiz-stop.timer.d/schedule.conf
+
+usage() {
+    cat <<'EOF'
+quizctl start                 start a show now (runs until 'stop' or the next scheduled end)
+quizctl stop                  end the show now
+quizctl restart               restart the show (picks up new settings)
+quizctl status                is it running, is it streaming, next scheduled show
+quizctl logs [N]              follow the live log (or print the last N lines)
+quizctl key                   set the YouTube stream key (typed hidden, never printed)
+quizctl schedule              show the show schedule
+quizctl schedule "18:00 01:00" 3h   shows start at these UTC times and run 3h (or 90m)
+quizctl schedule off|on       pause / resume the automatic schedule
+quizctl config                show all settings (stream key masked)
+quizctl set NAME VALUE        change a setting, e.g. quizctl set QUIZ_STREAM_HEIGHT 1080
+quizctl unset NAME            remove a setting (back to the default)
+quizctl update                pull the latest code and restart a running show
+EOF
+}
+
+calendar_of() {  # the OnCalendar times a timer really uses (a drop-in's empty line resets the list)
+    systemctl cat "$1" 2>/dev/null | awk -F= '/^OnCalendar=/ { if ($2 == "") n = 0; else t[n++] = $2 }
+        END { for (i = 0; i < n; i++) { s = t[i]; sub(/^\*-\*-\* /, "", s); sub(/:00 UTC$/, "", s); printf "%s%s", (i ? " " : ""), s } }'
+}
+
+need_root() { [ "$(id -u)" = 0 ] || { echo "Run as root (sudo quizctl ...)" >&2; exit 1; }; }
+
+set_env() {  # set_env NAME VALUE  (replaces or appends, keeps the file private)
+    local name=$1 value=$2 tmp
+    tmp=$(mktemp)
+    grep -v "^${name}=" "$ENV_FILE" > "$tmp" || true
+    printf '%s=%s\n' "$name" "$value" >> "$tmp"
+    install -m 600 -o quiz -g quiz "$tmp" "$ENV_FILE"
+    rm -f "$tmp"
+}
+
+restart_if_running() {
+    if systemctl is-active --quiet quiz; then
+        systemctl restart quiz
+        echo "Show restarted with the new settings."
+    else
+        echo "Saved. It applies to the next show."
+    fi
+}
+
+to_minutes() {  # 3h -> 180, 90m -> 90, 2h30m -> 150
+    local d=$1 h=0 m=0
+    [[ $d =~ ^([0-9]+)h ]] && h=${BASH_REMATCH[1]}
+    [[ $d =~ ([0-9]+)m$ ]] && m=${BASH_REMATCH[1]}
+    [[ $d =~ ^[0-9]+$ ]] && h=$d
+    echo $((h * 60 + m))
+}
+
+show_schedule() {
+    if ! systemctl is-enabled --quiet quiz-start.timer; then
+        echo "Automatic schedule: OFF (start shows with 'quizctl start')"
+    else
+        echo "Automatic schedule: ON (times in UTC)"
+    fi
+    echo "Starts: $(calendar_of quiz-start.timer)"
+    echo "Ends:   $(calendar_of quiz-stop.timer)"
+    systemctl list-timers 'quiz-*' --no-pager | head -n 3 | tail -n 2
+}
+
+cmd=${1:-help}; shift || true
+case "$cmd" in
+    start)   need_root; systemctl start quiz; echo "Show starting. Watch it with: quizctl logs" ;;
+    stop)    need_root; systemctl stop quiz; echo "Show stopped." ;;
+    restart) need_root; systemctl restart quiz; echo "Show restarted." ;;
+    status)
+        if systemctl is-active --quiet quiz; then
+            echo "Show: RUNNING since $(systemctl show quiz -p ActiveEnterTimestamp --value)"
+            journalctl -u quiz -n 200 --no-pager -o cat | grep -E '^\[Broadcast\]|^\[Chat\]|^\[Stream\]' | tail -n 4
+        else
+            echo "Show: stopped"
+        fi
+        if grep -qE '^QUIZ_STREAM_KEY=.+' "$ENV_FILE"; then echo "Stream key: set"; else echo "Stream key: MISSING (run: quizctl key)"; fi
+        show_schedule ;;
+    logs)
+        if [ -n "${1:-}" ]; then journalctl -u quiz -n "$1" --no-pager -o cat
+        else journalctl -u quiz -f -o cat; fi ;;
+    key)
+        need_root
+        read -r -s -p "Paste the YouTube stream key and press Enter: " key; echo
+        key=$(printf '%s' "$key" | tr -d '[:space:]')
+        [ -n "$key" ] || { echo "Nothing entered, key unchanged."; exit 1; }
+        set_env QUIZ_STREAM_KEY "$key"
+        echo "Stream key saved (ends in ...${key: -4})."
+        restart_if_running ;;
+    schedule)
+        need_root
+        case "${1:-}" in
+            "") show_schedule ;;
+            off) systemctl disable --now quiz-start.timer quiz-stop.timer >/dev/null 2>&1; echo "Automatic schedule paused. A running show keeps running until 'quizctl stop'." ;;
+            on)  systemctl enable --now quiz-start.timer quiz-stop.timer >/dev/null 2>&1; show_schedule ;;
+            *)
+                times=$1; mins=$(to_minutes "${2:-3h}")
+                [ "$mins" -gt 0 ] || { echo "Duration must be like 3h, 90m or 2h30m" >&2; exit 1; }
+                mkdir -p "$(dirname "$START_DROPIN")" "$(dirname "$STOP_DROPIN")"
+                { echo "[Timer]"; echo "OnCalendar="; } > "$START_DROPIN"
+                { echo "[Timer]"; echo "OnCalendar="; } > "$STOP_DROPIN"
+                for t in $times; do
+                    [[ $t =~ ^([01]?[0-9]|2[0-3]):[0-5][0-9]$ ]] || { echo "Bad time '$t' (use HH:MM, UTC)" >&2; exit 1; }
+                    end=$(date -u -d "1970-01-01 $t UTC + $mins minutes" +%H:%M)
+                    echo "OnCalendar=*-*-* $t:00 UTC" >> "$START_DROPIN"
+                    echo "OnCalendar=*-*-* $end:00 UTC" >> "$STOP_DROPIN"
+                done
+                systemctl daemon-reload
+                systemctl enable --now quiz-start.timer quiz-stop.timer >/dev/null 2>&1
+                systemctl restart quiz-start.timer quiz-stop.timer
+                show_schedule ;;
+        esac ;;
+    config)
+        sed -E 's/^(QUIZ_STREAM_KEY=).+(.{4})$/\1********\2/' "$ENV_FILE" | grep -vE '^\s*#|^\s*$' ;;
+    set)
+        need_root
+        [ $# -eq 2 ] || { echo "Usage: quizctl set NAME VALUE" >&2; exit 1; }
+        [[ $1 =~ ^[A-Z_][A-Z0-9_]*$ ]] || { echo "Bad setting name '$1'" >&2; exit 1; }
+        [ "$1" != QUIZ_STREAM_KEY ] || { echo "Use 'quizctl key' for the stream key." >&2; exit 1; }
+        set_env "$1" "$2"; echo "$1=$2"; restart_if_running ;;
+    unset)
+        need_root
+        [ $# -eq 1 ] || { echo "Usage: quizctl unset NAME" >&2; exit 1; }
+        tmp=$(mktemp); grep -v "^$1=" "$ENV_FILE" > "$tmp" || true
+        install -m 600 -o quiz -g quiz "$tmp" "$ENV_FILE"; rm -f "$tmp"
+        echo "Removed $1."; restart_if_running ;;
+    update)
+        need_root
+        sudo -u quiz git -C "$APP" pull --ff-only
+        sudo -u quiz "$APP/venv/bin/pip" install --quiet -r "$APP/requirements.txt"
+        install -m 755 "$APP/deploy/linux/quizctl" /usr/local/bin/quizctl
+        for u in quiz.service quiz-start.timer quiz-stop.service quiz-stop.timer; do
+            install -m 644 "$APP/deploy/linux/$u" "/etc/systemd/system/$u"
+        done
+        systemctl daemon-reload
+        echo "Updated to $(sudo -u quiz git -C "$APP" log --oneline -1)."
+        restart_if_running ;;
+    help|-h|--help) usage ;;
+    *) usage; exit 1 ;;
+esac

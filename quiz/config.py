@@ -66,13 +66,21 @@ COLOR_RANK_LEGEND = (255, 69, 0)
 # TIMING (seconds)
 # ==========================================
 # A show is an endless cycle of matches: LOBBY -> INTRO -> 10 x (ASKING -> LOCKING -> REVEALING) -> PODIUM
+# The QUIZ_*_SECONDS environment variables (or .env) override these defaults.
+def _env_num(name, default):
+    try:
+        return max(1, int(_os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
 MATCH_LENGTH = 10
-LOBBY_TIME = 30            # category vote, !ready check-ins
+LOBBY_TIME = _env_num("QUIZ_LOBBY_SECONDS", 30)          # category vote, !ready check-ins
 INTRO_TIME = 4             # "MATCH 15" title sting
-QUESTION_DISPLAY_TIME = 20
-LATE_ANSWER_GRACE = 4      # LOCKING: "time's up" while late chat messages still arrive
-REVEAL_DISPLAY_TIME = 8
-PODIUM_TIME = 14
+QUESTION_DISPLAY_TIME = _env_num("QUIZ_QUESTION_SECONDS", 20)
+LATE_ANSWER_GRACE = _env_num("QUIZ_LATE_SECONDS", 4)     # "time's up" while late chat messages still arrive
+REVEAL_DISPLAY_TIME = _env_num("QUIZ_REVEAL_SECONDS", 8)
+PODIUM_TIME = _env_num("QUIZ_PODIUM_SECONDS", 14)
 LIGHTNING_QUESTION = 5     # fixed event slots inside a match
 BONUS_QUESTIONS = (3, 7)   # first blood or jackpot
 FINAL_QUESTION_MULT = 2.0  # the last question pays double
@@ -159,7 +167,7 @@ VOTABLE_CATEGORIES = {
 # Find it in YouTube Studio: the part after watch?v= in your stream URL.
 # Example: VIDEO_ID = "dQw4w9WgXcQ"
 # Leave empty to auto-detect from the channels below.
-VIDEO_ID = ""
+VIDEO_ID = _os.environ.get("QUIZ_VIDEO_ID", "")
 
 # YouTube channels to search for livestreams (tried in order)
 # Auto-detection uses HTTP /live page + scrapetube as fallback.
@@ -167,6 +175,8 @@ CHANNEL_IDS = [
     "UCnv51D67E_oLPfHmQU_6prw",  # The Lifelong Quiz (primary)
     "UCmDgp2YS176ot2n7nFpLRzA",  # Chat vs Bedrock
 ]
+if _os.environ.get("QUIZ_CHANNEL_IDS"):  # comma-separated, e.g. only the channel the stream key belongs to
+    CHANNEL_IDS = [c.strip() for c in _os.environ["QUIZ_CHANNEL_IDS"].split(",") if c.strip()]
 
 # How often to retry finding a livestream if none is active (seconds)
 STREAM_POLL_INTERVAL = 20
@@ -174,7 +184,8 @@ STREAM_POLL_INTERVAL = 20
 # ==========================================
 # FILLER BOTS
 # ==========================================
-MIN_PLAYERS = 4  # Bots fill lobby until this many real players participate
+MIN_PLAYERS = _env_num("QUIZ_MIN_PLAYERS", 4) if _os.environ.get("QUIZ_MIN_PLAYERS") != "0" else 0
+# Bots fill matches until this many real players take part (0 = no bots)
 BOT_DIFFICULTY = {
     "easy":   {"accuracy": 0.25, "speed_min": 0.50, "speed_max": 0.90},
     "medium": {"accuracy": 0.55, "speed_min": 0.25, "speed_max": 0.70},
@@ -273,6 +284,8 @@ STREAM_AUDIO_INPUT = _os.environ.get("QUIZ_AUDIO_INPUT", "")
 STREAM_OUTPUT = _os.environ.get("QUIZ_STREAM_OUTPUT", "")
 STREAM_FPS = 30                     # Stream output framerate (30fps is ideal for quiz content)
 # Output size and bitrate. 720p at 3000k needs about half the CPU and upload of 1080p at 6000k.
+# Game audio boost in dB applied by FFmpeg (the procedural sounds are quiet next to other streams).
+STREAM_AUDIO_GAIN_DB = float(_os.environ.get("QUIZ_AUDIO_GAIN_DB", "0"))
 STREAM_HEIGHT = int(_os.environ.get("QUIZ_STREAM_HEIGHT", "1080"))
 STREAM_BITRATE = _os.environ.get("QUIZ_STREAM_BITRATE", "6000k" if STREAM_HEIGHT >= 1080 else "3000k")
 FFMPEG_PATH = "ffmpeg"              # Path to ffmpeg binary (auto-downloaded to scripts/)

@@ -29,6 +29,7 @@ install -m 644 "$APP/deploy/linux/quiz.service" /etc/systemd/system/quiz.service
 install -m 644 "$APP/deploy/linux/quiz-start.timer" /etc/systemd/system/quiz-start.timer
 install -m 644 "$APP/deploy/linux/quiz-stop.service" /etc/systemd/system/quiz-stop.service
 install -m 644 "$APP/deploy/linux/quiz-stop.timer" /etc/systemd/system/quiz-stop.timer
+install -m 755 "$APP/deploy/linux/quizctl" /usr/local/bin/quizctl
 systemctl daemon-reload
 systemctl enable --now quiz-start.timer quiz-stop.timer
 systemctl list-timers 'quiz-*'
