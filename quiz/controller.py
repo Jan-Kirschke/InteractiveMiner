@@ -14,7 +14,7 @@ import sys
 from quiz.config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, FPS, WINDOW_TITLE,
     DB_SAVE_INTERVAL, DB_PATH, DB_PATH_OFFLINE,
-    VIDEO_ID, CHANNEL_IDS,
+    VIDEO_ID, CHANNEL_IDS, CHAT_BOTS,
     STREAM_ENABLED, YOUTUBE_STREAM_KEY, STREAM_FPS, STREAM_BITRATE, STREAM_HEIGHT, STREAM_AUDIO_GAIN_DB, FFMPEG_PATH,
     STREAM_AUDIO_INPUT, STREAM_OUTPUT, LATE_ANSWER_GRACE, REVEAL_AT, ANSWER_PORT, ANSWER_URL, MATCH_LENGTH,
 )
@@ -151,6 +151,8 @@ class MainGameController:
     def _process_chat(self):
         while not self.msg_queue.empty():
             msg = self.msg_queue.get()
+            if msg.username.lower() in CHAT_BOTS:
+                continue  # moderator bots post how-to-play timers; they never play
             if msg.message.startswith("link ") and self.answers:
                 if self.answers.link(msg.message.split()[1], msg.username):
                     self.logic.announce(f"{msg.username} plays on the answer page")
