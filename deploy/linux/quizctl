@@ -71,13 +71,22 @@ to_minutes() {  # 3h -> 180, 90m -> 90, 2h30m -> 150
 MANUAL_END=quiz-manual-end   # transient timer that ends a show started by hand
 MANUAL_HOURS=3
 
-last_trigger() {  # epoch seconds of a timer's last firing, 0 if never
-    local t; t=$(systemctl show "$1" -p LastTriggerUSec --value 2>/dev/null)
-    date -u -d "$t" +%s 2>/dev/null || echo 0
-}
-
-in_window() {  # a scheduled show is under way: the start timer fired after the stop timer
-    systemctl is-enabled --quiet quiz-start.timer && [ "$(last_trigger quiz-start.timer)" -gt "$(last_trigger quiz-stop.timer)" ]
+in_window() {  # the clock is inside a scheduled show (start N .. end N, by the timers' times)
+    systemctl is-enabled --quiet quiz-start.timer || return 1
+    local starts ends now i day s e
+    read -r -a starts <<< "$(calendar_of quiz-start.timer)"
+    read -r -a ends <<< "$(calendar_of quiz-stop.timer)"
+    now=$(date -u +%s)
+    for i in "${!starts[@]}"; do
+        [ -n "${ends[$i]:-}" ] || continue
+        for day in today yesterday; do
+            s=$(date -u -d "$day ${starts[$i]} UTC" +%s)
+            e=$(date -u -d "$day ${ends[$i]} UTC" +%s)
+            [ "$e" -gt "$s" ] || e=$((e + 86400))
+            if [ "$now" -ge "$s" ] && [ "$now" -lt "$e" ]; then return 0; fi
+        done
+    done
+    return 1
 }
 
 show_schedule() {
@@ -158,9 +167,17 @@ case "$cmd" in
 ' "$starts" > "$START_DROPIN"
                 printf '%s
 ' "$ends" > "$STOP_DROPIN"
+                was_on=$(systemctl is-active quiz || true)
                 systemctl daemon-reload
                 systemctl enable --now quiz-start.timer quiz-stop.timer >/dev/null 2>&1
                 systemctl restart quiz-start.timer quiz-stop.timer
+                # systemd fires a start time that lies between the last start and now (2026-10-25:
+                # adding 13:00 at 15:44 started a show). Keep it only inside that show's hours.
+                sleep 3
+                if [ "$was_on" != active ] && systemctl is-active --quiet quiz; then
+                    if in_window; then echo "A scheduled show is under way now, so it started."
+                    else systemctl stop quiz; echo "Stopped a show the timer change started outside the schedule."; fi
+                fi
                 show_schedule ;;
         esac ;;
     config)
