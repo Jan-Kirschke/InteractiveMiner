@@ -149,6 +149,9 @@ RANK_COLORS = {
 # ==========================================
 # OPEN TRIVIA DB
 # ==========================================
+# Off by default since 2026-10-25: its questions arrive unreviewed and many (Politics above all) only
+# a US resident can answer. The reviewed bundled packs carry every category instead.
+OTDB_FETCH = _os.environ.get("QUIZ_OTDB", "0") == "1"
 OTDB_BASE_URL = "https://opentdb.com/api.php"
 OTDB_TOKEN_URL = "https://opentdb.com/api_token.php"
 OTDB_BATCH_SIZE = 50  # max supported by OTDB API

@@ -81,10 +81,15 @@ class QuestionBank:
                 )
             """)
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_questions_cat ON questions(cat_id, last_asked)")
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(questions)")}
+            if "retired" not in cols:   # added 2026-10-25; a retired question is kept, never asked
+                self._conn.execute("ALTER TABLE questions ADD COLUMN retired INTEGER DEFAULT 0")
             self._conn.commit()
 
-    def add(self, items: list[dict], source: str) -> int:
-        """items: {text, correct, wrong: [..], category, difficulty, fact?, cat_id?}. Returns rows added."""
+    def add(self, items: list[dict], source: str, update: bool = False) -> int:
+        """items: {text, correct, wrong: [..], category, difficulty, fact?, cat_id?}. Returns rows added.
+        update: rows this source added before take its current answers, category, difficulty and
+        fact, and so do unreviewed Open Trivia DB / built-in rows (a bundled pack is the truth)."""
         rows = []
         for it in items:
             wrong = [w for w in it["wrong"] if w and w != it["correct"]][:3]
@@ -102,8 +107,15 @@ class QuestionBank:
             self._conn.executemany(
                 "INSERT OR IGNORE INTO questions (text, correct, wrong, category, cat_id, difficulty, fact, source)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+            added = self._conn.total_changes - before
+            if update:
+                self._conn.executemany(
+                    "UPDATE questions SET correct = ?, wrong = ?, category = ?, cat_id = ?, difficulty = ?, fact = ?,"
+                    " source = ? WHERE text = ? AND source IN (?, 'otdb', 'builtin') AND NOT (correct IS ?"
+                    " AND wrong IS ? AND category IS ? AND cat_id IS ? AND difficulty IS ? AND fact IS ?)",
+                    [r[1:8] + (r[0], r[7]) + r[1:7] for r in rows])
             self._conn.commit()
-            return self._conn.total_changes - before
+            return added
 
     COUNT_TTL = 1.0  # count() runs every frame (QuizLogic._ensure_cache); the table changes on add/pick
 
@@ -112,7 +124,7 @@ class QuestionBank:
         hit = self._counts.get(key)
         if hit and now - hit[0] < self.COUNT_TTL:
             return hit[1]
-        q = "SELECT COUNT(*) FROM questions WHERE last_asked <= ?"
+        q = "SELECT COUNT(*) FROM questions WHERE retired = 0 AND last_asked <= ?"
         args = [time.time() - unseen_for]
         if cat_id:
             q += " AND cat_id = ?"
@@ -129,7 +141,7 @@ class QuestionBank:
             return measured_difficulty(r["difficulty"], r["asked"], r["correct_n"])
 
         for window in REPEAT_WINDOWS:
-            q = "SELECT * FROM questions WHERE last_asked <= ?"
+            q = "SELECT * FROM questions WHERE retired = 0 AND last_asked <= ?"
             args: list = [time.time() - window]
             if cat_id:
                 q += " AND cat_id = ?"
@@ -152,6 +164,17 @@ class QuestionBank:
                 fact=r["fact"] or "",
             )
         return None
+
+    def retire(self, texts) -> int:
+        """Never ask these again (only one country could answer them, or they were wrong). The rows
+        and their answer stats stay; returns how many were newly retired."""
+        self._counts.clear()
+        with self._lock:
+            before = self._conn.total_changes
+            self._conn.executemany("UPDATE questions SET retired = 1 WHERE text = ? AND retired = 0",
+                                   [(t.strip(),) for t in texts])
+            self._conn.commit()
+            return self._conn.total_changes - before
 
     def mark_asked(self, text: str):
         self._counts.clear()

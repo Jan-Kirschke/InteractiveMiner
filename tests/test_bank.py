@@ -78,3 +78,38 @@ def test_import_json_and_csv(tmp_path):
     assert bank.add(items, "pack") == 2
     tf = bank.pick(None, "easy")
     assert len(tf.options) in (2, 4)
+
+def test_retired_question_is_never_asked_or_counted_and_stays_retired_on_reimport():
+    # 2026-10-25: questions only one country's residents can answer are retired, not deleted
+    bank = make_bank(3)
+    assert bank.retire(["Q0?", "Q1?", "not in the bank?"]) == 2
+    assert bank.count(22) == 1
+    assert bank.pick(22, "easy").text == "Q2?"
+    assert bank.pick(22, "easy") is None
+    bank.add([{"text": "Q0?", "correct": "A", "wrong": ["B"], "category": "Geography", "cat_id": 22}], "pack")
+    assert bank.count(22) == 1 and bank.retire(["Q0?"]) == 0   # only Q2 left
+
+
+def test_bank_made_before_retirement_gains_the_column():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE questions (text TEXT PRIMARY KEY, correct TEXT NOT NULL, wrong TEXT NOT NULL,"
+                 " category TEXT DEFAULT '', cat_id INTEGER, difficulty TEXT DEFAULT 'medium', fact TEXT DEFAULT '',"
+                 " source TEXT DEFAULT '', asked INTEGER DEFAULT 0, correct_n INTEGER DEFAULT 0, last_asked REAL DEFAULT 0)")
+    conn.execute("INSERT INTO questions (text, correct, wrong, cat_id) VALUES ('Old?', 'A', '[\"B\"]', 22)")
+    bank = QuestionBank(conn)
+    assert bank.pick(22).text == "Old?"
+
+def test_a_fixed_pack_answer_reaches_the_bank_but_not_another_packs_row():
+    bank = make_bank(1)                      # "Q0?" from source "test", correct "A"
+    bank.add([{"text": "Q0?", "correct": "B", "wrong": ["A", "C", "D"], "category": "Geography"}], "pack", update=True)
+    assert bank.pick(22).correct_answer == "A"
+    bank = make_bank(0)
+    bank.add([{"text": "Feed?", "correct": "A", "wrong": ["B"], "cat_id": 22}], "otdb")
+    bank.add([{"text": "Feed?", "correct": "B", "wrong": ["A"], "cat_id": 22}], "reviewed.json", update=True)
+    assert bank.pick(22).correct_answer == "B"   # a reviewed pack takes over the unreviewed feed's row
+    bank = make_bank(1)
+    assert bank.add([{"text": "Q0?", "correct": "B", "wrong": ["A", "C", "D"], "category": "Geography",
+                      "cat_id": 22, "difficulty": "hard", "fact": "Fixed."}], "test", update=True) == 0
+    q = bank.pick(22)
+    assert (q.correct_answer, q.difficulty, q.fact) == ("B", "hard", "Fixed.")

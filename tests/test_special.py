@@ -37,8 +37,10 @@ def write_pack(tmp_path, items, name="special_test.json"):
 # ------------------------------------------
 def test_bundled_packs_load_into_decks_by_type():
     decks = SpecialDecks()
+    items = [it for p in PACK_DIR.glob("special_*.json") for it in json.loads(p.read_text(encoding="utf-8"))]
     for kind in ("majority", "higher_lower", "odd_one_out"):
-        assert decks.count(kind) == 15, kind
+        bundled = sum(it.get("type") == kind for it in items)
+        assert bundled >= 150 and decks.count(kind) == bundled, kind   # every bundled item plays
     assert decks.count("number") == 0          # Closest Call is not built: its pack stays inert
 
 

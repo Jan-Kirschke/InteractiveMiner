@@ -9,6 +9,7 @@ import heapq
 import math
 import time
 import html
+import json
 import random
 import re
 import threading
@@ -31,7 +32,7 @@ from quiz.config import (
     BASE_POINTS, SPEED_BONUS_TIER1_THRESHOLD, SPEED_BONUS_TIER2_THRESHOLD,
     SPEED_BONUS_TIER1_MULT, SPEED_BONUS_TIER2_MULT,
     COMBO_STEPS,
-    OTDB_BASE_URL, OTDB_TOKEN_URL, OTDB_BATCH_SIZE,
+    OTDB_FETCH, OTDB_BASE_URL, OTDB_TOKEN_URL, OTDB_BATCH_SIZE,
     OTDB_MIN_CACHE, OTDB_REQUEST_COOLDOWN, OTDB_SEEN_EXPIRY,
     VOTABLE_CATEGORIES, RECENT_CATEGORIES,
     COMEBACK_BONUS, COMEBACK_STREAK_THRESHOLD,
@@ -51,6 +52,12 @@ from quiz.import_questions import load_items
 from quiz.special import SpecialDecks, FORMATS, TEAMS
 
 PACK_DIR = Path(__file__).resolve().parent / "packs"
+
+
+def _retired_texts() -> set[str]:
+    """Question texts never to ask again (quiz/retired_questions.json: one country only, or wrong)."""
+    path = Path(__file__).resolve().parent / "retired_questions.json"
+    return {t.strip() for t in json.loads(path.read_text(encoding="utf-8"))} if path.exists() else set()
 
 
 # Hardcoded fallback questions if API is unavailable (80+ across many categories)
@@ -422,7 +429,11 @@ class QuizLogic:
         self.bank = QuestionBank(db._conn, db._lock)
         self.bank.add([_question_to_item(q) for q in FALLBACK_QUESTIONS], "builtin")
         for pack in sorted(p for p in PACK_DIR.glob("*.json") if not p.name.startswith("special_")):  # bundled packs; existing texts are skipped (special_* need their round type)
-            self.bank.add(load_items(str(pack)), pack.name)
+            self.bank.add(load_items(str(pack)), pack.name, update=True)
+        retired = _retired_texts()
+        if self.bank.retire(retired):
+            print(f"[Bank] Retired questions: {len(retired)} listed")
+        self._fallback = [q for q in FALLBACK_QUESTIONS if q.text not in retired]
         self.special = SpecialDecks()
         self.special_slots = dict(SPECIAL_SLOTS)   # question number -> round type
 
@@ -451,7 +462,7 @@ class QuizLogic:
     # SESSION TOKEN
     # ------------------------------------------
     def _fetch_session_token(self):
-        if not requests:
+        if not requests or not OTDB_FETCH:
             return
         try:
             resp = requests.get(
@@ -482,6 +493,8 @@ class QuizLogic:
     # QUESTION FETCHING
     # ------------------------------------------
     def _ensure_cache(self):
+        if not OTDB_FETCH:
+            return
         if self.bank.count(self._current_category_id, unseen_for=REPEAT_WINDOWS[0]) >= 3 * OTDB_MIN_CACHE:
             return  # the bank still holds plenty this category has not asked for a week
         if len(self._question_cache) >= OTDB_MIN_CACHE:
@@ -580,10 +593,10 @@ class QuizLogic:
             self._seen_questions[self._hash_question(q)] = time.time()
             return q
         self._purge_seen()
-        unseen = [q for q in FALLBACK_QUESTIONS
+        unseen = [q for q in self._fallback
                   if self._hash_question(q) not in self._seen_questions]
         if not unseen:
-            unseen = list(FALLBACK_QUESTIONS)
+            unseen = list(self._fallback)
         q = random.choice(nearest_tier(unseen, difficulty))
         self._seen_questions[self._hash_question(q)] = time.time()
         options = list(q.options)
