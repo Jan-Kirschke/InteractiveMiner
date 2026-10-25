@@ -88,6 +88,11 @@ def _write_private(path: Path, data: dict):
             f.flush()
             os.fsync(f.fileno())
         os.chmod(tmp, 0o600)
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            # root (quizctl, an admin probe) refreshing the token must leave it to the show's user;
+            # 2026-10-25 a root-owned token made the show fail with Permission denied
+            st = path.parent.stat()
+            os.chown(tmp, st.st_uid, st.st_gid)
         os.replace(tmp, path)
     finally:
         if tmp.exists():
