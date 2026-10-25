@@ -21,7 +21,7 @@ post, so a quiet chat is not spammed.
 | vote | 20 min | 10 | 🗳️ Between matches, vote the next category with 1-4. Type !rank to see your place on the weekly ladder. |
 | fair | 30 min | 10 | ⚖️ Fair play: watch at the live position, one answer counts per question, no spam. Players marked [Bot] are computer opponents, not viewers. |
 | powers | 25 min | 10 | ⚡ Power-ups: after 5 answers in a match type !double to bet x2 on your next answer. On a 3-answer streak, !half 1 3 picks two answers for half points. !team shows your team (Gold or Teal). |
-| sub | 30 min | 15 | 🔔 Enjoying the quiz? Subscribe and turn on notifications: live shows every day at 18:00 and 01:00 UTC. |
+| sub | 30 min | 15 | 🔔 Enjoying the quiz? Subscribe and turn on notifications: live shows every day at 13:00, 18:00 and 01:00 UTC. |
 
 ## Commands
 
@@ -46,4 +46,4 @@ Nightbot commands:
 | Command | Message |
 |---|---|
 | !howto | Type 1, 2, 3 or 4 in chat before the timer ends. Points for correct answers, bonus for speed and streaks. Your points are saved between shows. |
-| !schedule | Live every day at 18:00 and 01:00 UTC, three hours each. |
+| !schedule | Live every day at 13:00, 18:00 and 01:00 UTC, three hours each. |

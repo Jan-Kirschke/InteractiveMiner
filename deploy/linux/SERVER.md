@@ -50,19 +50,21 @@ If the account has several channels or a Brand Account, pick The Lifelong Quiz i
 
 ## Schedule
 
-By default, shows start at **18:00 and 01:00 UTC** and run **3 hours**. In Germany that is
-20:00 and 03:00 in summer, and 19:00 and 02:00 in winter.
+By default, shows start at **13:00, 18:00 and 01:00 UTC** and run **3 hours**. In Germany that is
+15:00, 20:00 and 03:00 in summer, and 14:00, 19:00 and 02:00 in winter. The 13:00 show is India's
+evening (18:30 IST) and South-East Asia's prime time.
 
 ```
 .\scripts\quiz-server.ps1 schedule                      # show the current schedule
-.\scripts\quiz-server.ps1 schedule "18:00 01:00" 3h     # start times (UTC, space separated) and length
+.\scripts\quiz-server.ps1 schedule "13:00 18:00 01:00" 3h     # start times (UTC, space separated) and length
 .\scripts\quiz-server.ps1 schedule "19:30" 2h30m        # one show a day, 2.5 hours
 .\scripts\quiz-server.ps1 schedule off                  # pause the schedule (manual start/stop only)
 .\scripts\quiz-server.ps1 schedule on                   # resume it
 ```
 
-A show you start by hand also ends at the next scheduled end time. Use `schedule off` if you
-want it to run until you stop it.
+A show you start by hand outside the schedule ends after 3 hours, unless a scheduled show
+begins meanwhile; then the schedule ends it. Started inside a scheduled show's time, it ends
+at the scheduled end.
 
 ## Settings
 

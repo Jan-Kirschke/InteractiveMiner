@@ -11,7 +11,7 @@ STOP_DROPIN=/etc/systemd/system/quiz-stop.timer.d/schedule.conf
 
 usage() {
     cat <<'EOF'
-quizctl start                 start a show now (runs until 'stop' or the next scheduled end)
+quizctl start                 start a show now (outside the schedule it ends after 3 hours)
 quizctl stop                  end the show now
 quizctl restart               restart the show (picks up new settings)
 quizctl status                is it running, is it streaming, next scheduled show
@@ -68,6 +68,18 @@ to_minutes() {  # 3h -> 180, 90m -> 90, 2h30m -> 150
     echo $((h * 60 + m))
 }
 
+MANUAL_END=quiz-manual-end   # transient timer that ends a show started by hand
+MANUAL_HOURS=3
+
+last_trigger() {  # epoch seconds of a timer's last firing, 0 if never
+    local t; t=$(systemctl show "$1" -p LastTriggerUSec --value 2>/dev/null)
+    date -u -d "$t" +%s 2>/dev/null || echo 0
+}
+
+in_window() {  # a scheduled show is under way: the start timer fired after the stop timer
+    systemctl is-enabled --quiet quiz-start.timer && [ "$(last_trigger quiz-start.timer)" -gt "$(last_trigger quiz-stop.timer)" ]
+}
+
 show_schedule() {
     if ! systemctl is-enabled --quiet quiz-start.timer; then
         echo "Automatic schedule: OFF (start shows with 'quizctl start')"
@@ -81,8 +93,24 @@ show_schedule() {
 
 cmd=${1:-help}; shift || true
 case "$cmd" in
-    start)   need_root; systemctl start quiz; echo "Show starting. Watch it with: quizctl logs" ;;
-    stop)    need_root; systemctl stop quiz; echo "Show stopped." ;;
+    start)
+        need_root
+        if systemctl is-active --quiet quiz; then echo "Show is already running."; exit 0; fi
+        systemctl stop "$MANUAL_END.timer" 2>/dev/null || true
+        systemctl start quiz
+        if in_window; then
+            echo "Show starting inside the schedule; it ends at the scheduled time."
+        else
+            systemd-run --quiet --collect --unit="$MANUAL_END" --on-active="${MANUAL_HOURS}h" \
+                --timer-property=AccuracySec=1s /usr/local/bin/quizctl manual-end
+            echo "Show starting; it ends in $MANUAL_HOURS hours unless a scheduled show takes over."
+        fi
+        echo "Watch it with: quizctl logs" ;;
+    manual-end)   # fired by the transient timer from 'start'; a scheduled show that began meanwhile keeps running
+        need_root
+        if in_window; then echo "A scheduled show is running; the schedule ends it."
+        else systemctl stop quiz; echo "Manual show ended after $MANUAL_HOURS hours."; fi ;;
+    stop)    need_root; systemctl stop "$MANUAL_END.timer" 2>/dev/null || true; systemctl stop quiz; echo "Show stopped." ;;
     restart) need_root; systemctl restart quiz; echo "Show restarted." ;;
     status)
         if systemctl is-active --quiet quiz; then

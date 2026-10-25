@@ -2,6 +2,7 @@
 Description=Start the daily Lifelong Quiz shows
 
 [Timer]
+OnCalendar=*-*-* 13:00:00 UTC
 OnCalendar=*-*-* 18:00:00 UTC
 OnCalendar=*-*-* 01:00:00 UTC
 Unit=quiz.service

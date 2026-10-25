@@ -2,6 +2,7 @@
 Description=End each Lifelong Quiz show after 3 hours
 
 [Timer]
+OnCalendar=*-*-* 16:00:00 UTC
 OnCalendar=*-*-* 21:00:00 UTC
 OnCalendar=*-*-* 04:00:00 UTC
 Unit=quiz-stop.service

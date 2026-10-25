@@ -1,6 +1,6 @@
 # Running the quiz on a Linux server
 
-Two shows a day at 18:00 and 01:00 UTC, 3 hours each. They are started and stopped by systemd timers.
+Three shows a day at 13:00, 18:00 and 01:00 UTC, 3 hours each. They are started and stopped by systemd timers.
 Pushing video to the stream key makes YouTube go live ("Stream now"), so no click in YouTube Studio is needed.
 
 1. Rent an Ubuntu 24.04 VM. Hetzner CPX22 is the cheapest candidate; if 1080p stutters, use CPX32.

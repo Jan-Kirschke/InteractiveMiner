@@ -4,7 +4,7 @@
 #   .\scripts\quiz-server.ps1 start | stop | restart
 #   .\scripts\quiz-server.ps1 logs            (live log, Ctrl+C to leave)
 #   .\scripts\quiz-server.ps1 key             (paste the YouTube stream key, hidden)
-#   .\scripts\quiz-server.ps1 schedule "18:00 01:00" 3h
+#   .\scripts\quiz-server.ps1 schedule "13:00 18:00 01:00" 3h
 #   .\scripts\quiz-server.ps1 set QUIZ_STREAM_HEIGHT 1080
 #   .\scripts\quiz-server.ps1 shell           (open a terminal on the server)
 #   .\scripts\quiz-server.ps1 youtube-client <downloaded client JSON>   (sent over ssh stdin)
